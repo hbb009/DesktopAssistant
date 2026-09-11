@@ -1,0 +1,17 @@
+model/**
+!model/README.md
+_internal/
+runtime/
+*.exe
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+data/**
+!data/.gitkeep
+game_assist/**
+!game_assist/.gitkeep
+*.log
+.idea/
+.vscode/
+Thumbs.db

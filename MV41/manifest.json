@@ -1,0 +1,26 @@
+{
+  "name": "图片速存助手",
+  "manifest_version": 3,
+  "version": "2.3.2",
+  "description": "Alt+1 保存光标下图片；兼容 DA/遮罩层找图，SW 自愈重连",
+  "permissions": [
+    "downloads",
+    "scripting",
+    "activeTab",
+    "tabs",
+    "storage",
+    "alarms",
+    "declarativeNetRequest",
+    "declarativeNetRequestWithHostAccess"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "commands": {
+    "save-hover-image": {
+      "suggested_key": { "default": "Alt+1" },
+      "description": "保存光标下的图片"
+    }
+  }
+}

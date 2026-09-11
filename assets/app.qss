@@ -1,0 +1,1593 @@
+/* =========================================================
+   桌面助手 v9.12 — app.qss（扁平深色 · 对应 temp1 壳层结构）
+   设计基色：
+     --bg:        #0b1124
+     --panel:     #141b33
+     --border:    #25345c
+     --text:      #d7def7
+     --accent:    #6366f1
+   ========================================================= */
+
+/* 0) 全局基础 ------------------------------------------------ */
+* {
+  font-family: "Microsoft YaHei", "Segoe UI", Arial;
+  font-size: 14px;
+}
+
+/* 所有文本控件：统一透明背景 */
+QLabel, QTextBrowser, QTextEdit, QPlainTextEdit {
+  background: transparent;
+  border: none;
+  color: #d7def7;
+}
+
+/* 窗口深色底 */
+QWidget { background: #0b1124; color: #d7def7; }
+QScrollArea, QAbstractScrollArea { background: transparent; border: none; }
+
+#AppRoot { background: #0b1124; }
+
+/* ===== 侧栏（深色浮动卡） ===== */
+/* 侧栏：无大圆角外框（与主内容区解耦，仅保留透明底） */
+#SideBar {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+}
+#SideBar QWidget { background: transparent; }
+#SideBrand { background: transparent; }
+#SideLogo {
+  background: transparent;
+  border: none;
+  padding: 0;
+}
+#SideBrandTitle {
+  background: transparent;
+  color: #e6edff;
+  font-family: "等线", "Microsoft YaHei UI", "微软雅黑";
+  font-size: 14px;
+  font-weight: 700;
+}
+#SideBrandSub {
+  background: transparent;
+  color: #6f7fa8;
+  font-family: "等线", "Microsoft YaHei UI", "微软雅黑";
+  font-size: 12px;
+  font-weight: 400;
+}
+#SideSectionLabel {
+  background: transparent;
+  color: #5a6a8a;
+  font-size: 11px;
+  font-weight: 600;
+}
+#SideSep {
+  background: #25345c;
+  max-height: 1px;
+  min-height: 1px;
+  border: none;
+}
+/* 设置按钮：与侧栏菜单同热区规范，字重/内边距固定防闪动 */
+#SideBar QPushButton#SideFootBtn,
+#SideFootBtn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  color: #9fb0d7;
+  text-align: left;
+  padding: 0 8px;
+  /* 底栏「系统总览」行高：与侧栏导航行一致 26px；
+     同 ui_main._apply_chrome_metrics 的 setFixedHeight 同步，勿单独改动 */
+  min-height: 26px;
+  max-height: 26px;
+  margin: 4px 0 4px 4px;
+  font-size: 13px;
+  font-weight: 600;
+  outline: none;
+}
+#SideBar QPushButton#SideFootBtn:hover,
+#SideFootBtn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid transparent;
+  color: #e6edff;
+  font-weight: 600;
+}
+#SideBar QPushButton#SideFootBtn:pressed,
+#SideFootBtn:pressed {
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid transparent;
+  font-weight: 600;
+}
+#SideBar QPushButton#SideFootBtn[active="true"],
+#SideFootBtn[active="true"] {
+  background: rgba(99, 102, 241, 0.32);
+  border: 1px solid transparent;
+  color: #c7d2fe;
+  font-weight: 600;
+}
+#SideBar QPushButton#SideFootBtn[active="true"]:hover,
+#SideFootBtn[active="true"]:hover {
+  background: rgba(99, 102, 241, 0.40);
+  color: #e0e7ff;
+}
+/* 「预」22px + 右 8px；选中/悬停必须重复，避免被 padding:0 8px 冲掉把「览」切掉 */
+#SideBar QPushButton#SideFootBtn[hasPreSlot="true"],
+#SideBar QPushButton#SideFootBtn[hasPreSlot="true"]:hover,
+#SideBar QPushButton#SideFootBtn[hasPreSlot="true"]:pressed,
+#SideBar QPushButton#SideFootBtn[hasPreSlot="true"][active="true"],
+#SideBar QPushButton#SideFootBtn[hasPreSlot="true"][active="true"]:hover,
+#SideFootBtn[hasPreSlot="true"],
+#SideFootBtn[hasPreSlot="true"]:hover,
+#SideFootBtn[hasPreSlot="true"]:pressed,
+#SideFootBtn[hasPreSlot="true"][active="true"],
+#SideFootBtn[hasPreSlot="true"][active="true"]:hover {
+  padding: 0 34px 0 8px;
+}
+/* 主题切换：与「预」开关同为 22×22（侧栏行高改 26 后同步收窄） */
+#SideBar QPushButton#SideThemeBtn,
+#SideThemeBtn {
+  background: rgba(255,255,255,0.04);
+  border: 1px solid #25345c;
+  border-radius: 6px;
+  color: #9fb0d7;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 0px;
+  margin: 0 4px 0 0;
+  min-width: 22px;
+  max-width: 22px;
+  min-height: 22px;
+  max-height: 22px;
+}
+#SideBar QPushButton#SideThemeBtn:hover,
+#SideThemeBtn:hover {
+  background: rgba(99,102,241,0.16);
+  border-color: rgba(99,102,241,0.4);
+  color: #c7d2fe;
+}
+/* ===== 主内容区 ===== */
+#ContentRoot {
+  background: #141b33;
+  border: 1px solid #25345c;
+  border-radius: 14px;
+}
+#ContentRoot QWidget#StackArea,
+#StackArea {
+  background: transparent;
+  border: none;
+}
+#PageRoot { background: transparent; }
+
+/* ===== 内容顶栏 ===== */
+#ThemeBar {
+  background: transparent;
+  border: none;
+}
+#PageTitle {
+  background: transparent;
+  color: #e6edff;
+  font-weight: 700;
+  font-size: 18px;
+  border: none;
+  padding: 0;
+}
+/* 顶栏搜索：高度与 LinkIcon 一致（34px） */
+#HeaderSearch {
+  background: #0e1530;
+  border: 1px solid #25345c;
+  border-radius: 10px;
+  min-height: 34px;
+  max-height: 34px;
+}
+#HeaderSearch:hover {
+  border-color: #2d4070;
+  background: #101a36;
+}
+#HeaderSearchInput {
+  background: transparent;
+  border: none;
+  padding: 0;
+  margin: 0;
+  color: #d7def7;
+  font-size: 12px;
+  font-weight: 500;
+  selection-background-color: #1f3a8a;
+}
+#HeaderSearchInput:focus {
+  border: none;
+  outline: none;
+  background: transparent;
+}
+#HeaderSearchIcon {
+  background: transparent;
+  border: none;
+  color: #9fb0d7;
+  font-size: 16px;
+  font-weight: 600;
+  padding: 0;
+}
+/* 右侧外链：1:1 方形（34×34） */
+#ThemeBar QPushButton#LinkIcon {
+  background: #0e1530;
+  border: 1px solid #25345c;
+  border-radius: 8px;
+  padding: 0px;
+  margin: 0px;
+  color: #9fb0d7;
+  font-size: 11px;
+  font-weight: 600;
+}
+#ThemeBar QPushButton#LinkIcon:hover {
+  background: rgba(99,102,241,0.16);
+  border-color: rgba(99,102,241,0.4);
+  color: #e6edff;
+}
+#ThemeBar QPushButton#LinkIcon[clockOn="true"] {
+  background: rgba(245, 158, 11, 0.16);
+  border-color: rgba(245, 158, 11, 0.45);
+  color: #fbbf24;
+}
+#ThemeBar QPushButton#LinkIcon[promptOn="true"] {
+  background: rgba(59, 130, 246, 0.16);
+  border-color: rgba(59, 130, 246, 0.45);
+  color: #60a5fa;
+}
+
+/* 兼容旧 TopBar */
+#TopBar {
+  background: transparent;
+  border: none;
+}
+#TopBar QLabel#PageTitle {
+  background: transparent;
+  border: none;
+  color: #e6edff;
+  font-weight: 700;
+  font-size: 18px;
+}
+#ThemeTagline {
+  background: transparent;
+  color: #e6edff;
+  font-weight: 700;
+  font-size: 18px;
+}
+#ThemeCapsule { background: transparent; border: none; }
+#ThemeCapsuleText {
+  background: transparent;
+  color: #9fb0d7;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* ===== 普通按钮（全局默认） ===== */
+/* v9.9.9：垂直 padding 从 8px 收窄到 4px，实测高度 37px → 29px，
+   正好跟 QLineEdit（padding 6px 10px + 1px 描边）的实际高度对齐，
+   同一行里"按钮 + 路径输入框"不再一高一矮。 */
+QPushButton {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.22);
+  color: #cfe0ff;
+  border-radius: 8px;
+  font-size: 14px;             /* 全局普通按钮字号 */
+  font-weight: 600;
+  padding: 4px 14px;            /* 左右对称，文本自然居中；高度对齐 QLineEdit，见上方说明 */
+}
+QPushButton:hover {
+  background: rgba(255,255,255,0.10);
+  border-color: rgba(255,255,255,0.30);
+}
+QPushButton:pressed {
+  background: rgba(255,255,255,0.14);
+  border-color: rgba(255,255,255,0.40);
+}
+QPushButton:disabled {
+  color: rgba(207,224,255,0.45);
+  background: rgba(255,255,255,0.04);
+  border-color: rgba(255,255,255,0.10);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   【主操作按钮配色 · BtnDownload】全站复用橙渐变，勿各写一套
+   ───────────────────────────────────────────────────────────────
+   来源：抖音下载页「粘贴并解析」
+   尺寸（原版，勿再加 min-height / 加大 padding）：
+     · 高度：不设 min-height，吃全局 QPushButton 的 padding: 4px 14px
+       （与同排 QLineEdit /「安装」等按钮齐高）
+     · 宽度：布局 stretch 拉宽，不是靠 padding 撑高
+   其它页若要「更高更醒目」，在该页 Python 里单独 setMinimumHeight，
+   不要改本规则，以免抖音页被连带撑高。
+   已用：抖音「粘贴并解析」/ 粘贴助手「保存」/ 积分计算「保存到记录」
+   app.qss 与 app_light.qss 颜色值必须一致。
+   ═══════════════════════════════════════════════════════════════ */
+QPushButton#BtnDownload {
+  background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                  stop:0 #f5ac4d, stop:1 #ea9530);
+  border: 1px solid #d97f1e;
+  color: #241300;
+  font-weight: 700;
+}
+QPushButton#BtnDownload:hover {
+  background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
+                  stop:0 #f8bb66, stop:1 #f0a542);
+  border-color: #e08b28;
+  color: #241300;
+}
+QPushButton#BtnDownload:pressed {
+  background: #d98a28;
+  border-color: #c67a1e;
+  color: #241300;
+}
+QPushButton#BtnDownload:disabled {
+  background: rgba(240,165,66,0.35);
+  border-color: rgba(240,165,66,0.30);
+  color: rgba(36,19,0,0.55);
+}
+
+/* 卡片正文：role="card-body"（用于环境信息/操作与安装教程） */
+QLabel[role="card-body"],
+QTextBrowser[role="card-body"],
+QTextEdit[role="card-body"],
+QPlainTextEdit[role="card-body"] {
+  background: transparent;
+  border: none;
+  color: #d7def7;
+  line-height: 1.8;         /* 更舒适的行距 */
+}
+
+/* 4) 进度条（资源监控）-------------------------------------- */
+/* 半粗（4px）+ 浅色未达轨道 + 无外框；CardRes 现为 QFrame（兼容旧 QGroupBox） */
+QFrame#CardRes QProgressBar[variant="thin"],
+QGroupBox#CardRes QProgressBar[variant="thin"],
+QProgressBar#BarGpu, QProgressBar#BarVram, QProgressBar#BarMem,
+QProgressBar#BarCpu, QProgressBar#BarTemp, QProgressBar#BarPower,
+QProgressBar#BarDisk {
+  background: #4a5575;            /* 未达部分：浅色轨道 */
+  border: none;                   /* 去除外框线 */
+  border-radius: 2px;
+  height: 4px; min-height: 4px; max-height: 4px;
+  padding: 0;
+  text-align: center;
+  color: transparent;
+  qproperty-textVisible: false;
+}
+QFrame#CardRes QProgressBar[variant="thin"]::chunk,
+QGroupBox#CardRes QProgressBar[variant="thin"]::chunk {
+  border-radius: 2px;
+}
+
+/* 彩色已达段 */
+#BarGpu::chunk   { background: #30c86b;  border-radius: 2px; }  /* GPU使用率：绿 */
+#BarVram::chunk  { background: #3aa0ff;  border-radius: 2px; }  /* 显存：蓝 */
+#BarMem::chunk   { background: #f0a542;  border-radius: 2px; }  /* 内存：橙 */
+#BarCpu::chunk   { background: #9aa0ac;  border-radius: 2px; }  /* CPU：灰 */
+#BarTemp::chunk  { background: #f07f3c;  border-radius: 2px; }  /* 温度：橙红 */
+#BarPower::chunk { background: #9b59b6;  border-radius: 2px; }  /* 功耗：紫 */
+#BarDisk::chunk  { background: #ff6b6b;  border-radius: 2px; }  /* 硬盘：红 */
+
+/* 5) 输入框（下拉 QComboBox 由 style_all.build_combo_qss 全站统一） */
+QLineEdit, QPlainTextEdit, QTextEdit {
+  background: #0e1530;
+  border: 1px solid #2a3965;
+  border-radius: 8px;
+  padding: 6px 10px;
+  selection-background-color: #1f3a8a;
+}
+QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus {
+  border-color: #3b82f6;
+}
+
+/* 路径输入框（速存图文「文件夹」同款：圆角外框 + 左侧 📁）
+   用法：apply_folder_path_edit(line_edit) → pathStyle="folder"
+   选择器写到「祖先 QGroupBox/QFrame + pathStyle」，避免被
+   QGroupBox[titleVariant="accent"] QLineEdit 等更高优先级规则盖住
+   高度：相对普通 QLineEdit（padding 6px）上下各减 3px，整体矮 6px */
+QLineEdit[pathStyle="folder"],
+QGroupBox QLineEdit[pathStyle="folder"],
+QFrame QLineEdit[pathStyle="folder"],
+QGroupBox[titleVariant="accent"] QLineEdit[pathStyle="folder"],
+QFrame[funcCard="1"] QLineEdit[pathStyle="folder"] {
+  background: #0e1530;
+  border: 1px solid #2a3965;
+  border-radius: 8px;
+  padding: 3px 10px;
+  color: #d7def7;
+  font-size: 13px;
+  selection-background-color: #1f3a8a;
+}
+QLineEdit[pathStyle="folder"]:focus,
+QGroupBox QLineEdit[pathStyle="folder"]:focus,
+QFrame QLineEdit[pathStyle="folder"]:focus,
+QGroupBox[titleVariant="accent"] QLineEdit[pathStyle="folder"]:focus,
+QFrame[funcCard="1"] QLineEdit[pathStyle="folder"]:focus {
+  border-color: #6366f1;
+  background: #101a36;
+}
+QLineEdit[pathStyle="folder"]:read-only,
+QGroupBox QLineEdit[pathStyle="folder"]:read-only,
+QFrame QLineEdit[pathStyle="folder"]:read-only,
+QGroupBox[titleVariant="accent"] QLineEdit[pathStyle="folder"]:read-only,
+QFrame[funcCard="1"] QLineEdit[pathStyle="folder"]:read-only {
+  background: #0a1428;
+  color: #9fb0d7;
+}
+/* 6) 滚动条（纵向全站统一：6px 细条 · 上下圆头 · 橙色；横向保留旧样式）--- */
+QScrollBar:vertical {
+  background: transparent;
+  border: none;
+  width: 6px;
+  margin: 2px 0 2px 0;
+}
+QScrollBar::handle:vertical {
+  background: #f0a542;
+  border-radius: 3px;
+  min-height: 24px;
+}
+QScrollBar::handle:vertical:hover {
+  background: #f7bb64;
+}
+QScrollBar::handle:vertical:pressed {
+  background: #dd932f;
+}
+QScrollBar:horizontal {
+  background: transparent;
+  border: none;
+  height: 10px;
+  margin: 0px;
+}
+QScrollBar::handle:horizontal {
+  background: rgba(255,255,255,0.18);
+  border-radius: 5px;
+  min-width: 24px;
+}
+QScrollBar::handle:horizontal:hover {
+  background: rgba(255,255,255,0.30);
+}
+QScrollBar::add-line, QScrollBar::sub-line { height:0; width:0; }
+QScrollBar::add-page, QScrollBar::sub-page { background: none; }
+
+/* ===== SideBar 主菜单：悬停/选中热区更明显；字重/内边距固定防文字闪动 ===== */
+#SideBar QPushButton[kind="side"] {
+  font-size: 13px;
+  font-weight: 600;              /* 各态统一，勿改粗细 */
+  text-align: left;
+  padding: 0 8px 0 6px;          /* 左略收：给彩色图标 + 文案留位 */
+  /* 侧栏行高：与 ui_main._apply_side_nav_metrics 的 setFixedHeight 同步，勿单独改动 */
+  min-height: 26px;
+  max-height: 26px;
+  margin: 4px;                   /* 悬停/选中框四边各收 4px */
+  background: transparent;
+  border: 1px solid transparent; /* 始终占 1px，避免显隐位移 */
+  border-radius: 10px;
+  color: #9fb0d7;
+  outline: none;
+}
+/* 带右侧开关的菜单：右侧多留空（开关约 36px + 边距） */
+#SideBar QPushButton[kind="side"][hasLed="true"] {
+  padding-right: 46px;
+}
+#SideBar QPushButton[kind="side"][hasLed="true"]:hover,
+#SideBar QPushButton[kind="side"][hasLed="true"][active="true"],
+#SideBar QPushButton[kind="side"][hasLed="true"]:checked,
+#SideBar QPushButton[kind="side"][hasLed="true"][active="true"]:hover,
+#SideBar QPushButton[kind="side"][hasLed="true"]:checked:hover,
+#SideBar QPushButton[kind="side"][hasLed="true"]:pressed,
+#SideBar QPushButton[kind="side"][hasLed="true"][dragging="true"] {
+  padding-right: 46px;
+}
+/* 侧栏正方形开关（24px + 边距；配置按钮另见 SideFootBtn[hasPreSlot]） */
+#SideBar QPushButton[kind="side"][hasPreSlot="true"] {
+  padding-right: 36px;
+}
+#SideBar QPushButton[kind="side"][hasPreSlot="true"]:hover,
+#SideBar QPushButton[kind="side"][hasPreSlot="true"][active="true"],
+#SideBar QPushButton[kind="side"][hasPreSlot="true"]:checked,
+#SideBar QPushButton[kind="side"][hasPreSlot="true"][active="true"]:hover,
+#SideBar QPushButton[kind="side"][hasPreSlot="true"]:checked:hover,
+#SideBar QPushButton[kind="side"][hasPreSlot="true"]:pressed,
+#SideBar QPushButton[kind="side"][hasPreSlot="true"][dragging="true"] {
+  padding-right: 36px;
+}
+/* 预下载/批处理条数（无外框，上下叠放，约汉字+两位数字） */
+#SideBar QPushButton[kind="side"][hasPreBadge="true"] {
+  padding-right: 36px;
+}
+#SideBar QPushButton[kind="side"][hasPreBadge="true"]:hover,
+#SideBar QPushButton[kind="side"][hasPreBadge="true"][active="true"],
+#SideBar QPushButton[kind="side"][hasPreBadge="true"]:checked,
+#SideBar QPushButton[kind="side"][hasPreBadge="true"][active="true"]:hover,
+#SideBar QPushButton[kind="side"][hasPreBadge="true"]:checked:hover {
+  padding-right: 36px;
+}
+/* 区域录屏状态圆标（约 12px + 边距） */
+#SideBar QPushButton[kind="side"][hasRecDot="true"] {
+  padding-right: 22px;
+}
+
+#SideBar QPushButton[kind="side"]:hover {
+  background: rgba(255, 255, 255, 0.12);  /* 半透明热区，更明显 */
+  border: 1px solid transparent;
+  color: #e6edff;
+  font-weight: 600;
+  padding: 0 8px 0 6px;
+}
+#SideBar QPushButton[kind="side"][active="true"],
+#SideBar QPushButton[kind="side"]:checked {
+  background: rgba(99, 102, 241, 0.32);   /* 选中热区更明显 */
+  border: 1px solid transparent;
+  color: #c7d2fe;
+  font-weight: 600;                       /* 不加重，防左右闪 */
+  padding: 0 8px 0 6px;
+}
+/* 已选中再悬停：仍保持选中热区，略加深 */
+#SideBar QPushButton[kind="side"][active="true"]:hover,
+#SideBar QPushButton[kind="side"]:checked:hover {
+  background: rgba(99, 102, 241, 0.40);
+  border: 1px solid transparent;
+  color: #e0e7ff;
+  font-weight: 600;
+  padding: 0 8px 0 6px;
+}
+#SideBar QPushButton[kind="side"]:disabled {
+  color: rgba(159,176,215,0.4);
+  background: transparent;
+  border: 1px solid transparent;
+  font-weight: 600;
+  padding: 0 8px;
+}
+#SideBar QPushButton[kind="side"]:pressed {
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid transparent;
+  font-weight: 600;
+  padding: 0 8px;
+}
+/* 拖拽排序中：虚线上框提示，可在任意分区位置放置 */
+#SideBar QPushButton[kind="side"][dragging="true"] {
+  background: rgba(99, 102, 241, 0.22);
+  border: 1px dashed #6366f1;
+  color: #c7d2fe;
+  font-weight: 600;
+  padding: 0 8px 0 6px;
+}
+
+/* v9.9 卡片内嵌标题：由 install_card_title() 插入的 QLabel[role="card-title"] 承担，
+   取代原生标题，视觉上贴近卡片内部正文顶端，外层圆角矩形保持完整不被打断。 */
+QLabel[role="card-title"] {
+  background: transparent;
+  color: #9fb0d7;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0;
+  margin: 0;
+}
+
+/* 绿框：环境信息正文（整段 QLabel/RichText） */
+QGroupBox#CardEnv QLabel,
+QGroupBox#CardEnv QLabel[role="card-body"] {
+  color: #6087BE;   /* 你之前点名的蓝灰；要更灰改 #9AA4B2 */
+}
+
+/* 资源监控：左侧标签与右侧数值，统一透明背景 */
+QGroupBox#CardRes QLabel[role="stat-label"],
+QGroupBox#CardRes QLabel[role="stat-number"] {
+  background: transparent;   /* 关键：透明，去掉你看到的色块 */
+  border: none;               /* 确保没有边框 */
+  padding: 0;                 /* 去内边距，避免看起来像块 */
+  color: #AFC6FF;            /* 保持你现有的颜色（需要更亮可改为 #EAF2FF） */
+  font-weight: 600;
+  font-size: 14px;
+}
+
+/* 操作与安装教程正文（QTextBrowser），与环境信息同色 */
+QGroupBox#CardVer QTextBrowser,
+QGroupBox#CardVer QTextBrowser * {
+  color: #6087BE;
+}
+
+/* ===== FastSave 页面 ===== */
+
+/* 两个分组框：对齐积分计算的 CalcInputBox 样式 */
+/* v9.9：标题已内嵌到卡片内部，margin-top/padding-top 收窄 */
+QGroupBox#CardFastAuto,
+QGroupBox#CardFastManual {
+  background: #0f1430;
+  border: 1px solid #25345c;
+  border-radius: 12px; /* 功能区标准卡 · style_all.CARD_RADIUS */
+  margin-top: 0px;
+  padding-top: 4px;
+}
+QGroupBox#CardFastAuto::title,
+QGroupBox#CardFastManual::title {
+  subcontrol-origin: margin;
+  subcontrol-position: top left;
+  left: 14px;
+  padding: 4px 6px;
+  background: #0f1430;
+  color: #9fb0d7;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* 分组内提示文字：对齐 CalcFieldLabel */
+QGroupBox#CardFastAuto QLabel[typo="muted"],
+QGroupBox#CardFastManual QLabel[typo="muted"] {
+  color: #9fb0d7;
+  font-size: 13px;
+  background: transparent;
+}
+
+/* 复选框文字颜色统一 */
+QGroupBox#CardFastAuto QCheckBox,
+QGroupBox#CardFastManual QCheckBox {
+  color: #cfe0ff;
+  font-size: 14px;
+}
+
+/* 路径标题标签 */
+QLabel[typo="h3"] {
+  color: #cfe0ff;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+/* QComboBox#FastSaveHotkey：外观走全站 build_combo_qss */
+
+/* 日志列表：选中 = 高亮底 + 左侧 4px 橙色竖条（速存图文运行记录） */
+QListWidget#FastSaveList {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #9fb0d7;
+}
+QListWidget#FastSaveList::item,
+QListView#FastSaveList::item {
+  /* 上下各较原先减 3px，行高更紧凑 */
+  padding: 3px 10px 3px 8px;
+  margin: 1px 0;
+  background: transparent;
+  color: #cfe0ff;
+  border: none;
+  border-left: 4px solid transparent;
+  border-radius: 4px;
+}
+QListWidget#FastSaveList::item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-left-color: rgba(240, 165, 66, 0.55);
+}
+QListWidget#FastSaveList::item:selected,
+QListWidget#FastSaveList::item:selected:active,
+QListWidget#FastSaveList::item:selected:!active {
+  background: rgba(240, 165, 66, 0.16);
+  border-left: 4px solid #f0a542;
+  color: #eef4ff;
+}
+
+/* 滚动条尺寸固定 */
+QScrollBar:vertical { width: 6px; }
+QScrollBar:horizontal { height: 10px; }
+QScrollBar::handle { min-height: 24px; }
+
+/* ===== Screenshot 页面（page_screenshot.py，v9.9.5 标准改造）===== */
+/* 5 张卡片统一外观：背景/边框/圆角，标题已内嵌（install_card_title），margin-top 收为 0 */
+QGroupBox#CardShotEnable,
+QGroupBox#CardShotHotkey,
+QGroupBox#CardShotOutput,
+QGroupBox#CardShotLog,
+QGroupBox#CardShotPreview {
+  background: #0f1430;
+  border: 1px solid #25345c;
+  border-radius: 12px; /* 功能区标准卡 · style_all.CARD_RADIUS */
+  margin-top: 0px;
+}
+/* 截图工具记录区：对齐速存图文（橙条选中 + 紧凑行高 + simple 顶虚线） */
+QListWidget#ShotList {
+  background: transparent;
+  border: none;
+  outline: none;
+  color: #9fb0d7;
+  font-size: 14px;
+}
+QListWidget#ShotList::item {
+  padding: 3px 10px 3px 8px;
+  margin: 1px 0;
+  background: transparent;
+  color: #cfe0ff;
+  border: none;
+  border-left: 4px solid transparent;
+  border-radius: 4px;
+}
+QListWidget#ShotList::item:hover {
+  background: rgba(255, 255, 255, 0.06);
+  border-left-color: rgba(240, 165, 66, 0.55);
+}
+QListWidget#ShotList::item:selected,
+QListWidget#ShotList::item:selected:active,
+QListWidget#ShotList::item:selected:!active {
+  background: rgba(240, 165, 66, 0.16);
+  border-left: 4px solid #f0a542;
+  color: #eef4ff;
+}
+
+/* ===== 通用可复用属性选择器（v9.9.4 新增，供各页面按需 setProperty 使用）=====
+   用法统一：widget.setProperty("xxx", "yyy"); widget.style().unpolish(widget); widget.style().polish(widget) */
+
+/* 记录/日志类 QListWidget：只保留上边一条虚线，背景透明，滚动条加宽好点击
+   用法：list_widget.setProperty("recordStyle", "dashed") */
+QListWidget[recordStyle="dashed"] {
+  background: transparent;
+  border: none;
+  border-top: 1px dashed #25345c;
+  border-radius: 0px;
+  color: #9fb0d7;
+}
+QListWidget[recordStyle="dashed"]::item {
+  background: transparent;
+  border: none;
+  padding: 2px 4px;
+  margin: 0px;
+  color: #cfe0ff;
+}
+QListWidget[recordStyle="dashed"]::item:hover {
+  background: rgba(255,255,255,0.04);
+}
+QListWidget[recordStyle="dashed"]::item:selected {
+  background: rgba(59,130,246,0.12);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   【简易记录 · recordStyle=simple】速存图文「运行记录」列表区同款
+   ───────────────────────────────────────────────────────────────
+   外观：仅顶部一条虚线 + 透明底 + 记录区标准滚动条
+         （圆角外框由外层 make_card 功能区标准卡承担，勿在列表上再画四边）
+   字号：不强制
+   用法：apply_simple_record(list_or_textedit)
+   ═══════════════════════════════════════════════════════════════ */
+QListWidget[recordStyle="simple"],
+QTextEdit[recordStyle="simple"],
+QTextEdit#DouyinLogBox[recordStyle="simple"],
+QFrame QListWidget[recordStyle="simple"],
+QFrame QTextEdit[recordStyle="simple"],
+QFrame[funcCard="1"] QListWidget[recordStyle="simple"],
+QFrame[funcCard="1"] QTextEdit[recordStyle="simple"],
+QFrame[funcCard="1"] QTextEdit#DouyinLogBox[recordStyle="simple"] {
+  background: transparent;
+  border: none;
+  border-top: 1px dashed #25345c;
+  border-radius: 0px;
+  padding: 4px 2px 2px 2px;
+  color: #9fb0d7;
+  /* 故意不写 font-size */
+}
+QListWidget[recordStyle="simple"]::item {
+  background: transparent;
+  border: none;
+  border-left: 4px solid transparent;
+  border-radius: 4px;
+  padding: 5px 8px 5px 6px;
+  margin: 1px 0;
+  color: #cfe0ff;
+}
+QListWidget[recordStyle="simple"]::item:hover {
+  background: rgba(255,255,255,0.06);
+  border-left-color: rgba(240, 165, 66, 0.55);
+}
+QListWidget[recordStyle="simple"]::item:selected,
+QListWidget[recordStyle="simple"]::item:selected:active,
+QListWidget[recordStyle="simple"]::item:selected:!active {
+  background: rgba(240, 165, 66, 0.16);
+  border-left: 4px solid #f0a542;
+  color: #eef4ff;
+}
+/* 语音克隆记录行：收紧上下 padding，保留选中左边橙色条 */
+QListWidget#VoiceCloneRecords::item {
+  padding: 2px 6px 0px 6px;
+  margin: 0px;
+}
+QTextEdit[recordStyle="simple"],
+QTextEdit#DouyinLogBox[recordStyle="simple"] {
+  selection-background-color: #1f3a8a;
+  selection-color: #e6edff;
+}
+
+/* ── 【记录区竖向滚动条标准】来源：截图工具「截图与操作记录」
+   特征：与全局统一——宽 6px、透明轨道、橙色圆头滑块(min 28px)、无上下箭头
+   （颜色/宽度全站一致，此处仅确保记录区命中同款样式；见 app_light.qss）
+   适用：
+     · QListWidget[recordStyle="dashed"|"simple"]  截图/速存/简易记录
+     · QTextEdit[recordStyle="simple"]             简易记录（含抖音运行日志）
+     · QTextEdit#PasteContentEdit            粘贴助手「内容」
+     · QTextBrowser#OverviewVerBrowser       系统总览「操作与安装教程」
+     · QScrollArea#RecordsScroll             积分计算「历史记录」
+     · QScrollArea#VoiceRecordsScroll        语音编辑「转写结果」
+     · QTextEdit#DouyinLogBox                抖音下载「运行日志」（兼容旧 objectName）
+     · QScrollArea#TzClockScroll             时区汇率「世界时钟」城市区
+   ── */
+QListWidget[recordStyle="dashed"] QScrollBar:vertical,
+QListWidget[recordStyle="simple"] QScrollBar:vertical,
+QTextEdit[recordStyle="simple"] QScrollBar:vertical,
+QTextEdit#PasteContentEdit QScrollBar:vertical,
+QTextBrowser#OverviewVerBrowser QScrollBar:vertical,
+QScrollArea#RecordsScroll QScrollBar:vertical,
+QScrollArea#VoiceRecordsScroll QScrollBar:vertical,
+QTextEdit#DouyinLogBox QScrollBar:vertical,
+QScrollArea#TzClockScroll QScrollBar:vertical {
+  background: transparent;
+  width: 6px;
+  margin: 2px 0 2px 0;
+}
+QListWidget[recordStyle="dashed"] QScrollBar::handle:vertical,
+QListWidget[recordStyle="simple"] QScrollBar::handle:vertical,
+QTextEdit[recordStyle="simple"] QScrollBar::handle:vertical,
+QTextEdit#PasteContentEdit QScrollBar::handle:vertical,
+QTextBrowser#OverviewVerBrowser QScrollBar::handle:vertical,
+QScrollArea#RecordsScroll QScrollBar::handle:vertical,
+QScrollArea#VoiceRecordsScroll QScrollBar::handle:vertical,
+QTextEdit#DouyinLogBox QScrollBar::handle:vertical,
+QScrollArea#TzClockScroll QScrollBar::handle:vertical {
+  background: #f0a542;
+  border-radius: 3px;
+  min-height: 28px;
+}
+QListWidget[recordStyle="dashed"] QScrollBar::handle:vertical:hover,
+QListWidget[recordStyle="simple"] QScrollBar::handle:vertical:hover,
+QTextEdit[recordStyle="simple"] QScrollBar::handle:vertical:hover,
+QTextEdit#PasteContentEdit QScrollBar::handle:vertical:hover,
+QTextBrowser#OverviewVerBrowser QScrollBar::handle:vertical:hover,
+QScrollArea#RecordsScroll QScrollBar::handle:vertical:hover,
+QScrollArea#VoiceRecordsScroll QScrollBar::handle:vertical:hover,
+QTextEdit#DouyinLogBox QScrollBar::handle:vertical:hover,
+QScrollArea#TzClockScroll QScrollBar::handle:vertical:hover {
+  background: #f7bb64;
+}
+QListWidget[recordStyle="dashed"] QScrollBar::add-line:vertical,
+QListWidget[recordStyle="dashed"] QScrollBar::sub-line:vertical,
+QListWidget[recordStyle="simple"] QScrollBar::add-line:vertical,
+QListWidget[recordStyle="simple"] QScrollBar::sub-line:vertical,
+QTextEdit[recordStyle="simple"] QScrollBar::add-line:vertical,
+QTextEdit[recordStyle="simple"] QScrollBar::sub-line:vertical,
+QTextEdit#PasteContentEdit QScrollBar::add-line:vertical,
+QTextEdit#PasteContentEdit QScrollBar::sub-line:vertical,
+QTextBrowser#OverviewVerBrowser QScrollBar::add-line:vertical,
+QTextBrowser#OverviewVerBrowser QScrollBar::sub-line:vertical,
+QScrollArea#RecordsScroll QScrollBar::add-line:vertical,
+QScrollArea#RecordsScroll QScrollBar::sub-line:vertical,
+QScrollArea#VoiceRecordsScroll QScrollBar::add-line:vertical,
+QScrollArea#VoiceRecordsScroll QScrollBar::sub-line:vertical,
+QTextEdit#DouyinLogBox QScrollBar::add-line:vertical,
+QTextEdit#DouyinLogBox QScrollBar::sub-line:vertical,
+QScrollArea#TzClockScroll QScrollBar::add-line:vertical,
+QScrollArea#TzClockScroll QScrollBar::sub-line:vertical {
+  height: 0px; background: none; border: none;
+}
+QListWidget[recordStyle="dashed"] QScrollBar::add-page:vertical,
+QListWidget[recordStyle="dashed"] QScrollBar::sub-page:vertical,
+QListWidget[recordStyle="simple"] QScrollBar::add-page:vertical,
+QListWidget[recordStyle="simple"] QScrollBar::sub-page:vertical,
+QTextEdit[recordStyle="simple"] QScrollBar::add-page:vertical,
+QTextEdit[recordStyle="simple"] QScrollBar::sub-page:vertical,
+QTextEdit#PasteContentEdit QScrollBar::add-page:vertical,
+QTextEdit#PasteContentEdit QScrollBar::sub-page:vertical,
+QTextBrowser#OverviewVerBrowser QScrollBar::add-page:vertical,
+QTextBrowser#OverviewVerBrowser QScrollBar::sub-page:vertical,
+QScrollArea#RecordsScroll QScrollBar::add-page:vertical,
+QScrollArea#RecordsScroll QScrollBar::sub-page:vertical,
+QScrollArea#VoiceRecordsScroll QScrollBar::add-page:vertical,
+QScrollArea#VoiceRecordsScroll QScrollBar::sub-page:vertical,
+QTextEdit#DouyinLogBox QScrollBar::add-page:vertical,
+QTextEdit#DouyinLogBox QScrollBar::sub-page:vertical,
+QScrollArea#TzClockScroll QScrollBar::add-page:vertical,
+QScrollArea#TzClockScroll QScrollBar::sub-page:vertical {
+  background: none;
+}
+/* 记录字号档位：默认沿用普通字号，需要放大时叠加 recordSize="lg"
+   用法：list_widget.setProperty("recordSize", "lg") */
+QListWidget[recordStyle="dashed"][recordSize="lg"] {
+  font-size: 17px;
+}
+
+/* 轻量文字输入框：无边框，只保留下边一条虚线
+   用法：line_edit.setProperty("inputStyle", "underline")
+   （速存图文等共用） */
+QLineEdit[inputStyle="underline"] {
+  background: transparent;
+  border: none;
+  border-radius: 0px;
+  border-bottom: 1px dashed #25345c;
+  padding: 2px 2px;
+}
+QLineEdit[inputStyle="underline"]:focus {
+  border-bottom-color: #3b82f6;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   【小按钮 · kind=mini】速存图文「安装」同款，全站复用
+   ───────────────────────────────────────────────────────────────
+   用法（推荐）：
+     from styles.style_all import apply_mini_button
+     apply_mini_button(btn)          # 或 btn.setProperty("kind", "mini") 后 polish
+   尺寸：高 22 · 左右 pad 8 · 字 12/700 · 圆角 6（比普通按钮矮一截、更利落）
+   配色：与全局 QPushButton 同系，但尺寸/字重单独钉死，避免被卡片内级联冲掉
+   ═══════════════════════════════════════════════════════════════ */
+QPushButton[kind="mini"],
+QGroupBox QPushButton[kind="mini"],
+QFrame QPushButton[kind="mini"],
+QGroupBox[titleVariant="accent"] QPushButton[kind="mini"],
+QFrame[funcCard="1"] QPushButton[kind="mini"] {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.42);
+  color: #cfe0ff;
+  padding: 0 8px;
+  min-height: 22px;
+  max-height: 22px;
+  min-width: 26px;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 6px;
+}
+QPushButton[kind="mini"]:hover,
+QGroupBox QPushButton[kind="mini"]:hover,
+QFrame QPushButton[kind="mini"]:hover,
+QGroupBox[titleVariant="accent"] QPushButton[kind="mini"]:hover,
+QFrame[funcCard="1"] QPushButton[kind="mini"]:hover {
+  background: rgba(255,255,255,0.10);
+  border-color: rgba(255,255,255,0.30);
+  color: #e6edff;
+}
+QPushButton[kind="mini"]:pressed,
+QGroupBox QPushButton[kind="mini"]:pressed,
+QFrame QPushButton[kind="mini"]:pressed,
+QGroupBox[titleVariant="accent"] QPushButton[kind="mini"]:pressed,
+QFrame[funcCard="1"] QPushButton[kind="mini"]:pressed {
+  background: rgba(255,255,255,0.14);
+  border-color: rgba(255,255,255,0.40);
+}
+/* 积分计算 · 汇率刷新：与 CNY/USD 同高 28（QSS 高宽是内容盒，26+边框1×2=28） */
+QPushButton#RateRefreshBtn {
+  min-width: 26px;
+  max-width: 26px;
+  min-height: 26px;
+  max-height: 26px;
+  padding: 0;
+  font-size: 14px;
+}
+
+QPushButton[kind="mini"]:disabled,
+QGroupBox QPushButton[kind="mini"]:disabled,
+QFrame QPushButton[kind="mini"]:disabled,
+QGroupBox[titleVariant="accent"] QPushButton[kind="mini"]:disabled,
+QFrame[funcCard="1"] QPushButton[kind="mini"]:disabled {
+  color: rgba(207,224,255,0.45);
+  background: rgba(255,255,255,0.04);
+  border-color: rgba(255,255,255,0.10);
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   【中按钮 · kind=medium】与「文件夹路径」框同高 29px，全站复用
+   ───────────────────────────────────────────────────────────────
+   用法（推荐）：
+     from styles.style_all import apply_medium_button
+     apply_medium_button(btn)
+   尺寸：高 29 · 左右 pad 12 · 字 13/600 · 圆角 7
+   对照：小按钮 mini=22 · 中按钮 medium=29（对齐 pathStyle=folder）
+   典型：速存图文「另选目录」、与路径框同排的操作键
+   ═══════════════════════════════════════════════════════════════ */
+QPushButton[kind="medium"],
+QGroupBox QPushButton[kind="medium"],
+QFrame QPushButton[kind="medium"],
+QGroupBox[titleVariant="accent"] QPushButton[kind="medium"],
+QFrame[funcCard="1"] QPushButton[kind="medium"] {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.22);
+  color: #cfe0ff;
+  padding: 0 12px;
+  /* QSS 高度不含 1px 上下边框：27 + 2 = 实测 29，与 pathStyle=folder 齐平 */
+  min-height: 27px;
+  max-height: 27px;
+  min-width: 0px;
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 7px;
+}
+QPushButton[kind="medium"]:hover,
+QGroupBox QPushButton[kind="medium"]:hover,
+QFrame QPushButton[kind="medium"]:hover,
+QGroupBox[titleVariant="accent"] QPushButton[kind="medium"]:hover,
+QFrame[funcCard="1"] QPushButton[kind="medium"]:hover {
+  background: rgba(255,255,255,0.10);
+  border-color: rgba(255,255,255,0.30);
+  color: #e6edff;
+}
+QPushButton[kind="medium"]:pressed,
+QGroupBox QPushButton[kind="medium"]:pressed,
+QFrame QPushButton[kind="medium"]:pressed,
+QGroupBox[titleVariant="accent"] QPushButton[kind="medium"]:pressed,
+QFrame[funcCard="1"] QPushButton[kind="medium"]:pressed {
+  background: rgba(255,255,255,0.14);
+  border-color: rgba(255,255,255,0.40);
+}
+QPushButton[kind="medium"]:disabled,
+QGroupBox QPushButton[kind="medium"]:disabled,
+QFrame QPushButton[kind="medium"]:disabled,
+QGroupBox[titleVariant="accent"] QPushButton[kind="medium"]:disabled,
+QFrame[funcCard="1"] QPushButton[kind="medium"]:disabled {
+  color: rgba(207,224,255,0.45);
+  background: rgba(255,255,255,0.04);
+  border-color: rgba(255,255,255,0.10);
+}
+
+/* 配置页：按钮字号相对全站 +2（mini 12→14 · medium 13→15） */
+#AboutScroll QPushButton[kind="mini"],
+#AboutScroll QFrame[funcCard="1"] QPushButton[kind="mini"] {
+  font-size: 14px;
+  min-height: 24px;
+  max-height: 24px;
+}
+#AboutScroll QPushButton[kind="medium"],
+#AboutScroll QFrame[funcCard="1"] QPushButton[kind="medium"] {
+  font-size: 15px;
+}
+#AboutScroll QLineEdit {
+  font-size: 16px;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   【活按钮 · kind=live】宽度随布局伸缩，全站复用
+   ───────────────────────────────────────────────────────────────
+   用法（推荐）：
+     from styles.style_all import apply_live_button
+     btn = apply_live_button(QPushButton("立即计算"))
+     row.addWidget(btn, 1)   # stretch≥1 才能吃剩余宽度
+   尺寸：高约 28 · 左右 pad 12 · 字 13/600 · 圆角 7
+   宽度：不设固定宽；min-width 仅兜底短文案；靠布局 stretch「活」起来
+   典型：积分计算「立即计算 / 重新计算」
+   ═══════════════════════════════════════════════════════════════ */
+QPushButton[kind="live"],
+QGroupBox QPushButton[kind="live"],
+QFrame QPushButton[kind="live"],
+QGroupBox[titleVariant="accent"] QPushButton[kind="live"],
+QFrame[funcCard="1"] QPushButton[kind="live"] {
+  background: rgba(99, 102, 241, 0.22);
+  border: 1px solid rgba(165, 180, 252, 0.55);
+  color: #e0e7ff;
+  padding: 0 12px;
+  min-height: 26px;
+  max-height: 26px;
+  min-width: 72px;
+  /* 不写 max-width：默认即可横向撑满；写 16777215 会触发 Qt 告警 */
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 7px;
+}
+QPushButton[kind="live"]:hover,
+QGroupBox QPushButton[kind="live"]:hover,
+QFrame QPushButton[kind="live"]:hover,
+QGroupBox[titleVariant="accent"] QPushButton[kind="live"]:hover,
+QFrame[funcCard="1"] QPushButton[kind="live"]:hover {
+  background: rgba(99, 102, 241, 0.34);
+  border-color: rgba(199, 210, 254, 0.85);
+  color: #ffffff;
+}
+QPushButton[kind="live"]:pressed,
+QGroupBox QPushButton[kind="live"]:pressed,
+QFrame QPushButton[kind="live"]:pressed,
+QGroupBox[titleVariant="accent"] QPushButton[kind="live"]:pressed,
+QFrame[funcCard="1"] QPushButton[kind="live"]:pressed {
+  background: rgba(79, 70, 229, 0.42);
+  border-color: rgba(165, 180, 252, 0.95);
+}
+QPushButton[kind="live"]:disabled,
+QGroupBox QPushButton[kind="live"]:disabled,
+QFrame QPushButton[kind="live"]:disabled,
+QGroupBox[titleVariant="accent"] QPushButton[kind="live"]:disabled,
+QFrame[funcCard="1"] QPushButton[kind="live"]:disabled {
+  color: rgba(207,224,255,0.45);
+  background: rgba(255,255,255,0.04);
+  border-color: rgba(255,255,255,0.10);
+}
+
+/* 提示文字（typo="muted"）：原规则要求外层是 QGroupBox#CardFastAuto/Manual，
+   v9.9 迁移到 QFrame 卡片（make_card）后不再匹配，这里补一条不限外层类型的通用规则 */
+QLabel[typo="muted"] {
+  color: #9fb0d7;
+  font-size: 13px;
+  background: transparent;
+}
+
+/* 可选兜底：保证 CardVer 内的文本浏览器永远透明无框 */
+QGroupBox#CardVer QTextBrowser { background: transparent; border: none; }
+
+/* ===== 通用 GroupBox 标准样式（与积分计算对齐）=================== */
+/* 用法：QGroupBox.setProperty("titleVariant","accent") */
+/* v9.9：标题已内嵌到卡片内部（install_card_title），margin-top/padding-top 收窄 */
+QGroupBox[titleVariant="accent"] {
+    background: #0f1430;
+    border: 1px solid #25345c;
+    border-radius: 12px; /* 功能区标准卡 · style_all.CARD_RADIUS */
+    margin-top: 0px;
+    padding-top: 4px;
+    font-size: 14px;
+}
+QGroupBox[titleVariant="accent"]::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 14px;
+    padding: 4px 6px;
+    background: #0f1430;
+    color: #9fb0d7;
+    font-size: 12px;
+    font-weight: 600;
+}
+/* 组内控件统一字号，不跟随 GroupBox 本体字号 */
+QGroupBox[titleVariant="accent"] * {
+    font-size: 14px;
+}
+/* 组内 QLabel 透明背景 */
+QGroupBox[titleVariant="accent"] QLabel {
+    background: transparent;
+    color: #cfe0ff;
+}
+/* 组内输入框对齐全局规则；下拉走全站 build_combo_qss */
+QGroupBox[titleVariant="accent"] QLineEdit {
+    background: #0e1530;
+    border: 1px solid #2a3965;
+    border-radius: 6px;
+    padding: 4px 8px;
+    color: #e8eaf0;
+    font-size: 14px;
+}
+QGroupBox[titleVariant="accent"] QLineEdit:focus {
+    border-color: #3b82f6;
+}
+/* 组内复选框 */
+QGroupBox[titleVariant="accent"] QCheckBox {
+    color: #cfe0ff;
+    background: transparent;
+    font-size: 14px;
+}
+/* 组内列表 */
+QGroupBox[titleVariant="accent"] QListWidget {
+    background: #0b1124;
+    border: 1px solid #25345c;
+    border-radius: 6px;
+    color: #9fb0d7;
+}
+/* 组内进度条轨道 */
+QGroupBox[titleVariant="accent"] QProgressBar {
+    background: #222a45;
+    border: 1px solid #3a4670;
+    border-radius: 4px;
+}
+
+/* 反推页面：模式选择的单选项 —— 字号比正文小2px、用浅绿色 */
+QGroupBox#RevModeBox QRadioButton {
+  /* 正文是 16px，这里设 14px（小2px） */
+  font-size: 14px;                  /* 中文注释：比正文小2px */
+  color: #34D399;                   /* 中文注释：浅绿色（emerald-400），暗底可读 */
+}
+
+/* 可选：选中时稍微亮一点（保留风格统一） */
+QGroupBox#RevModeBox QRadioButton::indicator:checked {
+  /* 仅示意，如果你已有全局radio样式，可不加 */
+}
+
+/* 反推页：图片信息分组内的文本，比正文小 2px（正文 16px -> 14px） */
+QGroupBox#RevImageInfo QLabel {
+  font-size: 14px;            /* 中文：小 2 号 */
+}
+/* ═══════════════════════════════════════════════════════════════
+   积分计算页  page_points_calc.py
+   ═══════════════════════════════════════════════════════════════ */
+
+/* GroupBox 容器 */
+/* v9.9：标题已内嵌到卡片内部，margin-top/padding-top 收窄 */
+/* v9.9.5：输入参数 + 计算结果 合并为一个区域（CalcTopBox），中间用竖线分隔 */
+QGroupBox#CalcTopBox,
+QGroupBox#RecordsBox {
+    background: #0f1430;
+    border: 1px solid #25345c;
+    border-radius: 12px; /* 功能区标准卡 · style_all.CARD_RADIUS */
+    margin-top: 0px;
+    padding-top: 4px;
+}
+QGroupBox#CalcTopBox::title,
+QGroupBox#RecordsBox::title {
+    subcontrol-origin: margin;
+    subcontrol-position: top left;
+    left: 14px;
+    padding: 4px 6px;
+    background: #0f1430;
+    color: #9fb0d7;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+/* 输入参数／计算结果 之间的竖直分隔线：低对比度，不抢视觉重心 */
+QFrame#CalcTopDivider {
+    color: #25345c;
+    background: #25345c;
+    max-width: 1px;
+    min-width: 1px;
+}
+
+/* ═══════════════════════════════════════════════════════════════
+   比例计算页  page_ratio_calc.py（实用工具子页：无内层套框，虚线分区）
+   ═══════════════════════════════════════════════════════════════ */
+/* 横/竖 3px 实线分隔（主题切换时 page 内联重刷 color；此处作暗色兜底） */
+QFrame#RatioHSep,
+QFrame#RatioDashSep,
+QFrame#RatioSep {
+    background: #25345c;
+    border: none;
+    max-height: 3px;
+    min-height: 3px;
+}
+QFrame#RatioVSep {
+    background: #25345c;
+    border: none;
+    max-width: 3px;
+    min-width: 3px;
+}
+
+/* 输入框（objectName="CalcInput"，不污染全局） */
+QLineEdit#CalcInput {
+    background: #0e1530;
+    border: 1px solid #2a3965;
+    border-radius: 6px;
+    padding: 4px 10px;
+    color: #e8eaf0;
+    font-size: 13px;
+    selection-background-color: #1f3a8a;
+}
+QLineEdit#CalcInput:focus {
+    border-color: #3b82f6;
+}
+
+/* QComboBox#CalcCombo：外观走全站 build_combo_qss */
+
+/* ToggleBtn 选中反色由 page_points_calc.py 控件级样式负责
+  （全局 *{color} 会盖掉 QSS :checked 字色，导致浅底浅字“字消失”） */
+
+/* 立即计算（objectName="PrimaryCalcBtn"） */
+QPushButton#PrimaryCalcBtn {
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 #3a6bc4, stop:1 #5586e0);
+    border: none;
+    border-radius: 8px;
+    padding: 10px 0;
+    color: #ffffff;
+    font-size: 15px;
+    font-weight: 700;
+}
+QPushButton#PrimaryCalcBtn:hover {
+    background: qlineargradient(x1:0,y1:0,x2:1,y2:0,
+                    stop:0 #4a7bd4, stop:1 #6596f0);
+}
+QPushButton#PrimaryCalcBtn:pressed { background: #2d5ab0; }
+
+/* 旧 SaveBtn：主保存已改用 #BtnDownload。保留规则以免其它引用崩样式。
+   注意：padding:9px + 矮 fixedHeight 会裁字，新代码勿再套这套。 */
+QPushButton#SaveBtn {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 8px;
+    padding: 6px 12px;
+    min-height: 36px;
+    color: rgba(207,224,255,0.45);
+    font-size: 14px;
+    font-weight: 600;
+}
+QPushButton#SaveBtn:enabled {
+    background: rgba(60,180,120,0.15);
+    border-color: rgba(60,180,120,0.45);
+    color: #6ddba8;
+}
+QPushButton#SaveBtn:enabled:hover  { background: rgba(60,180,120,0.22); }
+QPushButton#SaveBtn:enabled:pressed{ background: rgba(60,180,120,0.10); }
+
+/* 结果指标卡（精准命中 QFrame，不会污染其他 QWidget） */
+QFrame#MetricCard {
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid #25345c;
+    border-radius: 0;
+}
+QFrame#MetricCard QLabel#MetricLabel {
+    background: transparent;
+    color: #9fb0d7;
+    font-size: 12px;
+}
+QFrame#MetricCard QLabel#MetricValue {
+    background: transparent;
+    color: #cfe0ff;
+    font-size: 18px;
+    font-weight: 700;
+}
+/* 积分计算 · 单支视频在「生图」时灰显占位 */
+QFrame#MetricCard[muted="true"] QLabel#MetricLabel {
+    color: rgba(159, 176, 215, 0.38);
+}
+QFrame#MetricCard[muted="true"] QLabel#MetricValue {
+    color: rgba(207, 224, 255, 0.32);
+    font-weight: 600;
+}
+
+/* 提示文字（积分计算：与「输入参数」标题同行；字号 12） */
+QLabel#ResultHint {
+    color: rgba(255,200,100,0.85);
+    font-size: 12px;
+}
+
+/* 粘贴助手录入区提示：置顶，字号比 ResultHint 大 1 码 */
+QLabel#PasteFormHint {
+    color: rgba(255,200,100,0.90);
+    font-size: 14px;
+    font-weight: 600;
+    background: transparent;
+}
+
+/* 记录滚动区（含 viewport 子控件）：透明，露出 RecordsBox 功能区底色 */
+QScrollArea#RecordsScroll { background: transparent; border: none; }
+QScrollArea#RecordsScroll > QWidget > QWidget { background: transparent; }
+QWidget#RecordsContainer  { background: transparent; }
+
+/* 记录卡片：默认无边框无底色；热区（悬浮）只在最左侧出现一条橙线；
+   编辑态（正在被编辑的那一行）加整圈橙色外框，保存后消失 */
+QFrame#RecordCard {
+    background: transparent;
+    /* 四边宽度固定：选中只改颜色，避免文字左右挪 */
+    border-top: 1px solid transparent;
+    border-right: 1px solid transparent;
+    border-bottom: 1px solid transparent;
+    border-left: 3px solid transparent;
+    border-radius: 4px;
+}
+/* 双数行斑马纹（暗色：微亮；主逻辑在 Python 控件级样式，此处作兜底） */
+QFrame#RecordCard[alt="true"],
+QFrame#RecordCardAlt {
+    background-color: rgba(255, 255, 255, 0.07);
+}
+QFrame#RecordCard:hover {
+    border-left-color: #f0a542;
+}
+QFrame#RecordCard[editing="true"] {
+    border-top-color: #f0a542;
+    border-right-color: #f0a542;
+    border-bottom-color: #f0a542;
+    border-left-color: #f0a542;
+    border-radius: 6px;
+}
+QLabel#RecordName   { font-size:15px; font-weight:700; color:#cfe0ff; }
+QLabel#RecordDate   { font-size:12px; color:#9fb0d7; }
+QLabel#RecordSub    { font-size:13px; color:#9fb0d7; }
+QLabel#RecordResult { font-size:13px; color:#afc6ff; }
+QLabel#RecordEmpty  { color:#9fb0d7; font-size:14px; padding:40px 0; }
+
+/* 编辑 / 删除按钮 */
+QPushButton#RecordEditBtn {
+    background: rgba(59,130,246,0.12);
+    border: 1px solid rgba(59,130,246,0.35);
+    border-radius: 5px;
+    color: #afc6ff;
+    font-size: 13px;
+    padding: 4px 0;
+    font-weight: 600;
+}
+QPushButton#RecordEditBtn:hover { background: rgba(59,130,246,0.22); }
+/* 粘贴助手：编辑态「复制」（高度由页面 setFixedHeight 与更新/删除对齐） */
+QPushButton#RecordCopyBtn {
+    background: rgba(59,130,246,0.12);
+    border: 1px solid rgba(59,130,246,0.35);
+    border-radius: 5px;
+    color: #afc6ff;
+    font-size: 13px;
+    padding: 0 8px;
+    font-weight: 600;
+}
+QPushButton#RecordCopyBtn:hover { background: rgba(59,130,246,0.22); }
+
+/* 粘贴助手 · 快速输入（语音） */
+QPushButton#PasteVoiceBtn {
+    background: rgba(20, 184, 166, 0.16);
+    border: 1px solid rgba(20, 184, 166, 0.45);
+    border-radius: 5px;
+    color: #5eead4;
+    font-size: 13px;
+    font-weight: 600;
+    padding: 0 8px;
+}
+QPushButton#PasteVoiceBtn:hover {
+    background: rgba(20, 184, 166, 0.28);
+}
+QPushButton#PasteVoiceBtn[recording="true"] {
+    background: rgba(239, 68, 68, 0.22);
+    border: 1px solid rgba(239, 68, 68, 0.55);
+    color: #fca5a5;
+}
+QPushButton#PasteVoiceBtn[recording="true"]:hover {
+    background: rgba(239, 68, 68, 0.32);
+}
+QPushButton#PasteVoiceBtn:disabled {
+    color: rgba(148, 163, 184, 0.55);
+    border-color: rgba(148, 163, 184, 0.25);
+    background: rgba(148, 163, 184, 0.08);
+}
+
+QPushButton#RecordDelBtn {
+    background: rgba(255,80,80,0.10);
+    border: 1px solid rgba(255,80,80,0.28);
+    border-radius: 5px;
+    color: #ff9a9a;
+    font-size: 13px;
+    padding: 4px 0;
+    font-weight: 600;
+}
+QPushButton#RecordDelBtn:hover { background: rgba(255,80,80,0.20); }
+
+/* 复制（编辑态下替换删除按钮） */
+QPushButton#RecordCopyBtn {
+    background: rgba(240,165,66,0.14);
+    border: 1px solid rgba(240,165,66,0.45);
+    border-radius: 5px;
+    color: #f0a542;
+    font-size: 13px;
+    padding: 4px 0;
+    font-weight: 600;
+    min-width: 0;
+}
+QPushButton#RecordCopyBtn:hover { background: rgba(240,165,66,0.24); }
+
+/* 积分计算页：字段标签 */
+QLabel#CalcFieldLabel {
+    color: #9fb0d7;
+    font-size: 13px;
+}
+
+/* 记录表头 */
+QWidget#RecordHeader {
+    background: rgba(255,255,255,0.03);
+    border-bottom: 1px solid #25345c;
+}
+QLabel#RecordHeaderCell {
+    color: #9fb0d7;
+    font-size: 12px;
+    font-weight: 600;
+}
+/* 表头首列：图标 + 分区名（生图记录/生视频记录），替代原来的独立小标题行 */
+QLabel#RecordSectionHeaderCell {
+    color: #9fb0d7;
+    font-size: 13px;
+    font-weight: 700;
+}
+/* 表头下分隔线 */
+QFrame#RecordDivider {
+    color: #25345c;
+    background: #25345c;
+    max-height: 1px;
+}
+
+/* 视频时长步进按钮 */
+QPushButton#StepperBtn {
+    font-size: 10px;
+    padding: 0px;
+    min-width: 26px;
+}
+
+/* 秒数显示标签 */
+QLabel#SecsDisplay {
+    border: 1px solid #3a4a6a;
+    border-radius: 4px;
+    font-weight: 600;
+}
+QLabel#SecsDisplay:disabled {
+    color: rgba(128,128,128,0.55);
+    border: 1px solid #3a4a6a;
+}
+
+/* 计算/重新计算按钮（独立命名，不被其他样式挤压） */
+QPushButton#CalcRunBtn {
+    font-size: 13px;
+    font-weight: 600;
+    padding: 0 12px;
+    min-width: 90px;
+}
+
+
+
+
+
+
+/* ===== 侧边栏勾选开关 LED（14px + 1px 边，避免 16/1.5 亚像素裁切发糊） ===== */
+#SideBar QPushButton#SideLed,
+QPushButton#SideLed {
+    background: rgba(15, 20, 48, 0.72);
+    border: 1px solid rgba(255,255,255,0.42);
+    border-radius: 4px;
+    min-width: 14px;
+    max-width: 14px;
+    min-height: 14px;
+    max-height: 14px;
+    padding: 0px;
+    margin: 0px;
+    color: transparent;
+    font-size: 9px;
+    font-weight: 700;
+    /* 勾心居中，减少左侧被圆角/边框吃掉 1～2px 的观感 */
+    qproperty-iconSize: 0px;
+}
+#SideBar QPushButton#SideLed:checked,
+QPushButton#SideLed:checked {
+    background: rgba(99,102,241,0.38);
+    border-color: rgba(165,180,252,0.95);
+    color: #c7d2fe;
+}
+#SideBar QPushButton#SideLed:hover:!checked,
+QPushButton#SideLed:hover:!checked {
+    border-color: rgba(255,255,255,0.65);
+    background: rgba(255,255,255,0.12);
+}
+
+/* 进度条 */
+QProgressBar {
+    background: #0e1530;
+    border: 1px solid #2a3965;
+    border-radius: 6px;
+    height: 12px;
+    text-align: center;
+    color: #d7def7;
+    font-size: 12px;
+}
+QProgressBar::chunk {
+    background: #3b82f6;
+    border-radius: 5px;
+}
+
+
+/* ===== 粘贴助手页新增（其余 objectName 复用积分计算页已有样式） ===== */
+/* 主题 / 内容：圆角外框；左右 padding 一致，占位「主题/内容」首字左对齐
+   （QTextEdit 另需 documentMargin=0，见 page_paste.py） */
+QGroupBox#CalcTopBox QLineEdit#PasteThemeInput,
+QGroupBox#CalcTopBox QTextEdit#PasteContentEdit,
+QLineEdit#PasteThemeInput,
+QTextEdit#PasteContentEdit {
+    background: #0e1530;
+    border: 1px solid #2a3965;
+    border-radius: 6px;
+    padding: 6px 10px;
+    color: #e8eaf0;
+    font-size: 13px;
+    selection-background-color: #1f3a8a;
+}
+/* 内容区：滚动条在右，勿用左右不对称 padding 顶开左侧文字 */
+QTextEdit#PasteContentEdit {
+    padding-left: 10px;
+    padding-right: 6px;
+}
+QGroupBox#CalcTopBox QLineEdit#PasteThemeInput:focus,
+QGroupBox#CalcTopBox QTextEdit#PasteContentEdit:focus,
+QLineEdit#PasteThemeInput:focus,
+QTextEdit#PasteContentEdit:focus {
+    border: 1px solid #3b82f6;
+    background: #0e1530;
+}
+
+/* 仓库搜索“取消”按钮：高度锁 30px，与搜索框对齐 */
+QPushButton#SearchClearBtn {
+    background: rgba(240,165,66,0.16);
+    border: 1px solid rgba(240,165,66,0.50);
+    border-radius: 6px;
+    color: #f0a542;
+    font-size: 13px;
+    font-weight: 700;
+    padding: 0 14px;
+    min-width: 72px;
+    min-height: 30px;
+    max-height: 30px;
+}
+QPushButton#SearchClearBtn:hover   { background: rgba(240,165,66,0.28); }
+QPushButton#SearchClearBtn:pressed { background: rgba(240,165,66,0.12); }
+
+/* 文本标签一律透明底 —— 修复：QLabel{background:transparent}(上方) 与
+   QWidget{background:…} 特异性相同、且 QWidget 规则在后，源码顺序上把所有
+   无 #id/[属性] 的标签刷上了底色（浅色主题下白面板上的灰盒子尤其明显）。
+   本条置于文件末尾、同特异性靠后覆盖，恢复标签透明；需要背景的标签自带
+   更高特异性(#id/[role]) 规则，不受影响。 */
+QLabel { background: transparent; }
