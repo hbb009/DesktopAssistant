@@ -1,4 +1,4 @@
-﻿# 桌面助手 v9.16 · 模型相关依赖
+# 桌面助手 v9.16 · 模型相关依赖
 # 先 pip install -r requirements.txt
 # 再 pip install -r requirements-models.txt
 # 权重：python tools/download_models.py
@@ -10,7 +10,8 @@ huggingface_hub>=0.23.0
 # OCR：先按本机选 GPU/CPU 安装 paddlepaddle，再装下面
 # GPU cu126: pip install paddlepaddle-gpu==3.2.1 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
 # CPU:       pip install paddlepaddle==3.2.1 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
-paddleocr>=3.6.0
+# 必须带 [doc-parser]，否则 PaddleOCR-VL-1.6 初始化会缺 paddlex[ocr]
+paddleocr[doc-parser]>=3.6.0
 
 # 语音克隆：先按 CUDA 装 torch/torchaudio，再：
 #   python tools/download_models.py --only cosyvoice-code
