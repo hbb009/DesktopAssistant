@@ -595,8 +595,12 @@ def weights_ready(key: str) -> bool:
                    and ".git" not in f.parts for f in d.rglob("*"))
 
 
-def check_all(verbose: bool = True) -> dict:
-    """返回各组件状态字典；verbose 时同时打印体检表。"""
+def check_all(verbose: bool = True, *, deep_ocr: bool = False) -> dict:
+    """返回各组件状态字典；verbose 时同时打印体检表。
+
+    deep_ocr=False（默认）：只看包/权重/paddle 能否 import，不初始化 PaddleOCRVL。
+    deep_ocr=True：子进程真测 VL 管线（慢，留给「检测」）。
+    """
     if verbose:
         hr("组件体检")
     sys.path.insert(0, str(ROOT))
@@ -646,11 +650,16 @@ def check_all(verbose: bool = True) -> dict:
     st["weights-ocr"] = has_w
     ocr_ok = False
     if has_w and has_p:
-        # 真测 VL 管线，避免缺 paddlex[ocr] 时误报就绪
-        print("  …正在真测 PaddleOCR-VL 初始化（首次可能较慢）")
-        ok_vl, ocr_note = probe_ocr_vl_pipeline()
-        ocr_ok = ok_vl
-        st["ocr_vl"] = ok_vl
+        if deep_ocr:
+            print("  …正在真测 PaddleOCR-VL 初始化（首次可能较慢）")
+            ok_vl, ocr_note = probe_ocr_vl_pipeline()
+            ocr_ok = ok_vl
+            st["ocr_vl"] = ok_vl
+        else:
+            # 轻量：包+权重+paddle import 已过即视为安装侧就绪；真测留给 --check-deep / 软件内「检测」
+            ocr_ok = True
+            st["ocr_vl"] = True  # 安装 todo 用；不等于已做 VL 真测
+            ocr_note = "文件就绪（未做 VL 真测；需要时用 --check-deep 或软件内检测）"
     elif not has_w:
         ocr_note = "缺权重 " + str(d)
     elif paddle_err:
@@ -789,8 +798,8 @@ def main() -> int:
     else:
         print("显卡：未检测到 NVIDIA（将使用 CPU 版 torch / paddle）")
 
-    if args.check:
-        check_all()
+    if args.check or args.check_deep:
+        check_all(deep_ocr=bool(args.check_deep))
         return 0
 
     keys = list(args.only)
@@ -861,8 +870,8 @@ def main() -> int:
     for k, ok in results.items():
         print(f"  [{'OK' if ok else '!!'}] {k}")
 
-    check_all()
-    print("★ 装完请【完全退出并重启】桌面助手，再到「关于 → 模型与组件」点「检测」。")
+    check_all(deep_ocr=False)
+    print("★ 装完请【完全退出并重启】桌面助手；OCR 真测请到软件里点「检测」，或：python tools/setup_components.py --check-deep")
     if any(k == "ffmpeg" for k in results):
         print("★ 装过 ffmpeg 的话，要新开一个命令行窗口 PATH 才生效。")
     return 0 if all(results.values()) else 1

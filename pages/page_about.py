@@ -627,32 +627,35 @@ class PageAbout(QWidget):
         root.setAlignment(Qt.AlignTop)
         self._content_root = root
 
-        # 热键占用占 50%；右侧 50% 纵向叠放截图 OCR / 录屏 / 语音 / 克隆
+        # 热键占用 | 右侧四组件：按内容高度排布，避免左列被纵向撑出大片空白
         split = QHBoxLayout()
         split.setSpacing(8)
         split.setContentsMargins(0, 0, 0, 0)
+        split.setAlignment(Qt.AlignTop)
 
         left = QWidget()
-        left.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        left.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         left_lay = QVBoxLayout(left)
         left_lay.setContentsMargins(0, 0, 0, 0)
         left_lay.setSpacing(0)
         left_lay.setAlignment(Qt.AlignTop)
-        left_lay.addWidget(self._build_hotkey_card(), 1)
+        left_lay.addWidget(self._build_hotkey_card(), 0, Qt.AlignTop)
 
         right = QWidget()
-        right.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        right.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         right_lay = QVBoxLayout(right)
         right_lay.setContentsMargins(0, 0, 0, 0)
         right_lay.setSpacing(8)
-        right_lay.addWidget(self._build_ocr_card(), 1)
-        right_lay.addWidget(self._build_record_card(), 1)
-        right_lay.addWidget(self._build_voice_card(), 1)
-        right_lay.addWidget(self._build_clone_card(), 1)
+        right_lay.setAlignment(Qt.AlignTop)
+        right_lay.addWidget(self._build_ocr_card(), 0)
+        right_lay.addWidget(self._build_record_card(), 0)
+        right_lay.addWidget(self._build_voice_card(), 0)
+        right_lay.addWidget(self._build_clone_card(), 0)
 
-        split.addWidget(left, 1)
-        split.addWidget(right, 1)
+        split.addWidget(left, 1, Qt.AlignTop)
+        split.addWidget(right, 1, Qt.AlignTop)
         root.addLayout(split)
+
 
         # 自动下载白名单
         root.addWidget(self._build_auto_dl_card())
@@ -792,8 +795,10 @@ class PageAbout(QWidget):
     ) -> QFrame:
         """组件卡同一套：标题 / 介绍 / 状态 / 检测+安装教程 / 提示。"""
         card = make_card(obj_name)
+        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         box = QVBoxLayout(card)
         box.setContentsMargins(CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
+        box.setAlignment(Qt.AlignTop)
         self._add_title(card, box, title)
 
         lbl_intro = QLabel(intro)
@@ -1244,7 +1249,7 @@ class PageAbout(QWidget):
 
     def _build_hotkey_card(self) -> QFrame:
         card = make_card("CardAboutHotkeys")
-        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         box = QVBoxLayout(card)
         box.setContentsMargins(CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
         box.setSpacing(6)
@@ -1272,7 +1277,6 @@ class PageAbout(QWidget):
         self._hk_list_lay.setSpacing(0)
         self._hk_list_lay.setAlignment(Qt.AlignTop)
         box.addWidget(self._hk_list_host, 0, Qt.AlignTop)
-        box.addStretch(1)
         return card
 
     def _hk_state_qss(self, state: str) -> str:
