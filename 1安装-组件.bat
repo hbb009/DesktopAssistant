@@ -1,42 +1,110 @@
 @echo off
-chcp 65001 >nul
+title ×ÀÃæÖúÊÖ v9.16 - 1°²×°×é¼þ
 cd /d "%~dp0"
+
 echo ========================================
-echo  1/3  å®‰è£…ç»„ä»¶ï¼ˆç¨‹åºä¾èµ– + è¿è¡Œåº“ï¼‰
+echo   1/3  °²×°×é¼þ
+echo   ×ÀÃæÖúÊÖ v9.16
 echo ========================================
 echo.
-echo å°†å®‰è£…ï¼šrequirements.txtã€ffmpeg / torch / paddle /
-echo paddleocr[doc-parser] / CosyVoice æºç ä¸Žç›¸å…³ä¾èµ–ç­‰ã€‚
-echo ä¸å« model\ å¤§æ¨¡åž‹æƒé‡ï¼ˆè¯·æŽ¥ç€è·‘ 2å®‰è£…-æ¨¡åž‹.batï¼‰ã€‚
+echo ±¾²½»á°²×°£º
+echo   - requirements.txt£¨³ÌÐòÒÀÀµ£©
+echo   - ffmpeg / torch / paddle
+echo   - paddleocr[doc-parser]£¨½ØÍ¼ OCR ±ØÐè£©
+echo   - CosyVoice Ô´ÂëÓëÏà¹Ø pip ÒÀÀµ
+echo.
+echo ²»»áÏÂÔØ model\ ÀïµÄ´óÄ£ÐÍÈ¨ÖØ¡£
+echo ±¾²½½áÊøºó£¬ÇëÔÙÔËÐÐ£º2°²×°-Ä£ÐÍ.bat
+echo.
+echo ----------------------------------------
+echo °´ÈÎÒâ¼ü¿ªÊ¼°²×°...
+pause >nul
 echo.
 
+echo [0/5] ¼ì²é Python ...
+where python >nul 2>&1
+if errorlevel 1 goto no_python
+python --version
+if errorlevel 1 goto no_python
+echo [³É¹¦] ÒÑÕÒµ½ Python
+echo.
+
+echo [1/5] Éý¼¶ pip ...
 python -m pip install -U pip
-if errorlevel 1 goto fail
-python -m pip install -r requirements.txt
-if errorlevel 1 goto fail
-
+if errorlevel 1 goto fail_pip
+echo [³É¹¦] pip ¾ÍÐ÷
 echo.
-echo --- ç»„ä»¶è„šæœ¬ï¼ˆæŒ‰æœ¬æœº CUDA é€‰è½®å­ï¼Œå¯è‡ªåŠ¨ç¡®è®¤ï¼‰---
+
+echo [2/5] °²×° requirements.txt ...
+python -m pip install -r requirements.txt
+if errorlevel 1 goto fail_req
+echo [³É¹¦] ³ÌÐòÒÀÀµÒÑ°²×°
+echo.
+
+echo [3/5] °²×°ÔËÐÐ×é¼þ£¨¿ÉÄÜ½Ï¾Ã£¬ÇëÄÍÐÄµÈ´ý£©...
+echo ÄÚÈÝ£ºffmpeg¡¢Ä£ÐÍÏà¹Ø¿â¡¢torch¡¢paddle¡¢
+echo       paddleocr¡¢CosyVoice Ô´ÂëÓëÒÀÀµ
+echo.
 python tools\setup_components.py --yes --only ffmpeg --only deps --only torch --only paddle --only paddleocr --only cosyvoice-code --only cosyvoice-deps
-if errorlevel 1 (
-  echo.
-  echo [æç¤º] éƒ¨åˆ†ç»„ä»¶æœªè£…å…¨ã€‚å¯å†è¿è¡Œæœ¬è„šæœ¬ï¼Œæˆ–ï¼š
-  echo   python tools\setup_components.py --check
+set SC=%ERRORLEVEL%
+echo.
+if not "%SC%"=="0" (
+  echo [¾¯¸æ] ×é¼þ½Å±¾ÍË³öÂë=%SC%£¬¿ÉÄÜÎ´È«²¿×°Íê¡£
+  echo ¿ÉÖØÐÂÔËÐÐ±¾ bat£¬»òÊÖ¶¯´ò¿ª²Ëµ¥£º
   echo   python tools\setup_components.py
+  echo.
+) else (
+  echo [³É¹¦] ×é¼þ½Å±¾Ö´ÐÐ½áÊø
+  echo.
 )
 
-echo.
-echo --- ä½“æ£€ ---
+echo [4/5] ×é¼þÌå¼ì£¨Çë²é¿´ÉÏ·½±í¸ñ£©...
 python tools\setup_components.py --check
-
+set CK=%ERRORLEVEL%
 echo.
-echo å®Œæˆã€‚ä¸‹ä¸€æ­¥ï¼šè¿è¡Œ 2å®‰è£…-æ¨¡åž‹.bat
-echo ï¼ˆè£…è¿‡ ffmpeg è¯·æ–°å¼€ä¸€ä¸ªå‘½ä»¤è¡Œçª—å£å†å¯åŠ¨ç¨‹åºï¼‰
-pause
+if not "%CK%"=="0" (
+  echo [¾¯¸æ] Ìå¼ìÍË³öÂë=%CK%£¬Çë¸ù¾Ý±í¸ñ²¹È±¡£
+) else (
+  echo [³É¹¦] Ìå¼ìÒÑÅÜÍê£¬ÇëÈ·ÈÏ±í¸ñÀï½ØÍ¼ OCR µÈÊÇ·ñ¾ÍÐ÷¡£
+)
+echo.
+
+echo [5/5] µÚ 1 ²½½áÊø
+echo ----------------------------------------
+echo ÏÂÒ»²½£ºË«»÷ÔËÐÐ  2°²×°-Ä£ÐÍ.bat
+echo £¨°Ñ¿ªÔ´Ä£ÐÍÏÂÔØµ½ model\£©
+echo.
+echo ×¢Òâ£ºÈô±¾²½¸Õ×°ÁË ffmpeg£¬Ö®ºóÇëÐÂ¿ªÒ»¸ö
+echo ÃüÁîÐÐ´°¿ÚÔÙÆô¶¯³ÌÐò£¬PATH ²Å»áÉúÐ§¡£
+echo ----------------------------------------
+echo.
+echo °´ÈÎÒâ¼ü¹Ø±Õ±¾´°¿Ú...
+pause >nul
 exit /b 0
 
-:fail
+:no_python
 echo.
-echo [å¤±è´¥] ç»„ä»¶å®‰è£…ä¸­æ–­ã€‚
-pause
+echo [Ê§°Ü] ÕÒ²»µ½ python£¬»ò²»ÔÚ PATH Àï¡£
+echo ÇëÏÈ°²×° Python 3.10+£¬¹´Ñ¡ Add python.exe to PATH£¬
+echo È»ºóÖØÐÂ´ò¿ª±¾´°¿ÚÔÙÔËÐÐ¡£
+echo.
+echo °´ÈÎÒâ¼ü¹Ø±Õ...
+pause >nul
+exit /b 1
+
+:fail_pip
+echo.
+echo [Ê§°Ü] pip Éý¼¶Ê§°Ü£¬Çë¼ì²éÍøÂçºóÖØÊÔ¡£
+echo.
+echo °´ÈÎÒâ¼ü¹Ø±Õ...
+pause >nul
+exit /b 1
+
+:fail_req
+echo.
+echo [Ê§°Ü] requirements.txt °²×°Ê§°Ü¡£
+echo Çë¼ì²éÍøÂç/¾µÏñºóÖØÐÂÔËÐÐ±¾ bat¡£
+echo.
+echo °´ÈÎÒâ¼ü¹Ø±Õ...
+pause >nul
 exit /b 1

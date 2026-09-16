@@ -1,29 +1,70 @@
 @echo off
-chcp 65001 >nul
+title ×ÀÃæÖúÊÖ v9.16 - 2°²×°Ä£ÐÍ
 cd /d "%~dp0"
+
 echo ========================================
-echo  2/3  å®‰è£…æ¨¡åž‹ï¼ˆå†™å…¥ model\ï¼‰
+echo   2/3  °²×°Ä£ÐÍ£¨Ð´Èë model\£©
+echo   ×ÀÃæÖúÊÖ v9.16
 echo ========================================
 echo.
-echo model\ ä¸‹å‡ä¸ºå¼€æºæ¨¡åž‹æƒé‡/æºç ï¼Œä¾‹å¦‚ï¼š
-echo   PaddleOCR-VL-1.6ã€faster-whisperã€Fun-CosyVoice3ã€CosyVoice ç­‰ã€‚
-echo ä¸è¿› Gitï¼›æ•´åŒ…æ‹·è´å¯è·³è¿‡æœ¬æ­¥ï¼Œç¼ºå“ªä¸ªå†ä¸‹å“ªä¸ªã€‚
+echo model\ ÏÂ¾ùÎª¿ªÔ´Ä£ÐÍ£¬ÀýÈç£º
+echo   PaddleOCR-VL-1.6
+echo   faster-whisper£¨ÓïÒô×ªÐ´£©
+echo   Fun-CosyVoice3 / CosyVoice£¨ÓïÒô¿ËÂ¡£©
+echo.
+echo model\ ²»½ø Git¡£
+echo ÈôÄãÒÑÕû°ü¿½±´ÁË model\£¬¿ÉÌø¹ý±¾²½¡£
+echo.
+echo ----------------------------------------
+echo °´ÈÎÒâ¼ü´ò¿ªÏÂÔØ²Ëµ¥...
+pause >nul
 echo.
 
+echo [0/3] ¼ì²é Python ...
+where python >nul 2>&1
+if errorlevel 1 goto no_python
+python --version
+echo [³É¹¦] ÒÑÕÒµ½ Python
+echo.
+
+echo [1/3] È·ÈÏ model\ Ä¿Â¼ ...
 if not exist "model" mkdir model
-
-python tools\download_models.py %*
-if errorlevel 1 goto fail
-
+echo [³É¹¦] %CD%\model
 echo.
-echo å®Œæˆã€‚ä¸‹ä¸€æ­¥ï¼šè¿è¡Œ 3å¯åŠ¨-ç¨‹åº.bat
-pause
+
+echo [2/3] Æô¶¯ÏÂÔØ²Ëµ¥ ...
+echo ÒÑ´æÔÚµÄÄ£ÐÍ»á×Ô¶¯Ìø¹ý¡£
+echo ¹úÄÚÍøÂç½ÏÂýÊ±¿ÉÁí¿ª´°¿ÚÓÃ£º
+echo   python tools\download_models.py --mirror modelscope
+echo.
+python tools\download_models.py %*
+set DL=%ERRORLEVEL%
+echo.
+if not "%DL%"=="0" goto fail_dl
+
+echo [3/3] µÚ 2 ²½½áÊø
+echo ----------------------------------------
+echo ÏÂÒ»²½£ºË«»÷ÔËÐÐ  3Æô¶¯-³ÌÐò.bat
+echo ----------------------------------------
+echo.
+echo °´ÈÎÒâ¼ü¹Ø±Õ±¾´°¿Ú...
+pause >nul
 exit /b 0
 
-:fail
+:no_python
 echo.
-echo [å¤±è´¥] æ¨¡åž‹ä¸‹è½½ä¸­æ–­ã€‚å¯é‡è¯•ï¼Œæˆ–æŒ‡å®šï¼š
+echo [Ê§°Ü] ÕÒ²»µ½ python¡£ÇëÏÈÍê³É 1°²×°-×é¼þ.bat¡£
+echo.
+echo °´ÈÎÒâ¼ü¹Ø±Õ...
+pause >nul
+exit /b 1
+
+:fail_dl
+echo [Ê§°Ü] ÏÂÔØÖÐ¶Ï£¬ÍË³öÂë=%DL%
+echo ¿ÉÖØÊÔ±¾ bat£¬»ò£º
 echo   python tools\download_models.py --only paddleocr
 echo   python tools\download_models.py --all-light --mirror modelscope
-pause
+echo.
+echo °´ÈÎÒâ¼ü¹Ø±Õ...
+pause >nul
 exit /b 1
