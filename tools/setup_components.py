@@ -323,10 +323,16 @@ def do_paddleocr() -> bool:
 
 
 def probe_ocr_vl_pipeline() -> tuple[bool, str]:
-    """真测 PaddleOCRVL 能否建管线（与 diagnose_dll.py 一致）。
+    """真测 PaddleOCRVL：在子进程里按 app 真实顺序跑（先 torch 再 paddle）。
 
-    旧体检只查 paddle/paddleocr 包名 + 权重，同事机上会误报「就绪」。
+    旧实现在当前进程直接 `from paddleocr import PaddleOCRVL`，会先载 paddle
+    再被 paddlex/modelscope 拉进 torch，Windows 上常报 WinError 1114 / c10.dll，
+    造成「装完其实可用、体检却失败」。app 的 utils/ocr_job.py 已用
+    `_preload_torch_first()` 避开；体检必须同一路径。
     """
+    import json
+    import tempfile
+
     model_dir = MODEL / "PaddleOCR-VL-1.6"
     if not (model_dir / "config.json").is_file():
         try:
@@ -337,19 +343,66 @@ def probe_ocr_vl_pipeline() -> tuple[bool, str]:
             pass
     if not (model_dir / "config.json").is_file():
         return False, f"缺权重 {model_dir}"
+
+    td = tempfile.mkdtemp(prefix="da_ocr_probe_")
+    meta_path = str(Path(td) / "meta.json")
+    out_path = str(Path(td) / "out.json")
+    err_path = str(Path(td) / "err.txt")
+    meta = {
+        "action": "probe",
+        "model_dir": str(model_dir),
+        "out": out_path,
+    }
     try:
-        from paddleocr import PaddleOCRVL
-        PaddleOCRVL(vl_rec_model_dir=str(model_dir))
-        return True, "就绪"
-    except Exception as e:
-        msg = str(e).strip() or type(e).__name__
+        Path(meta_path).write_text(
+            json.dumps(meta, ensure_ascii=False), encoding="utf-8"
+        )
+        env = os.environ.copy()
+        env.setdefault("OMP_NUM_THREADS", "1")
+        env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+        env.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+        r = subprocess.run(
+            [PY, "-m", "utils.ocr_job", meta_path],
+            cwd=str(ROOT),
+            capture_output=True,
+            text=True,
+            timeout=300,
+            env=env,
+        )
+        payload = {}
+        if Path(out_path).is_file():
+            try:
+                payload = json.loads(Path(out_path).read_text(encoding="utf-8"))
+            except Exception:
+                payload = {}
+        if payload.get("ok"):
+            return True, "就绪"
+
+        msg = (payload.get("error") or "").strip()
+        if not msg and Path(err_path).is_file():
+            msg = Path(err_path).read_text(encoding="utf-8", errors="replace").strip()
+        if not msg:
+            msg = ((r.stderr or r.stdout or "").strip() or f"probe exit={r.returncode}")
         low = msg.lower()
         if "paddlex" in low or "doc-parser" in low or "additional dependencies" in low:
             msg += f' → 请执行: python -m pip install -U "{OCR_PIP_SPEC}"'
-        # 截断过长堆栈式字符串
+        if "c10.dll" in low or "winerror 1114" in low or "winerror 127" in low:
+            msg += " → torch/paddle DLL 冲突时试: python tools/setup_components.py --only paddle-cpu --yes"
         if len(msg) > 240:
             msg = msg[:240] + "…"
         return False, msg
+    except subprocess.TimeoutExpired:
+        return False, "真测超时（>300s）。可设 PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=True 后重试"
+    except Exception as e:
+        msg = str(e).strip() or type(e).__name__
+        if len(msg) > 240:
+            msg = msg[:240] + "…"
+        return False, msg
+    finally:
+        try:
+            shutil.rmtree(td, ignore_errors=True)
+        except Exception:
+            pass
 
 
 def do_cosyvoice_code() -> bool:
