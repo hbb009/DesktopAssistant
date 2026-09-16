@@ -1,30 +1,11 @@
-<<<<<<< HEAD
 <img width="962" height="918" alt="4ee36bfa-db90-4126-ab94-69d449a373d5" src="https://github.com/user-attachments/assets/d5a9a299-fef2-4089-a934-477ad6f9bb4a" />
 
 # 桌面助手 v9.16 · 给 AI 人的口袋瑞士军刀 🔧🧠
 
 > 让每一个操作，都能为您省下宝贵的时间
-=======
-# 桌面助手 v9.16（源码版）
 
-本地工作目录：`D:\v9.16`。不含 exe / `_internal`。
+---
 
-## 安装（三步）
-
-```bat
-1安装-组件.bat
-2安装-模型.bat
-3启动-程序.bat
-```
-
-1. **安装组件**：程序依赖 + 运行库（ffmpeg、torch、paddle、`paddleocr[doc-parser]`、CosyVoice 源码依赖等）。按本机 CUDA 选轮子。
-2. **安装模型**：把开源模型下到 `model\`（如 PaddleOCR-VL-1.6、faster-whisper、Fun-CosyVoice3 等）。`model/` 不进 Git；整包已带权重可跳过，缺啥再补。
-3. **启动程序**：运行桌面助手。
->>>>>>> d54c34d (Simplify v9.16 install to 3 steps and fix OCR-VL deps.)
-
-装完组件后请**完全退出再开**；装过 ffmpeg 请**新开命令行窗口**再启动。
-
-<<<<<<< HEAD
 ## 🆕 v9.16 主要调整
 
 1. **新增「语音克隆」页**（助手区）：基于本地 CosyVoice3-0.5B，左侧上「声音卡」（拖入/录制参考原声，30 秒以内）下「文案」，右侧「生成记录」列表；同 OCR / 语音转写一样跑在独立子进程（`--cosyvoice-job`），避免与主进程 Qt 抢占 PyTorch/onnxruntime 的 DLL；模型权重放 `model/Fun-CosyVoice3-0.5B`，官方推理源码另需克隆 `CosyVoice` 仓库到 `model/CosyVoice`；素材与生成记录存 `data/voice_clone/`。
@@ -83,16 +64,31 @@
 
 > 建议 **Python 3.10+ / Windows 10+**（部分能力仅限 Windows）
 
-```bash
-# 安装依赖
-pip install -r "requirements v9.16.txt"
-# 或项目内 requirements.txt（以仓库实际文件名为准）
+三步安装（推荐）：
 
-# 运行
-python mainv916.py
-```
+`at
+1安装-组件.bat
+2安装-模型.bat
+3启动-程序.bat
+`
 
-**关于管理员权限**：默认普通用户启动，需要时可显式提权 `python mainv916.py --as-admin`；目录映射页的 `mklink` 也可单独勾选管理员执行。
+1. **安装组件**：
+equirements.txt + ffmpeg / torch / paddle / paddleocr[doc-parser] / CosyVoice 源码依赖等（按本机 CUDA 选轮子）。
+2. **安装模型**：把开源模型下到 model\（PaddleOCR-VL-1.6、faster-whisper、Fun-CosyVoice3 等）。model/ 不进 Git；整包已带权重可跳过。
+3. **启动程序**：运行桌面助手。也可直接 python mainv916.py。
+
+装完组件后请**完全退出再开**；装过 ffmpeg 请**新开命令行窗口**再启动。
+
+排障：
+
+`at
+python tools\setup_components.py --check
+python tools\diagnose_dll.py ocr
+python -m pip install -U "paddleocr[doc-parser]>=3.6.0"
+`
+
+**关于管理员权限**：默认普通用户启动，需要时可显式提权 python mainv916.py --as-admin；目录映射页的 mklink 也可单独勾选管理员执行。
+
 
 ### B. 便携包（`mainv916/` 整夹分发）
 
@@ -262,29 +258,3 @@ python mainv916.py
 | **v9.5** | 样式体系统一；速存图文后台常驻；批量打标真实接入 Ollama。 |
 | **v9.0** | 主题与字体统一；系统总览资源监控；反推提示词、比例计算、批量打标上线。 |
 | **v8.1** | 速存图文自动/手动模式；截图工具热键框选；Ollama 助理流式聊天。 |
-=======
-入口也可：`python mainv916.py`
-
-## 依赖文件
-
-| 文件 | 用途 |
-|------|------|
-| `requirements.txt` | 程序（界面等） |
-| `requirements-models.txt` | 模型相关库（OCR 须为 `paddleocr[doc-parser]>=3.6.0`） |
-
-## 常用命令
-
-```bat
-python tools\setup_components.py --check
-python tools\setup_components.py
-python tools\download_models.py
-python tools\download_models.py --all-light --mirror modelscope
-python tools\diagnose_dll.py ocr
-```
-
-OCR 若提示缺 `paddlex[ocr]`：
-
-```bat
-python -m pip install -U "paddleocr[doc-parser]>=3.6.0"
-```
->>>>>>> d54c34d (Simplify v9.16 install to 3 steps and fix OCR-VL deps.)
