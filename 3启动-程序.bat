@@ -1,5 +1,5 @@
 @echo off
-title 桌面助手 v9.16
+title 桌面助手 v9.16 - 3启动程序
 cd /d "%~dp0"
 
 echo ========================================
@@ -7,13 +7,27 @@ echo   3/3  启动程序
 echo   桌面助手 v9.16
 echo ========================================
 echo.
+echo 对应旧流程：3启动.bat
+echo.
+echo 启动前建议已完成：
+echo   1安装-组件.bat（依赖+运行库+体检）
+echo   2安装-模型.bat（至少 OCR / 你需要的语音模型）
+echo.
 
 where python >nul 2>&1
 if errorlevel 1 goto no_python
 
+echo [检查] 快速组件体检（可跳过等待，仅展示）...
+python tools\setup_components.py --check
+echo.
+echo 若截图 OCR 未就绪，先不要急着开软件，可先：
+echo   python tools\diagnose_dll.py ocr
+echo   python tools\setup_components.py --only paddleocr --yes
+echo.
 echo 工作目录：%CD%
-echo 正在启动 mainv916.py ...
 echo ----------------------------------------
+echo 按任意键启动 mainv916.py ...
+pause >nul
 echo.
 python mainv916.py
 set RC=%ERRORLEVEL%
@@ -21,13 +35,12 @@ echo.
 echo ----------------------------------------
 if not "%RC%"=="0" (
   echo [失败] 程序退出码=%RC%
-  echo 可查看 data\app.log（若已生成）。
+  echo 可查看 data\app.log / data\crash_*.log
   echo.
   echo 按任意键关闭...
   pause >nul
   exit /b %RC%
 )
-
 echo [成功] 程序已正常退出。
 echo.
 echo 按任意键关闭...
@@ -35,8 +48,7 @@ pause >nul
 exit /b 0
 
 :no_python
-echo [失败] 找不到 python。
-echo 请先运行 1安装-组件.bat。
+echo [失败] 找不到 python。请先运行 1安装-组件.bat。
 echo.
 echo 按任意键关闭...
 pause >nul

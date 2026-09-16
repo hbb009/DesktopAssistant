@@ -91,8 +91,9 @@ def pip(*args) -> bool:
 
 
 def ask(prompt: str, default: bool = True) -> bool:
+    # --yes：采用每道题的默认选项（不会对「仍要重装吗？[y/N]」误点是）
     if ASSUME_YES:
-        return True
+        return default
     tail = "[Y/n]" if default else "[y/N]"
     try:
         a = input(f"{prompt} {tail} ").strip().lower()
