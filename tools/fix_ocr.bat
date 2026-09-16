@@ -1,52 +1,50 @@
 @echo off
-title 桌面助手 - OCR 修复
+setlocal
 cd /d "%~dp0.."
-
-echo ========================================
-echo   截图 OCR 修复（PaddleOCR-VL-1.6）
-echo ========================================
+title DesktopAssistant - OCR fix
+chcp 65001 >nul
+set PYTHONUTF8=1
+set PYTHONIOENCODING=utf-8
 echo.
-echo 请先完全退出桌面助手再运行。
-echo 本脚本会安装/修复：
-echo   paddlepaddle（先试 GPU cu126，失败改 CPU）
-echo   paddleocr[doc-parser]
+echo ========================================
+echo   OCR fix  PaddleOCR-VL
+echo ========================================
+echo Exit the app completely before running.
 echo.
-
 where python >nul 2>&1
-if errorlevel 1 (
-  echo [失败] 找不到 python。
-  pause
-  exit /b 1
-)
-
+if errorlevel 1 goto no_python
 python --version
 echo.
-echo [1/2] 安装 paddlepaddle ...
+echo [1/2] install paddlepaddle ...
 python -m pip install paddlepaddle-gpu==3.2.1 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
 if errorlevel 1 (
-  echo GPU 版失败，改装 CPU 版 ...
+  echo GPU wheel failed, trying CPU ...
   python -m pip uninstall -y paddlepaddle-gpu paddlepaddle
   python -m pip install paddlepaddle==3.2.1
-  if errorlevel 1 (
-    echo [失败] paddlepaddle 安装失败。
-    pause
-    exit /b 1
-  )
+  if errorlevel 1 goto fail_paddle
 )
-
 echo.
-echo [2/2] 安装 paddleocr[doc-parser] ...
-python -m pip install -U "paddleocr[doc-parser]>=3.6.0"
-if errorlevel 1 (
-  echo [失败] paddleocr 安装失败。
-  echo 可再试：python tools\setup_components.py --only paddleocr --yes
-  pause
-  exit /b 1
-)
-
+echo [2/2] install paddleocr[doc-parser] ...
+python -m pip install "paddleocr[doc-parser]>=3.6.0"
+if errorlevel 1 goto fail_ocr
 echo.
-echo [成功] 运行库已装。请确认权重在 model\PaddleOCR-VL-1.6
-echo 真测：python tools\diagnose_dll.py ocr
+echo Done. Optional check:
+python tools\setup_components.py --check
 echo.
 pause
 exit /b 0
+
+:fail_paddle
+echo [FAIL] paddlepaddle install failed.
+pause
+exit /b 1
+
+:fail_ocr
+echo [FAIL] paddleocr install failed.
+pause
+exit /b 1
+
+:no_python
+echo [FAIL] python not found in PATH.
+pause
+exit /b 1

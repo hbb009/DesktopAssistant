@@ -1,11 +1,15 @@
 @echo off
-title 桌面助手 - 下载模型
+setlocal
 cd /d "%~dp0.."
-echo 下载开源模型到 model\
+title DesktopAssistant - download models
+chcp 65001 >nul
+set PYTHONUTF8=1
+set PYTHONIOENCODING=utf-8
+echo Download open-source models into model\
 echo.
 where python >nul 2>&1
 if errorlevel 1 (
-  echo [失败] 找不到 python。
+  echo [FAIL] python not found in PATH.
   pause
   exit /b 1
 )

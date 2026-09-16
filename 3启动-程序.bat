@@ -1,55 +1,30 @@
 @echo off
-title 桌面助手 v9.16 - 3启动程序
+setlocal
 cd /d "%~dp0"
-
+title DesktopAssistant v9.16 - Step3 Launch
+chcp 65001 >nul
+set PYTHONUTF8=1
+set PYTHONIOENCODING=utf-8
+echo.
 echo ========================================
-echo   3/3  启动程序
-echo   桌面助手 v9.16
+echo   Step 3/3  Launch app
+echo   DesktopAssistant v9.16
 echo ========================================
 echo.
-echo 对应旧流程：3启动.bat
-echo.
-echo 启动前建议已完成：
-echo   1安装-组件.bat（依赖+运行库+体检）
-echo   2安装-模型.bat（至少 OCR / 你需要的语音模型）
-echo.
-
 where python >nul 2>&1
 if errorlevel 1 goto no_python
-
-echo [检查] 快速组件体检（可跳过等待，仅展示）...
-python tools\setup_components.py --check
-echo.
-echo 若截图 OCR 未就绪，先不要急着开软件，可先：
-echo   python tools\diagnose_dll.py ocr
-echo   python tools\setup_components.py --only paddleocr --yes
-echo.
-echo 工作目录：%CD%
-echo ----------------------------------------
-echo 按任意键启动 mainv916.py ...
-pause >nul
-echo.
-python mainv916.py
+python tools\install_step3.py
 set RC=%ERRORLEVEL%
 echo.
-echo ----------------------------------------
-if not "%RC%"=="0" (
-  echo [失败] 程序退出码=%RC%
-  echo 可查看 data\app.log / data\crash_*.log
-  echo.
-  echo 按任意键关闭...
-  pause >nul
-  exit /b %RC%
-)
-echo [成功] 程序已正常退出。
+echo Step 3 finished. Exit code=%RC%
 echo.
-echo 按任意键关闭...
-pause >nul
-exit /b 0
+pause
+exit /b %RC%
 
 :no_python
-echo [失败] 找不到 python。请先运行 1安装-组件.bat。
 echo.
-echo 按任意键关闭...
-pause >nul
+echo [FAIL] python not found in PATH.
+echo Install Python 3.10+ and check "Add python.exe to PATH".
+echo.
+pause
 exit /b 1
