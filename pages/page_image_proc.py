@@ -6,7 +6,7 @@ page_image_proc.py  —  图片处理
 
 布局（比例锁定，随窗口缩放，分区不可拖拽改）：
   · 上 60% / 下 40%
-  · 上：左 70%（拖放提示+选图 / 预览） / 右 30%（缩小 · 放大 · 切割 · 更多修改；点中激活，其余冻结；底栏格式+保存）
+  · 上：左 70%（拖放提示+选图 / 预览） / 右 30%（缩小 · 放大 · 切割 · 抠图 · 更多修改；点中激活，其余冻结；底栏格式+保存）
   · 下：全宽「输出预览」——纵向滚动图片卡（文件名 / 分辨率·大小同行），单击打开输出目录
 
 输出目录：公共保存根下 ImageProc；偏好：records/user.txt → image_proc 段。
@@ -19,18 +19,19 @@ import io
 import os
 import re
 import subprocess
+import sys
 from datetime import datetime
 from typing import List, Optional, Tuple
 
 from PyQt5.QtCore import Qt, QSize, QUrl, QTimer, pyqtSignal, QThread, QRectF, QPointF, QEvent
 from PyQt5.QtGui import (
-    QPixmap, QImage, QDesktopServices, QDragEnterEvent, QDropEvent,
+    QPixmap, QImage, QImageReader, QDesktopServices, QDragEnterEvent, QDropEvent,
     QPainter, QColor, QPen, QBrush, QPainterPath,
 )
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFileDialog,
     QRadioButton, QButtonGroup, QSizePolicy, QApplication, QScrollArea,
-    QFrame, QGridLayout, QLayout,
+    QFrame, QGridLayout, QLayout, QToolButton,
 )
 
 from styles.style_all import (
@@ -40,6 +41,7 @@ from styles.style_all import (
     make_card,
     apply_medium_button,
     apply_btn_download,
+    BTN_DOWNLOAD_QSS,
     theme,
     tk,
     CARD_LEFT_GAP,
@@ -84,11 +86,12 @@ _UPSCAYL_IDS = {m[0] for m in _UPSCAYL_MODELS}
 _UPSCAYL_SCALE_MIN = 2
 _UPSCAYL_SCALE_MAX = 6
 _UPSCAYL_SCALE_DEFAULT = 4
-_OP_KEYS = ("scale", "upscale", "split", "more")
+_OP_KEYS = ("scale", "upscale", "split", "matting", "more")
 _OP_STATUS_NAMES = {
     "scale": "缩小",
     "upscale": "放大",
     "split": "切割",
+    "matting": "抠图",
     "more": "修改",
 }
 _OP_STATUS_MAX = 10
@@ -102,9 +105,23 @@ _LAYOUT_GAP = 8
 def _has_pillow() -> bool:
     try:
         from PIL import Image  # noqa: F401
+        _allow_large_pil()
         return True
     except Exception:
         return False
+
+
+def _allow_large_pil() -> None:
+    """本页会 2×–6× 超分，输出常超过 Pillow 默认 ~89MP 上限。
+
+    不关会刷 DecompressionBombWarning，再大则直接拒绝打开。
+    只在图片处理里放开，启动时扫 ImageProc / 再编辑大图才需要。
+    """
+    try:
+        from PIL import Image
+        Image.MAX_IMAGE_PIXELS = None
+    except Exception:
+        pass
 
 
 def _unique_path(dir_path: str, base: str, ext: str) -> str:
@@ -171,6 +188,7 @@ def _op_save_path(dir_path: str, stem: str, op: str, ext: str, ver: int = None) 
 
 def _open_pil(path: str):
     from PIL import Image, ImageOps
+    _allow_large_pil()
     img = Image.open(path)
     try:
         img = ImageOps.exif_transpose(img)
@@ -217,7 +235,7 @@ def _fmt_size(n: int) -> str:
 
 
 def _read_image_meta(path: str) -> tuple:
-    """返回 (w, h, size_bytes)。"""
+    """返回 (w, h, size_bytes)。只读文件头，不把整张图解码进内存。"""
     size = 0
     try:
         size = os.path.getsize(path)
@@ -225,18 +243,13 @@ def _read_image_meta(path: str) -> tuple:
         pass
     w = h = 0
     try:
-        pm = QPixmap(path)
-        if not pm.isNull():
-            w, h = pm.width(), pm.height()
+        reader = QImageReader(path)
+        reader.setAutoTransform(True)
+        sz = reader.size()
+        if sz.isValid():
+            w, h = sz.width(), sz.height()
     except Exception:
         pass
-    if w <= 0 or h <= 0:
-        try:
-            img = _open_pil(path)
-            w, h = img.size
-            img.close()
-        except Exception:
-            pass
     return w, h, size
 
 
@@ -405,6 +418,157 @@ class _UpscaylWorker(QThread):
         self.finished_ok.emit(self._dst)
 
 
+def _birefnet_onnx_path() -> str:
+    try:
+        from utils.matting_job import find_birefnet_onnx
+        return find_birefnet_onnx() or ""
+    except Exception:
+        log.debug("查找 BiRefNet 模型失败", exc_info=True)
+        return ""
+
+
+class _MattingWorker(QThread):
+    """无 Qt 子进程跑 BiRefNet-general；stdout 的 PCT n 作进度。"""
+
+    progress = pyqtSignal(int)
+    finished_ok = pyqtSignal(str)
+    finished_err = pyqtSignal(str)
+
+    def __init__(self, src: str, dst: str, model: str = ""):
+        super().__init__()
+        self._src = src
+        self._dst = dst
+        self._model = model or ""
+        self._cancel = False
+        self._proc = None
+
+    def stop(self):
+        self._cancel = True
+        try:
+            self.requestInterruption()
+        except Exception:
+            pass
+        proc = self._proc
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+    def run(self):
+        import json
+        import tempfile
+
+        td = tempfile.mkdtemp(prefix="da_matting_")
+        meta_path = os.path.join(td, "meta.json")
+        payload = {"image": self._src, "out": self._dst}
+        if self._model:
+            payload["model"] = self._model
+        try:
+            with open(meta_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False)
+        except Exception as e:
+            self.finished_err.emit("无法写任务文件：%s" % e)
+            return
+        try:
+            from utils.app_paths import app_root, is_frozen
+            frozen = is_frozen()
+            root = app_root()
+        except Exception:
+            frozen = bool(getattr(sys, "frozen", False)) or hasattr(sys, "_MEIPASS")
+            root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        if frozen:
+            cmd = [sys.executable, "--matting-job", meta_path]
+        else:
+            cmd = [sys.executable, "-m", "utils.matting_job", meta_path]
+        env = os.environ.copy()
+        env.setdefault("OMP_NUM_THREADS", "1")
+        env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+        env["DESKASSIST_MATTING_JOB"] = "1"
+        env.pop("QT_PLUGIN_PATH", None)
+        env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
+        try:
+            kw = dict(
+                args=cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                env=env,
+                cwd=root,
+            )
+            if os.name == "nt":
+                kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            self._proc = subprocess.Popen(**kw)
+            pct_re = re.compile(rb"PCT\s+(\d+)")
+            last = -1
+            buf = b""
+            err_tail = b""
+            while True:
+                if self._cancel or self.isInterruptionRequested():
+                    try:
+                        self._proc.kill()
+                    except Exception:
+                        pass
+                    return
+                chunk = self._proc.stdout.read(256) if self._proc.stdout else b""
+                if not chunk:
+                    break
+                buf += chunk
+                err_tail = (err_tail + chunk)[-12000:]
+                while True:
+                    m = pct_re.search(buf)
+                    if not m:
+                        if len(buf) > 4096:
+                            buf = buf[-512:]
+                        break
+                    try:
+                        pct = int(m.group(1))
+                    except (TypeError, ValueError):
+                        pct = last
+                    buf = buf[m.end():]
+                    if pct != last:
+                        last = pct
+                        self.progress.emit(max(0, min(100, pct)))
+            code = self._proc.wait()
+        except Exception as e:
+            if not self._cancel:
+                self.finished_err.emit("%s: %s" % (type(e).__name__, e))
+            return
+        if self._cancel:
+            return
+        ok_file = os.path.isfile(self._dst) and os.path.getsize(self._dst) >= 32
+        if code != 0 or not ok_file:
+            detail = ""
+            try:
+                detail = err_tail.decode("utf-8", errors="replace").strip()
+            except Exception:
+                detail = ""
+            lines = [
+                ln.strip() for ln in detail.splitlines()
+                if ln.strip() and not ln.startswith("PCT ")
+            ]
+            prefer = (
+                "加载 ONNX", "推理失败", "缺少 ", "找不到", "写出失败",
+                "CUDA 不可用", "改用 CPU",
+            )
+            msg = ""
+            for ln in reversed(lines):
+                if ln.startswith("*") or set(ln) <= {"*", " "}:
+                    continue
+                if ln.startswith("EP Error") or ln.startswith("when using") or ln.startswith("Falling back"):
+                    continue
+                if any(p in ln for p in prefer):
+                    msg = ln
+                    break
+                if not msg:
+                    msg = ln
+            if not msg:
+                msg = "抠图失败（退出码 %s）" % code
+            self.finished_err.emit(msg)
+            return
+        self.progress.emit(100)
+        self.finished_ok.emit(self._dst)
+
+
 # ── 省略标签（对齐抖音页） ─────────────────────────────────────────────────
 class _ElideLabel(QLabel):
     def __init__(self, text: str = "", parent=None):
@@ -453,6 +617,8 @@ class OutputImageCard(QFrame):
     BADGE_MARGIN = 4  # 距缩略图右/下边距
 
     clicked_open = pyqtSignal(str)  # 文件路径
+    edit_requested = pyqtSignal(str)  # 把输出图送回左边再编辑
+    delete_requested = pyqtSignal(str)  # 删除对应文件
 
     def __init__(self, path: str, parent=None):
         super().__init__(parent)
@@ -465,7 +631,7 @@ class OutputImageCard(QFrame):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(3)
 
-        # 缩略图容器：底图 + 右下角类型标签叠层
+        # 缩略图容器：底图 + 右下角 EDIT / 类型标签叠层
         self.thumb_host = QWidget()
         self.thumb_host.setFixedSize(self.THUMB_W, self.THUMB_H)
         self.thumb_host.setAttribute(Qt.WA_StyledBackground, True)
@@ -478,15 +644,37 @@ class OutputImageCard(QFrame):
         self.thumb.setAutoFillBackground(False)
         self.thumb.setGeometry(0, 0, self.THUMB_W, self.THUMB_H)
 
+        badge_x = self.THUMB_W - self.BADGE_W - self.BADGE_MARGIN
+        y_del = self.THUMB_H - self.BADGE_H - self.BADGE_MARGIN
+        y_fmt = y_del - self.BADGE_MARGIN - self.BADGE_H
+        y_edit = y_fmt - self.BADGE_MARGIN - self.BADGE_H
+
+        self.btn_edit = QPushButton("EDIT", self.thumb_host)
+        self.btn_edit.setObjectName("ImgProcEditBadge")
+        self.btn_edit.setFixedSize(self.BADGE_W, self.BADGE_H)
+        self.btn_edit.setCursor(Qt.PointingHandCursor)
+        self.btn_edit.setFocusPolicy(Qt.NoFocus)
+        self.btn_edit.setToolTip("放到预览区再次编辑")
+        self.btn_edit.move(badge_x, y_edit)
+        self.btn_edit.clicked.connect(self._on_edit_clicked)
+
         self.lbl_fmt = QLabel(_format_badge_text(path), self.thumb_host)
         self.lbl_fmt.setObjectName("ImgProcFmtBadge")
         self.lbl_fmt.setFixedSize(self.BADGE_W, self.BADGE_H)
         self.lbl_fmt.setAlignment(Qt.AlignCenter)
-        self.lbl_fmt.move(
-            self.THUMB_W - self.BADGE_W - self.BADGE_MARGIN,
-            self.THUMB_H - self.BADGE_H - self.BADGE_MARGIN,
-        )
+        self.lbl_fmt.move(badge_x, y_fmt)
+
+        self.btn_del = QPushButton("DEL", self.thumb_host)
+        self.btn_del.setObjectName("ImgProcDelBadge")
+        self.btn_del.setFixedSize(self.BADGE_W, self.BADGE_H)
+        self.btn_del.setCursor(Qt.PointingHandCursor)
+        self.btn_del.setFocusPolicy(Qt.NoFocus)
+        self.btn_del.setToolTip("删除此文件（进回收站）")
+        self.btn_del.move(badge_x, y_del)
+        self.btn_del.clicked.connect(self._on_del_clicked)
+        self.btn_edit.raise_()
         self.lbl_fmt.raise_()
+        self.btn_del.raise_()
         lay.addWidget(self.thumb_host, 0, Qt.AlignHCenter)
 
         name = os.path.basename(path)
@@ -505,17 +693,48 @@ class OutputImageCard(QFrame):
         self.lbl_info.setFixedHeight(self.LINE_H)
         lay.addWidget(self.lbl_info)
 
+        self._selected = False
         self.refresh_theme()
         self._load_thumb(path)
 
+    def set_selected(self, on: bool):
+        on = bool(on)
+        if on == getattr(self, "_selected", False):
+            self.update()
+            return
+        self._selected = on
+        self._apply_select_frame()
+
+    def _apply_select_frame(self):
+        # 缩略图宿主开了半透明，QSS 边框在 Windows 上经常画不出来；改由 paintEvent 描。
+        host = getattr(self, "thumb_host", None)
+        if host is not None:
+            host.setStyleSheet("background:transparent;border:none;")
+        self.update()
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if not getattr(self, "_selected", False):
+            return
+        host = getattr(self, "thumb_host", None)
+        if host is None:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        try:
+            acc = QColor(tk("accent"))
+        except Exception:
+            acc = QColor("#eab308")
+        r = QRectF(host.geometry()).adjusted(1.0, 1.0, -1.0, -1.0)
+        pen = QPen(acc, 2.0)
+        pen.setJoinStyle(Qt.MiterJoin)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(r, 3.0, 3.0)
+
     def refresh_theme(self, *_):
         self.setStyleSheet("QFrame{background:transparent;border:none;}")
-        try:
-            self.thumb_host.setStyleSheet(
-                "background:transparent;border:none;"
-            )
-        except Exception:
-            pass
+        self._apply_select_frame()
         self.thumb.setStyleSheet(
             f"font-size:28px;background:transparent;border:none;"
             f"color:{tk('text_mut')};"
@@ -534,6 +753,58 @@ class OutputImageCard(QFrame):
             f"background:transparent;border:none;"
         )
         self._style_fmt_badge()
+        self._style_edit_badge()
+        self._style_del_badge()
+
+    def _style_edit_badge(self):
+        btn = getattr(self, "btn_edit", None)
+        if btn is None:
+            return
+        try:
+            is_dark = bool(theme.is_dark)
+        except Exception:
+            is_dark = True
+        accent = "#eab308"
+        if is_dark:
+            bg = "rgba(15, 23, 42, 0.78)"
+        else:
+            bg = "rgba(255, 255, 255, 0.88)"
+        btn.setStyleSheet(
+            f"QPushButton#ImgProcEditBadge{{"
+            f"color:{accent};font-size:9px;font-weight:700;"
+            f"background:{bg};border:1px solid {accent};"
+            f"border-radius:3px;padding:0;}}"
+            f"QPushButton#ImgProcEditBadge:hover{{"
+            f"color:#111111;background:{accent};}}"
+        )
+
+    def _on_edit_clicked(self):
+        self.edit_requested.emit(self.path)
+
+    def _on_del_clicked(self):
+        self.delete_requested.emit(self.path)
+
+    def _style_del_badge(self):
+        btn = getattr(self, "btn_del", None)
+        if btn is None:
+            return
+        try:
+            is_dark = bool(theme.is_dark)
+        except Exception:
+            is_dark = True
+        accent = "#ef4444"
+        if is_dark:
+            bg = "rgba(15, 23, 42, 0.78)"
+        else:
+            bg = "rgba(255, 255, 255, 0.88)"
+        btn.setStyleSheet(
+            f"QPushButton#ImgProcDelBadge{{"
+            f"color:{accent};font-size:9px;font-weight:700;"
+            f"background:{bg};border:1px solid {accent};"
+            f"border-radius:3px;padding:0;}}"
+            f"QPushButton#ImgProcDelBadge:hover{{"
+            f"color:#ffffff;background:{accent};}}"
+        )
 
     def _style_fmt_badge(self):
         """类型标签：33×16、1px 描边；PNG 亮绿 / JPG 亮蓝，字号保持 11。"""
@@ -567,13 +838,23 @@ class OutputImageCard(QFrame):
         )
 
     def _load_thumb(self, path: str):
-        src = QPixmap(path)
+        reader = QImageReader(path)
+        reader.setAutoTransform(True)
+        sz = reader.size()
+        tw, th = self.THUMB_W, self.THUMB_H
+        if sz.isValid() and sz.width() > 0 and sz.height() > 0:
+            scale = min(tw / sz.width(), th / sz.height())
+            reader.setScaledSize(QSize(
+                max(1, int(sz.width() * scale)),
+                max(1, int(sz.height() * scale)),
+            ))
+        img = reader.read()
+        if img.isNull():
+            return
+        src = QPixmap.fromImage(img)
         if src.isNull():
             return
-        scaled = src.scaled(
-            self.THUMB_W, self.THUMB_H,
-            Qt.KeepAspectRatio, Qt.SmoothTransformation,
-        )
+        scaled = src
         canvas = QPixmap(self.THUMB_W, self.THUMB_H)
         canvas.fill(Qt.transparent)
         painter = QPainter(canvas)
@@ -584,8 +865,12 @@ class OutputImageCard(QFrame):
         painter.end()
         self.thumb.setPixmap(canvas)
         self.thumb.setText("")
+        if getattr(self, "btn_edit", None) is not None:
+            self.btn_edit.raise_()
         if getattr(self, "lbl_fmt", None) is not None:
             self.lbl_fmt.raise_()
+        if getattr(self, "btn_del", None) is not None:
+            self.btn_del.raise_()
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton:
@@ -596,21 +881,78 @@ class OutputImageCard(QFrame):
 
 
 # ── 左侧预览 ───────────────────────────────────────────────────────────────
-# 操作键高度：live 标准高减 4px
-_ACTION_BTN_H = max(18, int(LIVE_BUTTON_H) - 4)
+# 底栏操作键：与 live 同高，避免橙按钮 padding 把「保存」切字
+_ACTION_BTN_H = max(26, int(LIVE_BUTTON_H))
 
 
 def _apply_save_button(btn: QPushButton) -> QPushButton:
-    """能写出图片的主操作：全站橙色（BtnDownload），高度与右侧操作键一致。"""
+    """能写出图片的主操作：全站橙色（BtnDownload），高度够排下汉字。"""
     apply_btn_download(btn)
     try:
-        btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        btn.setStyleSheet(
+            BTN_DOWNLOAD_QSS
+            + "QPushButton#BtnDownload{padding:2px 12px;min-height:24px;}"
+        )
+        btn.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         btn.setFixedHeight(int(_ACTION_BTN_H))
-        btn.setMinimumWidth(72)
+        btn.setMinimumWidth(64)
         btn.setCursor(Qt.PointingHandCursor)
     except Exception:
         pass
     return btn
+
+
+class _ClearPreviewBtn(QToolButton):
+    """保存右侧：清除左边预览、恢复本页初始状态。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("ImgProcClearBtn")
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setToolTip("清除预览，恢复初始状态")
+        self.setFixedSize(int(_ACTION_BTN_H), int(_ACTION_BTN_H))
+        self.setAutoRaise(True)
+
+    def enterEvent(self, e):
+        super().enterEvent(e)
+        self.update()
+
+    def leaveEvent(self, e):
+        super().leaveEvent(e)
+        self.update()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        w, h = float(self.width()), float(self.height())
+        try:
+            bd = QColor(tk("border"))
+            acc = QColor(tk("accent"))
+            if self.isEnabled():
+                fg = QColor(tk("text"))
+            else:
+                fg = QColor(tk("text_mut"))
+        except Exception:
+            bd = QColor("#25345c")
+            acc = QColor("#3a8ee0")
+            fg = QColor("#d7def7") if self.isEnabled() else QColor("#9fb0d7")
+        hover = self.underMouse() and self.isEnabled()
+        r = QRectF(0.5, 0.5, w - 1.0, h - 1.0)
+        if hover:
+            fill = QColor(acc)
+            fill.setAlpha(40)
+            p.setBrush(QBrush(fill))
+            p.setPen(QPen(acc, 1))
+        else:
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(bd, 1))
+        p.drawRoundedRect(r, 6.0, 6.0)
+        m = min(w, h) * 0.30
+        p.setPen(QPen(fg, 1.8, Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(QPointF(m, m), QPointF(w - m, h - m))
+        p.drawLine(QPointF(w - m, m), QPointF(m, h - m))
+        p.end()
 
 
 class _ImagePreview(QLabel):
@@ -619,6 +961,7 @@ class _ImagePreview(QLabel):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._src: Optional[QPixmap] = None
+        self._checker = False  # PNG / 透明图：灰白格衬底，便于看抠图效果
         self.setAlignment(Qt.AlignCenter)
         self.setMinimumSize(120, 120)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -648,18 +991,44 @@ class _ImagePreview(QLabel):
 
     def show_empty(self):
         self._src = None
+        self._checker = False
         self.clear()
         self.setText("")
 
+    @staticmethod
+    def _checkerboard(w: int, h: int, cell: int = 10) -> QPixmap:
+        """灰白棋盘格，衬在半透明 PNG 下面。"""
+        pm = QPixmap(max(1, w), max(1, h))
+        light = QColor(255, 255, 255)
+        dark = QColor(204, 204, 204)
+        painter = QPainter(pm)
+        for y in range(0, h, cell):
+            for x in range(0, w, cell):
+                painter.fillRect(
+                    x, y, cell, cell,
+                    dark if ((x // cell) + (y // cell)) % 2 else light,
+                )
+        painter.end()
+        return pm
+
     def set_image_path(self, path: str) -> bool:
         pm = QPixmap(path)
-        return self.set_pixmap(pm)
+        # 仅 PNG 文件走灰白格（抠图结果也是 .png）
+        checker = os.path.splitext(path or "")[1].lower() == ".png"
+        return self.set_pixmap(pm, checker=checker)
 
-    def set_pixmap(self, pm: QPixmap) -> bool:
+    def set_pixmap(self, pm: QPixmap, checker: Optional[bool] = None) -> bool:
         if pm is None or pm.isNull():
             self.show_empty()
             return False
         self._src = pm
+        if checker is None:
+            # 无路径时：有透明通道则同样加衬底（如内存里的工作预览）
+            try:
+                checker = bool(pm.hasAlphaChannel())
+            except Exception:
+                checker = False
+        self._checker = bool(checker)
         self.setText("")
         self._rescale()
         return True
@@ -670,9 +1039,16 @@ class _ImagePreview(QLabel):
         avail = self.size() - QSize(16, 16)
         if avail.width() < 8 or avail.height() < 8:
             return
-        self.setPixmap(
-            self._src.scaled(avail, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        )
+        scaled = self._src.scaled(avail, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        if self._checker and not scaled.isNull():
+            canvas = self._checkerboard(scaled.width(), scaled.height())
+            painter = QPainter(canvas)
+            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            painter.drawPixmap(0, 0, scaled)
+            painter.end()
+            self.setPixmap(canvas)
+        else:
+            self.setPixmap(scaled)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -701,6 +1077,53 @@ class _ImagePreview(QLabel):
         e.ignore()
 
 
+class _MattingLine(QWidget):
+    """抠图进度：固定 2px 占位；空闲不画，开任务才从左往右填色。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("ImgProcMattingBar")
+        self._pct = 0
+        self._color = QColor(0, 0, 0, 0)
+        self.setFixedHeight(2)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setStyleSheet("background:transparent;border:none;")
+
+    def sizeHint(self):
+        return QSize(80, 2)
+
+    def minimumSizeHint(self):
+        return QSize(0, 2)
+
+    def set_progress(self, pct: int, color: str = ""):
+        try:
+            n = max(0, min(100, int(pct)))
+        except (TypeError, ValueError):
+            n = 0
+        c = QColor(0, 0, 0, 0)
+        if n > 0 and color and color != "transparent":
+            try:
+                c = QColor(color)
+            except Exception:
+                c = QColor(0, 0, 0, 0)
+            if not c.isValid():
+                c = QColor(0, 0, 0, 0)
+        self._pct = n
+        self._color = c
+        self.update()
+
+    def paintEvent(self, _e):
+        if self._pct <= 0 or self._color.alpha() <= 0:
+            return
+        w, h = self.width(), self.height()
+        if w <= 0 or h <= 0:
+            return
+        fill_w = max(1, int(round(w * self._pct / 100.0)))
+        p = QPainter(self)
+        p.fillRect(0, 0, fill_w, h, self._color)
+
+
 class _ScaleSlider(QWidget):
     """2–6 五档滑条：轨道上 5 个点，当前倍数画在圆形把手上（如 4x）。"""
 
@@ -718,6 +1141,9 @@ class _ScaleSlider(QWidget):
         self._max = _UPSCAYL_SCALE_MAX
         self._value = _UPSCAYL_SCALE_DEFAULT
         self._drag = False
+        self._prog = None          # None | "busy" | "run"
+        self._prog_pct = 0
+        self._prog_color = QColor("#94a3b8")
         self.setMinimumHeight(self.HANDLE_D + 4)
         self.setFixedHeight(self.HANDLE_D + 4)
         self.setMinimumWidth(self.HANDLE_D * 5 + 8)
@@ -741,6 +1167,32 @@ class _ScaleSlider(QWidget):
         self.update()
         if not self.signalsBlocked():
             self.valueChanged.emit(n)
+
+    def set_progress_busy(self):
+        self._prog = "busy"
+        self._prog_pct = 0
+        self._prog_color = QColor("#94a3b8")
+        self.update()
+
+    def set_progress(self, pct: int, color: str = ""):
+        self._prog = "run"
+        try:
+            self._prog_pct = max(0, min(100, int(pct)))
+        except (TypeError, ValueError):
+            self._prog_pct = 0
+        if color:
+            try:
+                self._prog_color = QColor(color)
+            except Exception:
+                self._prog_color = QColor(_progress_gradient_color(self._prog_pct))
+        else:
+            self._prog_color = QColor(_progress_gradient_color(self._prog_pct))
+        self.update()
+
+    def hide_progress(self):
+        self._prog = None
+        self._prog_pct = 0
+        self.update()
 
     def sizeHint(self):
         return QSize(180, self.HANDLE_D + 4)
@@ -785,7 +1237,8 @@ class _ScaleSlider(QWidget):
             mut = QColor("#9fb0d7")
             is_dark = True
         handle_fg = QColor("#ffffff") if (is_dark or acc.lightness() < 160) else QColor("#0f172a")
-        if not self.isEnabled():
+        in_prog = bool(self._prog)
+        if not self.isEnabled() and not in_prog:
             acc = mut
             handle_fg = mut
 
@@ -796,6 +1249,26 @@ class _ScaleSlider(QWidget):
         p.setPen(QPen(bd, 1))
         p.setBrush(QBrush(groov))
         p.drawRoundedRect(track, 2, 2)
+
+        if in_prog:
+            # 进度画在拖拽轨道上；倍数圆暂时不画
+            x0, x1 = xs[0], xs[-1]
+            tw = max(0.0, x1 - x0)
+            if self._prog == "busy":
+                by = cy - 0.5
+                p.setPen(Qt.NoPen)
+                p.setBrush(QBrush(QColor("#94a3b8")))
+                p.drawRect(QRectF(x0, by, tw, 1.0))
+            else:
+                p.setPen(Qt.NoPen)
+                p.setBrush(QBrush(QColor("#64748b")))
+                p.drawRoundedRect(track, 2, 2)
+                pw = tw * (self._prog_pct / 100.0)
+                if pw > 0:
+                    p.setBrush(QBrush(self._prog_color))
+                    p.drawRoundedRect(QRectF(x0, track_y, pw, self.TRACK_H), 2, 2)
+            p.end()
+            return
 
         idx = self._value - self._min
         hx = xs[max(0, min(len(xs) - 1, idx))]
@@ -831,6 +1304,9 @@ class _ScaleSlider(QWidget):
         )
 
     def mousePressEvent(self, e):
+        if self._prog:
+            e.accept()
+            return
         if e.button() == Qt.LeftButton and self.isEnabled():
             self._drag = True
             self.grabMouse()
@@ -840,6 +1316,9 @@ class _ScaleSlider(QWidget):
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
+        if self._prog:
+            e.accept()
+            return
         if self._drag and self.isEnabled():
             self.setValue(self._value_at_x(e.x()))
             e.accept()
@@ -872,6 +1351,20 @@ class _ScaleSlider(QWidget):
         super().keyPressEvent(e)
 
 
+def _progress_gradient_color(pct: int) -> str:
+    """与视频下载进度线相同：0–50 红→黄，50–100 黄→绿。"""
+    pct = max(0, min(100, int(pct)))
+    red, yellow, green = (239, 68, 68), (234, 179, 8), (34, 197, 94)
+    if pct <= 50:
+        c0, c1, t = red, yellow, pct / 50.0
+    else:
+        c0, c1, t = yellow, green, (pct - 50) / 50.0
+    r = round(c0[0] + (c1[0] - c0[0]) * t)
+    g = round(c0[1] + (c1[1] - c0[1]) * t)
+    b = round(c0[2] + (c1[2] - c0[2]) * t)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+
 class _OpGlass(QWidget):
     """盖在冻结功能卡上：灰色蒙层 + 点击激活。"""
 
@@ -888,14 +1381,24 @@ class _OpGlass(QWidget):
             self.setGeometry(parent.rect())
             self.raise_()
 
+    def _fit_parent(self):
+        p = self.parentWidget()
+        if p is None:
+            return
+        self.setGeometry(p.rect())
+        if self.isVisible():
+            self.raise_()
+
     def eventFilter(self, obj, event):
         if obj is self.parent():
             t = event.type()
             if t in (QEvent.Resize, QEvent.Show):
-                self.setGeometry(obj.rect())
-                if self.isVisible():
-                    self.raise_()
+                self._fit_parent()
         return False
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._fit_parent()
 
     def paintEvent(self, _e):
         w, h = self.width(), self.height()
@@ -927,6 +1430,72 @@ class _OpGlass(QWidget):
             e.accept()
             return
         super().mousePressEvent(e)
+
+
+class _CardRing(QWidget):
+    """盖在「激活功能卡」上的高亮描边环（2px，亮色）。
+
+    只画外框、不占布局、对鼠标透明：改线宽不再影响卡片 sizeHint，
+    切换激活区就不会像 QSS border 1px↔2px 那样带动整列卡片抖动。
+    与 _OpGlass 同套路：跟随父级尺寸、显示时自动 raise_。
+    """
+
+    PEN_W = 2
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_StyledBackground, False)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.setAttribute(Qt.WA_NoSystemBackground, True)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.hide()
+        if parent is not None:
+            parent.installEventFilter(self)
+            self.setGeometry(parent.rect())
+
+    def eventFilter(self, obj, event):
+        if obj is self.parent():
+            t = event.type()
+            if t in (QEvent.Resize, QEvent.Show):
+                self.setGeometry(obj.rect())
+                if self.isVisible():
+                    self.raise_()
+        return False
+
+    def paintEvent(self, _e):
+        w, h = self.width(), self.height()
+        if w <= self.PEN_W + 1 or h <= self.PEN_W + 1:
+            return
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        try:
+            color = QColor(tk("accent"))
+            if theme.is_dark:
+                # 暗色下再向亮蓝提亮，激活描边更醒目
+                hi = QColor(tk("sel_text"))
+                def _m(a, b):
+                    return int(round(a + (b - a) * 0.45))
+                color = QColor(
+                    _m(color.red(), hi.red()),
+                    _m(color.green(), hi.green()),
+                    _m(color.blue(), hi.blue()),
+                )
+        except Exception:
+            color = QColor("#6db5ff")
+        try:
+            r = max(2, int(float(sp(CARD_RADIUS)) - 1))
+        except Exception:
+            r = int(float(CARD_RADIUS) - 1)
+        half = self.PEN_W / 2.0
+        rect = QRectF(half, half, w - self.PEN_W, h - self.PEN_W)
+        path = QPainterPath()
+        path.addRoundedRect(rect, r, r)
+        p.setPen(QPen(color, self.PEN_W))
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(path)
+
+    def mousePressEvent(self, e):
+        e.ignore()
 
 
 class _QuietScroll(QScrollArea):
@@ -1122,9 +1691,15 @@ class PageImageProc(QWidget):
         self._upscale_worker: Optional[_UpscaylWorker] = None
         self._upscale_temp = ""
         self._upscale_busy = False
+        self._upscale_ignore = False
         self._upscale_want_jpg = False
+        self._matting_worker: Optional[_MattingWorker] = None
+        self._matting_temp = ""
+        self._matting_busy = False
+        self._matting_ignore = False
         self._op_cards = {}
         self._active_op = "scale"
+        self._output_preview_pending = False
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -1179,26 +1754,34 @@ class PageImageProc(QWidget):
         box.setContentsMargins(CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
         box.setSpacing(6)
 
-        title_row = QHBoxLayout()
-        title_row.setContentsMargins(0, 0, 0, 0)
-        title_row.setSpacing(8)
-        title_row.addStretch(1)
-        self.btn_pick = apply_medium_button(QPushButton("选择图片"))
-        self.btn_pick.clicked.connect(self._on_pick_file)
-        title_row.addWidget(self.btn_pick, 0, Qt.AlignVCenter)
-        box.addLayout(title_row)
-
         self.preview = _ImagePreview()
         self.preview.paths_dropped.connect(self._load_image)
         box.addWidget(self.preview, 1)
 
-        self.lbl_meta = QLabel("拖拽图片到这里")
-        self.lbl_meta.setWordWrap(True)
-        self.lbl_meta.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+        foot_row = QHBoxLayout()
+        foot_row.setContentsMargins(0, 0, 0, 0)
+        foot_row.setSpacing(8)
+        self.lbl_meta = _ElideLabel("拖拽图片到这里")
+        self.lbl_meta.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.lbl_meta.setStyleSheet(
             f"color:{tk('text_mut')};background:transparent;border:none;"
         )
-        box.addWidget(self.lbl_meta)
+        foot_row.addWidget(self.lbl_meta, 1)
+        self.lbl_meta_info = QLabel("")
+        self.lbl_meta_info.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self.lbl_meta_info.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        self.lbl_meta_info.setStyleSheet(
+            f"color:{tk('text_mut')};background:transparent;border:none;"
+        )
+        self.lbl_meta_info.hide()
+        foot_row.addWidget(self.lbl_meta_info, 0)
+        self.btn_pick = apply_medium_button(QPushButton("选择图片"))
+        self.btn_pick.clicked.connect(self._on_pick_file)
+        foot_row.addWidget(self.btn_pick, 0, Qt.AlignRight | Qt.AlignVCenter)
+        self.btn_clear = _ClearPreviewBtn()
+        self.btn_clear.clicked.connect(self._clear_preview)
+        foot_row.addWidget(self.btn_clear, 0, Qt.AlignRight | Qt.AlignVCenter)
+        box.addLayout(foot_row)
 
         lay.addWidget(card, 1)
         return wrap
@@ -1325,7 +1908,51 @@ class PageImageProc(QWidget):
         _pack_card(card_split, vb2)
         lay.addWidget(card_split, 0, Qt.AlignTop)
 
-        # ④ 更多修改（镜像 / 旋转）
+        # ④ 抠图（BiRefNet-general）
+        card_mat = make_card("CardImgProcMatting")
+        self._theme_frames.append(card_mat)
+        vb_mat = QVBoxLayout(card_mat)
+        vb_mat.setContentsMargins(CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
+        vb_mat.setSpacing(6)
+        title_mat = install_card_title(card_mat, vb_mat, "抠图")
+        self._theme_titles.append(title_mat)
+        self.lbl_matting_pct = QLabel("")
+        self.lbl_matting_pct.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.lbl_matting_pct.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        title_mat.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        head = title_mat.parentWidget()
+        head_l = head.layout() if head is not None else None
+        if head_l is not None:
+            head_l.removeWidget(title_mat)
+            title_row = QHBoxLayout()
+            title_row.setContentsMargins(0, 0, 0, 0)
+            title_row.setSpacing(8)
+            title_row.addWidget(title_mat, 1)
+            title_row.addWidget(self.lbl_matting_pct, 0, Qt.AlignRight | Qt.AlignVCenter)
+            head_l.addLayout(title_row)
+        self.lbl_matting_hint = QLabel("")
+        self.lbl_matting_hint.setWordWrap(True)
+        self.lbl_matting_hint.setStyleSheet(
+            f"color:{tk('text_mut')};background:transparent;border:none;"
+        )
+        mat_tail = QWidget()
+        mat_tail.setAttribute(Qt.WA_StyledBackground, True)
+        mat_tail.setStyleSheet("background:transparent;border:none;")
+        tail_l = QVBoxLayout(mat_tail)
+        tail_l.setContentsMargins(0, 0, 0, 0)
+        tail_l.setSpacing(2)
+        tail_l.addWidget(self.lbl_matting_hint)
+        self.bar_matting = _MattingLine()
+        tail_l.addWidget(self.bar_matting)
+        vb_mat.addWidget(mat_tail)
+        self._matting_ui_mode = "idle"
+        self._matting_ui_pct = 0
+        self._refresh_matting_hint()
+        self._style_matting_ui()
+        _pack_card(card_mat, vb_mat)
+        lay.addWidget(card_mat, 0, Qt.AlignTop)
+
+        # ⑤ 更多修改（镜像 / 旋转）
         card_more = make_card("CardImgProcMore")
         self._theme_frames.append(card_more)
         vb3 = QVBoxLayout(card_more)
@@ -1370,6 +1997,7 @@ class PageImageProc(QWidget):
         self._install_op_card("scale", card_scale)
         self._install_op_card("upscale", card_up)
         self._install_op_card("split", card_split)
+        self._install_op_card("matting", card_mat)
         self._install_op_card("more", card_more)
 
         scroll = _QuietScroll()
@@ -1382,7 +2010,7 @@ class PageImageProc(QWidget):
         scroll.setWidget(inner)
         outer.addWidget(scroll, 1)
 
-        # 底栏：状态一行 + 格式/保存（钉在列底，不随四区滚动）
+        # 底栏：状态一行 + 格式/保存（钉在列底，不随功能区滚动）
         foot = QWidget()
         foot.setObjectName("ImgProcSaveRow")
         foot.setAttribute(Qt.WA_StyledBackground, True)
@@ -1444,11 +2072,13 @@ class PageImageProc(QWidget):
         self.out_scroll.setWidgetResizable(True)
         self.out_scroll.setFrameShape(QFrame.NoFrame)
         self.out_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.out_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.out_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.out_scroll.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.out_scroll.setStyleSheet(
             "QScrollArea#ImgProcOutScroll{background:transparent;border:none;}"
             "QScrollArea#ImgProcOutScroll > QWidget > QWidget{background:transparent;}"
+            "QScrollBar:vertical{width:0px;}"
+            "QScrollBar:horizontal{height:0px;}"
         )
         try:
             self.out_scroll.viewport().setAutoFillBackground(False)
@@ -1567,6 +2197,11 @@ class PageImageProc(QWidget):
             self.lbl_meta.setStyleSheet(
                 f"color:{tk('text_mut')};background:transparent;border:none;"
             )
+            info = getattr(self, "lbl_meta_info", None)
+            if info is not None:
+                info.setStyleSheet(
+                    f"color:{tk('text_mut')};background:transparent;border:none;"
+                )
         except Exception:
             pass
         try:
@@ -1580,6 +2215,10 @@ class PageImageProc(QWidget):
                 )
         except Exception:
             pass
+        try:
+            self._refresh_matting_hint()
+        except Exception:
+            pass
         for c in self._out_cards:
             try:
                 c.refresh_theme()
@@ -1588,11 +2227,23 @@ class PageImageProc(QWidget):
         self._style_upscale_model_btns()
         self._style_geom_btns()
         self._style_upscale_scale_slider()
+        btn_c = getattr(self, "btn_clear", None)
+        if btn_c is not None:
+            btn_c.update()
+        btn_s = getattr(self, "btn_save", None)
+        if btn_s is not None:
+            _apply_save_button(btn_s)
         for card in (getattr(self, "_op_cards", None) or {}).values():
             glass = getattr(card, "_op_glass", None)
             if glass is not None:
                 try:
                     glass.update()
+                except Exception:
+                    pass
+            ring = getattr(card, "_op_ring", None)
+            if ring is not None:
+                try:
+                    ring.update()
                 except Exception:
                     pass
         self._update_actions_enabled()
@@ -1631,7 +2282,11 @@ class PageImageProc(QWidget):
             return
         sp = (d.get("save_path") or "").strip()
         if sp:
-            self._save_path = sp.replace("\\", "/")
+            new = sp.replace("\\", "/")
+            path_changed = new != (self._save_path or "")
+            self._save_path = new
+            if path_changed or not self._out_cards:
+                self._output_preview_pending = True
 
         try:
             pct = int(d.get("scale_pct", 50) or 50)
@@ -1671,11 +2326,19 @@ class PageImageProc(QWidget):
             sl.blockSignals(False)
             self._on_upscale_scale_changed(xs)
 
-        op = str(d.get("active_op") or "scale").strip()
-        if op not in _OP_KEYS:
-            op = "scale"
-        self._active_op = op
+        # 每次启动都从「图片缩小」开始，其余功能区默认盖冻结层
+        self._active_op = "scale"
         self._update_actions_enabled()
+        if (self._save_path or "").strip() and not self._out_cards:
+            self._output_preview_pending = True
+
+    def ensure_output_preview(self):
+        """第一次打开本页时再做缩略图。启动阶段不解码输出目录里的大图。"""
+        if not getattr(self, "_output_preview_pending", False):
+            return
+        self._output_preview_pending = False
+        if (self._save_path or "").strip():
+            self._reload_output_cards()
 
     # ── 输入 ────────────────────────────────────────────────
     def _on_pick_file(self):
@@ -1702,14 +2365,20 @@ class PageImageProc(QWidget):
             return
         self._discard_work()
         self._src_path = path
+        self._set_upscale_bar(0, hide=True)
         self._refresh_meta()
         self._update_actions_enabled()
+        self._sync_edit_frames()
         self._set_op_status("已载入图片")
 
     def _refresh_meta(self):
         p = self._src_path
+        info = getattr(self, "lbl_meta_info", None)
         if not p:
-            self.lbl_meta.setText("拖拽图片到这里")
+            self.lbl_meta.setFullText("拖拽图片到这里")
+            if info is not None:
+                info.clear()
+                info.hide()
             return
         name = os.path.basename(p)
         w = h = 0
@@ -1721,42 +2390,74 @@ class PageImageProc(QWidget):
             if w <= 0 or h <= 0:
                 w, h = fw, fh
         elif w <= 0:
-            self.lbl_meta.setText("拖拽图片到这里")
+            self.lbl_meta.setFullText("拖拽图片到这里")
+            if info is not None:
+                info.clear()
+                info.hide()
             return
         res = f"{w}×{h}" if w and h else "—×—"
         size_s = _fmt_size(size) if size else "—"
-        self.lbl_meta.setText(f"{name}  ·  {res}  ·  {size_s}")
+        self.lbl_meta.setFullText(name)
+        if info is not None:
+            info.setText(f"·  {res}  ·  {size_s}")
+            info.show()
 
     def _install_op_card(self, key: str, card: QFrame) -> None:
         glass = _OpGlass(card)
         glass.clicked.connect(lambda _=False, k=key: self._set_active_op(k))
         card._op_glass = glass
+        ring = _CardRing(card)
+        card._op_ring = ring
         self._op_cards[key] = card
         glass.hide()
+        ring.hide()
 
     def _set_active_op(self, key: str) -> None:
         if key not in _OP_KEYS:
             return
+        if not (self._src_path and os.path.isfile(self._src_path)):
+            self._set_op_status("请先选择图片")
+            return
         if getattr(self, "_active_op", "") == key:
             return
         self._active_op = key
+        if key == "matting":
+            r = getattr(self, "radio_save_png", None)
+            if r is not None and not r.isChecked():
+                r.setChecked(True)
         self._update_actions_enabled()
         self._notify_prefs()
         self._set_op_status("已选%s" % _OP_STATUS_NAMES.get(key, "功能"))
 
     def _update_actions_enabled(self):
         ok = bool(self._src_path and os.path.isfile(self._src_path))
-        busy = bool(self._upscale_busy)
+        busy = bool(self._upscale_busy or self._matting_busy)
         active = getattr(self, "_active_op", "") or ""
         cards = getattr(self, "_op_cards", None) or {}
 
         for key, card in cards.items():
-            on = key == active
+            on = bool(ok) and key == active
+            ring = getattr(card, "_op_ring", None)
+            if ring is not None:
+                if on:
+                    ring.setGeometry(card.rect())
+                    ring.show()
+                    ring.raise_()
+                else:
+                    ring.hide()
             glass = getattr(card, "_op_glass", None)
             if glass is not None:
                 glass.setVisible(not on)
                 if not on:
-                    glass.raise_()
+                    glass._fit_parent()
+            # 已载入图片后，当前激活操作卡背景提亮（描边由 _CardRing 叠加，不占布局）
+            want_active = "1" if (ok and on) else "0"
+            try:
+                if str(card.property("cardActive") or "0") != want_active:
+                    card.setProperty("cardActive", want_active)
+                    restyle_card_frame(card)
+            except Exception:
+                pass
 
         def _en(w, want):
             if w is None:
@@ -1767,21 +2468,22 @@ class PageImageProc(QWidget):
                 pass
 
         _en(getattr(self, "btn_save", None), bool(active) and ok and not busy)
-        for r in (getattr(self, "radio_save_jpg", None), getattr(self, "radio_save_png", None)):
-            _en(r, not busy)
+        _en(getattr(self, "btn_clear", None), ok)
+        _en(getattr(self, "radio_save_png", None), not busy)
+        _en(getattr(self, "radio_save_jpg", None), not busy and active != "matting")
         for b in (
             getattr(self, "btn_flip_h", None), getattr(self, "btn_flip_v", None),
             getattr(self, "btn_rot_cw", None), getattr(self, "btn_rot_ccw", None),
         ):
             _en(b, active == "more" and ok and not busy)
         for b in getattr(self, "_upscale_model_btns", []) or []:
-            _en(b, active == "upscale" and not busy)
-        _en(getattr(self, "slider_upscale", None), active == "upscale" and not busy)
+            _en(b, active == "upscale" and ok and not busy)
+        _en(getattr(self, "slider_upscale", None), active == "upscale" and ok and not busy)
         for r in (
             getattr(self, "radio_25", None), getattr(self, "radio_50", None),
             getattr(self, "radio_75", None),
         ):
-            _en(r, active == "scale")
+            _en(r, active == "scale" and ok)
 
     # ── 拖放 / 粘贴 ─────────────────────────────────────────
     def dragEnterEvent(self, e: QDragEnterEvent):
@@ -1864,23 +2566,140 @@ class PageImageProc(QWidget):
             QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(folder)))
 
     # ── 输出预览卡 ──────────────────────────────────────────
-    def _add_output_cards(self, paths: List[str]):
+    def _add_output_cards(self, paths: List[str], *, scroll: bool = True, silent: bool = False):
         """追加输出卡（流式换行），并滚到最底。"""
+        existing = set()
+        for c in self._out_cards:
+            p = getattr(c, "path", "") or ""
+            if p:
+                try:
+                    existing.add(os.path.normcase(os.path.abspath(p)))
+                except Exception:
+                    existing.add(os.path.normcase(p))
         added = False
         for path in paths or []:
             if not path or not os.path.isfile(path):
                 continue
+            try:
+                key = os.path.normcase(os.path.abspath(path))
+            except Exception:
+                key = os.path.normcase(path)
+            if key in existing:
+                continue
             card = OutputImageCard(path)
             card.clicked_open.connect(self._open_path_dir)
+            card.edit_requested.connect(self._load_image)
+            card.delete_requested.connect(self._delete_output)
             self._out_lay.addWidget(card)
             self._out_cards.append(card)
+            existing.add(key)
             added = True
-            log.info("输出：%s", path)
+            if not silent:
+                log.info("输出：%s", path)
 
+        self._sync_edit_frames()
         if added:
             self._relayout_out_cards()
-            QTimer.singleShot(0, self._scroll_out_to_end)
-            QTimer.singleShot(50, self._scroll_out_to_end)
+            if scroll:
+                QTimer.singleShot(0, self._scroll_out_to_end)
+                QTimer.singleShot(50, self._scroll_out_to_end)
+
+    def _clear_output_cards(self):
+        lay = getattr(self, "_out_lay", None)
+        for card in list(self._out_cards):
+            if lay is not None:
+                try:
+                    lay.removeWidget(card)
+                except Exception:
+                    pass
+            card.setParent(None)
+            card.deleteLater()
+        self._out_cards = []
+
+    def _reload_output_cards(self):
+        """用 ImageProc 目录里已有图片填满输出预览（按修改时间从旧到新）。"""
+        if getattr(self, "_out_lay", None) is None:
+            return
+        self._clear_output_cards()
+        d = (self._save_path or "").strip()
+        if not d or not os.path.isdir(d):
+            self._relayout_out_cards()
+            return
+        files = []
+        try:
+            names = os.listdir(d)
+        except OSError:
+            names = []
+        for name in names:
+            low = name.lower()
+            if name.startswith(".") or low.startswith("_upscale_in") or low.startswith("_matting_in"):
+                continue
+            ext = os.path.splitext(name)[1].lower()
+            if ext not in _IMG_EXTS:
+                continue
+            path = os.path.join(d, name)
+            if not os.path.isfile(path):
+                continue
+            try:
+                mtime = os.path.getmtime(path)
+            except OSError:
+                mtime = 0.0
+            files.append((mtime, path))
+        files.sort(key=lambda x: (x[0], x[1].lower()))
+        if files:
+            self._add_output_cards([p for _t, p in files], scroll=True, silent=True)
+            log.info("输出预览已从目录恢复 %s 张：%s", len(files), d)
+        else:
+            self._relayout_out_cards()
+
+    def _delete_output(self, path: str):
+        path = (path or "").strip()
+        if not path:
+            return
+        try:
+            key = os.path.normcase(os.path.abspath(path))
+        except Exception:
+            key = os.path.normcase(path)
+        if os.path.isfile(path):
+            try:
+                from pages.page_dup_clean import _send_to_recycle
+                _send_to_recycle(path)
+            except Exception:
+                try:
+                    os.remove(path)
+                except Exception as e:
+                    self._status("删除失败：%s" % e, ok=False, hint="删除失败")
+                    return
+        lay = getattr(self, "_out_lay", None)
+        kept = []
+        for card in self._out_cards:
+            cp = getattr(card, "path", "") or ""
+            try:
+                ck = os.path.normcase(os.path.abspath(cp)) if cp else ""
+            except Exception:
+                ck = os.path.normcase(cp)
+            if ck == key:
+                if lay is not None:
+                    try:
+                        lay.removeWidget(card)
+                    except Exception:
+                        pass
+                card.setParent(None)
+                card.deleteLater()
+            else:
+                kept.append(card)
+        self._out_cards = kept
+        src = getattr(self, "_src_path", "") or ""
+        try:
+            sk = os.path.normcase(os.path.abspath(src)) if src else ""
+        except Exception:
+            sk = os.path.normcase(src)
+        if sk and sk == key:
+            self._clear_preview()
+        else:
+            self._sync_edit_frames()
+        self._relayout_out_cards()
+        self._set_op_status("已删除")
 
     def _relayout_out_cards(self):
         """FlowLayout 需按 width 算高，否则滚动区内容高度不够。"""
@@ -1958,6 +2777,8 @@ class PageImageProc(QWidget):
             self._do_upscale()
         elif op == "split":
             self._do_split()
+        elif op == "matting":
+            self._do_matting()
         else:
             self._do_save()
 
@@ -2006,6 +2827,7 @@ class PageImageProc(QWidget):
             except Exception:
                 pass
             self._discard_work()
+            self._src_path = out
             self._add_output_cards([out])
             self.preview.set_image_path(out)
             self._refresh_meta()
@@ -2015,8 +2837,91 @@ class PageImageProc(QWidget):
             self._status(f"缩小失败：{e}", ok=False, hint="缩小失败")
 
     # ── 业务：放大（Upscayl / Real-ESRGAN，2×–6×）────────────
+    def _refresh_matting_hint(self) -> None:
+        lbl = getattr(self, "lbl_matting_hint", None)
+        if lbl is None:
+            return
+        has = bool(_birefnet_onnx_path())
+        if has:
+            text = "保存时去除背景，输出透明 PNG"
+            color = tk("text_mut")
+        else:
+            text = "缺少模型：python tools\\download_models.py --only birefnet-general"
+            color = tk("text_mut")
+        lbl.setText(text)
+        lbl.setStyleSheet(
+            f"color:{color};background:transparent;border:none;"
+        )
+        self._style_matting_ui()
+
+    def _style_matting_ui(self) -> None:
+        bar = getattr(self, "bar_matting", None)
+        pct = getattr(self, "lbl_matting_pct", None)
+        mode = getattr(self, "_matting_ui_mode", "idle") or "idle"
+        try:
+            acc = tk("accent")
+            okc = tk("ok")
+            errc = tk("err")
+            mut = tk("text_mut")
+        except Exception:
+            acc, okc, errc, mut = "#3a8ee0", "#22c55e", "#ef4444", "#94a3b8"
+        if mode == "ok":
+            chunk = okc
+        elif mode == "err":
+            chunk = errc
+        elif mode == "run":
+            chunk = acc
+        else:
+            chunk = "transparent"
+        if bar is not None and hasattr(bar, "set_progress"):
+            n = 0
+            if mode == "ok":
+                n = 100
+            elif mode == "run":
+                try:
+                    n = max(0, min(100, int(getattr(self, "_matting_ui_pct", 0) or 0)))
+                except (TypeError, ValueError):
+                    n = 0
+            elif mode == "err":
+                n = 100
+            bar.set_progress(n, chunk)
+        if pct is None:
+            return
+        if mode == "ok":
+            color, weight = okc, "700"
+        elif mode == "err":
+            color, weight = errc, "700"
+        elif mode == "run":
+            color, weight = acc, "700"
+        else:
+            color, weight = mut, "600"
+        pct.setStyleSheet(
+            f"color:{color};background:transparent;border:none;"
+            f"font-size:12px;font-weight:{weight};"
+        )
+
+    def _set_matting_ui(self, *, mode: str = "idle", pct: int = 0) -> None:
+        self._matting_ui_mode = mode
+        try:
+            self._matting_ui_pct = max(0, min(100, int(pct)))
+        except (TypeError, ValueError):
+            self._matting_ui_pct = 0
+        bar = getattr(self, "bar_matting", None)
+        lab = getattr(self, "lbl_matting_pct", None)
+        n = self._matting_ui_pct
+        if lab is not None:
+            if mode == "run":
+                lab.setText("%s%%" % n)
+            elif mode == "ok":
+                lab.setText("完成")
+            elif mode == "err":
+                lab.setText("失败")
+            else:
+                lab.setText("")
+        self._style_matting_ui()
+
     def _do_upscale(self):
-        if self._upscale_busy:
+        if self._upscale_busy or self._matting_busy:
             return
         if not self._require_src():
             return
@@ -2047,25 +2952,27 @@ class PageImageProc(QWidget):
         w.finished.connect(self._on_upscale_thread_done)
         self._upscale_worker = w
         self._upscale_busy = True
+        self._upscale_ignore = False
         self._upscale_want_jpg = self._save_is_jpg()
         self._update_actions_enabled()
+        self._set_upscale_bar(0, busy=True)
         self._set_op_status("正在放大")
         self._status("开始放大 %s×（%s）" % (x, tag), hint="正在放大")
         w.start()
 
-    def _prepare_upscale_input(self, out_dir: str) -> Tuple[str, bool]:
-        """upscayl-bin 只吃 png/jpg/webp；有未保存修改或其它格式时先落一张临时 PNG。"""
+    def _prepare_upscale_input(self, out_dir: str, kind: str = "放大") -> Tuple[str, bool]:
+        """子进程只吃常见位图；有未保存修改或其它格式时先落一张临时 PNG。"""
         src = self._src_path
         ext = os.path.splitext(src)[1].lower()
         need_tmp = bool(self._work_img is not None and self._work_dirty)
         if not need_tmp and ext in _UPSCAYL_DIRECT_EXTS and os.path.isfile(src):
             return src, False
         if not _has_pillow():
-            self._status("未安装 Pillow，无法转换后放大", ok=False, hint="缺少组件")
+            self._status("未安装 Pillow，无法转换后%s" % kind, ok=False, hint="缺少组件")
             return "", False
         try:
             img = self._open_current()
-            tmp = _unique_path(out_dir, "_upscale_in", ".png")
+            tmp = _unique_path(out_dir, "_%s_in" % ("matting" if kind == "抠图" else "upscale"), ".png")
             _save_png(img, tmp)
             if img is not self._work_img:
                 try:
@@ -2074,14 +2981,58 @@ class PageImageProc(QWidget):
                     pass
             return tmp, True
         except Exception as e:
-            log.exception("放大前转 PNG 失败")
-            self._status("放大前转换失败：%s" % e, ok=False, hint="转换失败")
+            log.exception("%s前转 PNG 失败", kind)
+            self._status("%s前转换失败：%s" % (kind, e), ok=False, hint="转换失败")
             return "", False
 
+    def _set_upscale_bar(self, pct: int, *, busy: bool = False, hide: bool = False):
+        sl = getattr(self, "slider_upscale", None)
+        if sl is None:
+            return
+        try:
+            if hide:
+                sl.hide_progress()
+                return
+            if busy:
+                sl.set_progress_busy()
+                return
+            n = max(0, min(100, int(pct)))
+            sl.set_progress(n, _progress_gradient_color(n))
+        except Exception:
+            pass
+
+    def _sync_edit_frames(self):
+        """输出卡外框：仅当前左边底图对应的那张亮着。"""
+        src = getattr(self, "_src_path", "") or ""
+        key = ""
+        if src:
+            try:
+                key = os.path.normcase(os.path.abspath(src))
+            except Exception:
+                key = os.path.normcase(src)
+        for c in getattr(self, "_out_cards", None) or []:
+            ck = ""
+            p = getattr(c, "path", "") or ""
+            if p:
+                try:
+                    ck = os.path.normcase(os.path.abspath(p))
+                except Exception:
+                    ck = os.path.normcase(p)
+            try:
+                c.set_selected(bool(key) and ck == key)
+            except Exception:
+                pass
+
     def _on_upscale_progress(self, pct: int):
+        if getattr(self, "_upscale_ignore", False):
+            return
         try:
             n = max(0, min(100, int(pct)))
-            self._set_op_status("放大中%s%%" % n)
+            self._set_upscale_bar(n)
+            if n >= 100:
+                self._set_op_status("放大完成")
+            else:
+                self._set_op_status("放大中 %s%%" % n)
         except Exception:
             pass
 
@@ -2124,24 +3075,35 @@ class PageImageProc(QWidget):
             return path
 
     def _on_upscale_ok(self, path: str):
+        if getattr(self, "_upscale_ignore", False):
+            self._cleanup_upscale_temp()
+            self._upscale_busy = False
+            return
         self._cleanup_upscale_temp()
         self._upscale_busy = False
         self._reset_upscale_btn_text()
         path = self._finalize_upscale_path(path)
         self._discard_work()
+        self._src_path = path
         self._add_output_cards([path])
         try:
             self.preview.set_image_path(path)
         except Exception:
             pass
         self._refresh_meta()
+        self._set_upscale_bar(0, hide=True)
         self._update_actions_enabled()
         self._status("放大完成：%s" % os.path.basename(path), hint="放大完成")
 
     def _on_upscale_err(self, msg: str):
+        if getattr(self, "_upscale_ignore", False):
+            self._cleanup_upscale_temp()
+            self._upscale_busy = False
+            return
         self._cleanup_upscale_temp()
         self._upscale_busy = False
         self._reset_upscale_btn_text()
+        self._set_upscale_bar(0, hide=True)
         self._update_actions_enabled()
         self._status(msg or "放大失败", ok=False, hint="放大失败")
 
@@ -2157,6 +3119,33 @@ class PageImageProc(QWidget):
             self._upscale_busy = False
             self._reset_upscale_btn_text()
             self._update_actions_enabled()
+
+    def _clear_preview(self):
+        """清掉左边预览和工作图，功能区重新冻结，进度条归零。"""
+        self._upscale_ignore = True
+        w = getattr(self, "_upscale_worker", None)
+        if w is not None:
+            try:
+                w.stop()
+            except Exception:
+                pass
+        self._upscale_busy = False
+        self._cleanup_upscale_temp()
+        self._stop_matting_worker()
+        self._cleanup_matting_temp()
+        self._discard_work()
+        self._src_path = ""
+        try:
+            self.preview.show_empty()
+        except Exception:
+            pass
+        self._set_upscale_bar(0, hide=True)
+        self._set_matting_ui(mode="idle")
+        self._active_op = "scale"
+        self._refresh_meta()
+        self._update_actions_enabled()
+        self._sync_edit_frames()
+        self._set_op_status("等待操作")
 
     def _cleanup_upscale_temp(self):
         p = self._upscale_temp
@@ -2184,6 +3173,131 @@ class PageImageProc(QWidget):
             except Exception:
                 log.exception("停止放大线程失败")
         self._cleanup_upscale_temp()
+        self._stop_matting_worker()
+        mw = getattr(self, "_matting_worker", None)
+        self._matting_worker = None
+        if mw is not None:
+            try:
+                from utils.qthread_util import stop_qthread
+                stop_qthread(mw, name="matting")
+            except Exception:
+                log.exception("停止抠图线程失败")
+        self._cleanup_matting_temp()
+
+    # ── 业务：抠图（BiRefNet-general）────────────────────────
+    def _do_matting(self):
+        if self._matting_busy or self._upscale_busy:
+            return
+        if not self._require_src():
+            return
+        model = _birefnet_onnx_path()
+        if not model:
+            self._refresh_matting_hint()
+            self._status(
+                "缺少 BiRefNet-general，请运行 python tools\\download_models.py --only birefnet-general",
+                ok=False, hint="缺少模型",
+            )
+            return
+        out_dir = self._ensure_out_dir()
+        if not out_dir:
+            return
+        png = getattr(self, "radio_save_png", None)
+        if png is not None and not png.isChecked():
+            png.setChecked(True)
+        self._notify_prefs()
+        src, is_temp = self._prepare_upscale_input(out_dir, kind="抠图")
+        if not src:
+            return
+        stem = _src_stem(self._src_path)
+        dst = _op_save_path(out_dir, stem, "抠图", ".png")
+        self._matting_temp = src if is_temp else ""
+        w = _MattingWorker(src, dst, model)
+        w.progress.connect(self._on_matting_progress)
+        w.finished_ok.connect(self._on_matting_ok)
+        w.finished_err.connect(self._on_matting_err)
+        w.finished.connect(self._on_matting_thread_done)
+        self._matting_worker = w
+        self._matting_busy = True
+        self._matting_ignore = False
+        self._update_actions_enabled()
+        self._set_matting_ui(mode="run", pct=0)
+        self._set_op_status("正在抠图")
+        self._status("开始抠图（BiRefNet-general）", hint="正在抠图")
+        w.start()
+
+    def _on_matting_progress(self, pct: int):
+        if getattr(self, "_matting_ignore", False):
+            return
+        try:
+            n = max(0, min(100, int(pct)))
+            self._set_matting_ui(mode="run", pct=n)
+            if n >= 100:
+                self._set_op_status("抠图完成")
+            else:
+                self._set_op_status("抠图中 %s%%" % n)
+        except Exception:
+            pass
+
+    def _on_matting_ok(self, path: str):
+        if getattr(self, "_matting_ignore", False):
+            self._cleanup_matting_temp()
+            self._matting_busy = False
+            return
+        self._cleanup_matting_temp()
+        self._matting_busy = False
+        self._discard_work()
+        self._src_path = path
+        self._add_output_cards([path])
+        try:
+            self.preview.set_image_path(path)
+        except Exception:
+            pass
+        self._refresh_meta()
+        self._update_actions_enabled()
+        self._set_matting_ui(mode="ok", pct=100)
+        self._status("抠图完成：%s" % os.path.basename(path), hint="抠图完成")
+
+    def _on_matting_err(self, msg: str):
+        if getattr(self, "_matting_ignore", False):
+            self._cleanup_matting_temp()
+            self._matting_busy = False
+            return
+        self._cleanup_matting_temp()
+        self._matting_busy = False
+        self._update_actions_enabled()
+        self._set_matting_ui(mode="err")
+        self._status(msg or "抠图失败", ok=False, hint="抠图失败")
+
+    def _on_matting_thread_done(self):
+        w = self._matting_worker
+        self._matting_worker = None
+        if w is not None:
+            try:
+                w.deleteLater()
+            except Exception:
+                pass
+        if self._matting_busy:
+            self._matting_busy = False
+            self._update_actions_enabled()
+
+    def _stop_matting_worker(self):
+        self._matting_ignore = True
+        w = getattr(self, "_matting_worker", None)
+        if w is not None:
+            try:
+                w.stop()
+            except Exception:
+                pass
+        self._matting_busy = False
+
+    def _cleanup_matting_temp(self):
+        p = self._matting_temp
+        self._matting_temp = ""
+        if p and os.path.isfile(p):
+            try:
+                os.remove(p)
+            except Exception:
+                log.debug("删除抠图临时文件失败 path=%s", p, exc_info=True)
 
     # ── 业务：四分切割 ──────────────────────────────────────
     def _do_split(self):
@@ -2229,8 +3343,12 @@ class PageImageProc(QWidget):
                 img.close()
             self._discard_work()
             self._add_output_cards(outs)
-            if outs:
-                self.preview.set_image_path(outs[0])
+            # 四块落到输出预览；左边仍显示原图，不换成某一角
+            if self._src_path and os.path.isfile(self._src_path):
+                try:
+                    self.preview.set_image_path(self._src_path)
+                except Exception:
+                    pass
             self._refresh_meta()
             self._set_op_status("切割完成")
         except Exception as e:

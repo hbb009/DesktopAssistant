@@ -580,6 +580,51 @@ def _arc_pt(cx, cy, r, deg):
     return QPointF(cx + r * math.cos(a), cy + r * math.sin(a))
 
 
+def _paint_straight_arrow(p: QPainter, s: float, color: QColor, to_left: bool):
+    """画一条指向左/右的直箭头（与提示词页「撤销/重做」同款）。"""
+    cy = s * 0.5
+    if to_left:
+        tip_x, far_x = s * 0.20, s * 0.80
+    else:
+        tip_x, far_x = s * 0.80, s * 0.20
+    head = s * 0.24          # 三角头长度
+    half = s * 0.17          # 三角头半高
+    base_x = tip_x + head if to_left else tip_x - head
+    pen = QPen(color, max(1.5, s * 0.08), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+    # 箭杆：从 far 端到三角头底边
+    p.drawLine(QPointF(far_x, cy), QPointF(base_x, cy))
+    # 三角头（填充）
+    tri = QPainterPath()
+    tri.moveTo(tip_x, cy)
+    tri.lineTo(base_x, cy - half)
+    tri.lineTo(base_x, cy + half)
+    tri.closeSubpath()
+    p.setPen(Qt.NoPen)
+    p.setBrush(QBrush(color))
+    p.drawPath(tri)
+
+
+def _draw_save_disk(p: QPainter, s: float, color: QColor, arrow: bool = True):
+    """经典软盘（磁盘）图标；arrow=True 时上方带向下落盘箭头。"""
+    pw = max(1.5, s * 0.075)
+    p.setPen(QPen(color, pw, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    p.setBrush(Qt.NoBrush)
+    # 软盘主体
+    p.drawRoundedRect(QRectF(s * 0.20, s * 0.30, s * 0.60, s * 0.54), s * 0.045, s * 0.045)
+    # 金属快门槽
+    p.drawRoundedRect(QRectF(s * 0.20, s * 0.30, s * 0.60, s * 0.15), s * 0.04, s * 0.04)
+    # 纸标签
+    p.drawRoundedRect(QRectF(s * 0.32, s * 0.56, s * 0.24, s * 0.28), s * 0.02, s * 0.02)
+    p.drawLine(QPointF(s * 0.32, s * 0.66), QPointF(s * 0.56, s * 0.66))
+    if arrow:
+        ax = s * 0.5
+        p.drawLine(QPointF(ax, s * 0.10), QPointF(ax, s * 0.22))
+        p.drawLine(QPointF(ax, s * 0.22), QPointF(ax - s * 0.11, s * 0.11))
+        p.drawLine(QPointF(ax, s * 0.22), QPointF(ax + s * 0.11, s * 0.11))
+
+
 def _paint_edit_icon(p: QPainter, kind: str, s: float, color: QColor):
     """在 s×s 方格内画 QQ 风格线性图标。"""
     p.setRenderHint(QPainter.Antialiasing, True)
@@ -653,81 +698,17 @@ def _paint_edit_icon(p: QPainter, kind: str, s: float, color: QColor):
         p.setPen(color)
         p.drawText(QRectF(0, 0, s, s), Qt.AlignCenter, "OCR")
     elif kind == "undo":
-        # 经典撤销：左侧半圆弧（右开口）+ 上端向左箭头
-        pw = max(1.7, s * 0.085)
-        pen = QPen(color, pw, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
-        cx, cy, r = s / 2, s / 2, s * 0.31
-        path = QPainterPath()
-        for i in range(25):
-            # 屏幕角 270(上)→90(下)，经 180(左)，即右开口的「C」
-            deg = 270.0 - 180.0 * i / 24.0
-            pt = _arc_pt(cx, cy, r, deg)
-            if i == 0:
-                path.moveTo(pt)
-            else:
-                path.lineTo(pt)
-        p.drawPath(path)
-        # 顶端箭头，向左（沿弧行进方向）
-        tip = _arc_pt(cx, cy, r, 270.0)
-        L = s * 0.12
-        p.drawLine(tip, QPointF(tip.x() + L * math.cos(math.radians(38)),
-                                tip.y() + L * math.sin(math.radians(38))))
-        p.drawLine(tip, QPointF(tip.x() + L * math.cos(math.radians(-38)),
-                                tip.y() + L * math.sin(math.radians(-38))))
+        # 撤销 = 向左直箭头（与提示词页一致）
+        _paint_straight_arrow(p, s, color, to_left=True)
     elif kind == "redo":
-        # 经典重做：右侧半圆弧（左开口）+ 上端向右箭头（撤销的镜像）
-        pw = max(1.7, s * 0.085)
-        pen = QPen(color, pw, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
-        cx, cy, r = s / 2, s / 2, s * 0.31
-        path = QPainterPath()
-        for i in range(25):
-            # 屏幕角 270(上)→450(=90 下)，经 0(右)，即左开口的「C」
-            deg = 270.0 + 180.0 * i / 24.0
-            pt = _arc_pt(cx, cy, r, deg)
-            if i == 0:
-                path.moveTo(pt)
-            else:
-                path.lineTo(pt)
-        p.drawPath(path)
-        # 顶端箭头，向右（沿弧行进方向）
-        tip = _arc_pt(cx, cy, r, 270.0)
-        L = s * 0.12
-        p.drawLine(tip, QPointF(tip.x() + L * math.cos(math.radians(180 + 38)),
-                                tip.y() + L * math.sin(math.radians(180 + 38))))
-        p.drawLine(tip, QPointF(tip.x() + L * math.cos(math.radians(180 - 38)),
-                                tip.y() + L * math.sin(math.radians(180 - 38))))
+        # 重做 = 向右直箭头（与提示词页一致）
+        _paint_straight_arrow(p, s, color, to_left=False)
     elif kind == "save":
-        # 下载箭头
-        p.drawLine(QPointF(r.center().x(), r.top() + s * 0.02),
-                   QPointF(r.center().x(), r.bottom() - s * 0.22))
-        p.drawLine(QPointF(r.center().x(), r.bottom() - s * 0.22),
-                   QPointF(r.center().x() - s * 0.16, r.bottom() - s * 0.38))
-        p.drawLine(QPointF(r.center().x(), r.bottom() - s * 0.22),
-                   QPointF(r.center().x() + s * 0.16, r.bottom() - s * 0.38))
-        p.drawLine(QPointF(r.left() + s * 0.02, r.bottom() - s * 0.08),
-                   QPointF(r.right() - s * 0.02, r.bottom() - s * 0.08))
+        # 保存并关闭：磁盘图标
+        _draw_save_disk(p, s, color, arrow=False)
     elif kind == "saveas":
         # 另存为：经典软盘 + 向下箭头（存到指定目录）
-        pw = max(1.5, s * 0.075)
-        pen = QPen(color, pw, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
-        # 软盘主体
-        p.drawRoundedRect(QRectF(s * 0.20, s * 0.30, s * 0.60, s * 0.54), s * 0.045, s * 0.045)
-        # 金属快门槽
-        p.drawRoundedRect(QRectF(s * 0.20, s * 0.30, s * 0.60, s * 0.15), s * 0.04, s * 0.04)
-        # 纸标签
-        p.drawRoundedRect(QRectF(s * 0.32, s * 0.56, s * 0.24, s * 0.28), s * 0.02, s * 0.02)
-        p.drawLine(QPointF(s * 0.32, s * 0.66), QPointF(s * 0.56, s * 0.66))
-        # 向下箭头（落入软盘）
-        ax = s * 0.5
-        p.drawLine(QPointF(ax, s * 0.10), QPointF(ax, s * 0.22))
-        p.drawLine(QPointF(ax, s * 0.22), QPointF(ax - s * 0.11, s * 0.11))
-        p.drawLine(QPointF(ax, s * 0.22), QPointF(ax + s * 0.11, s * 0.11))
+        _draw_save_disk(p, s, color, arrow=True)
     elif kind == "cancel":
         p.setPen(QPen(_ED_DANGER, max(1.6, s * 0.08), Qt.SolidLine, Qt.RoundCap))
         p.drawLine(r.topLeft() + QPointF(s * 0.04, s * 0.04),
@@ -888,10 +869,10 @@ class _ColorPickBtn(QToolButton):
 
 
 class _WidthPickBtn(QToolButton):
-    """选粗细：显示汉字 细/中/粗；点击弹出选择（无菜单三角）。"""
+    """选粗细：直接显示 N px（5 档）；点击弹出选择（无菜单三角）。"""
 
     widthChanged = pyqtSignal(int)
-    _WIDTHS = [("细", 2), ("中", 3), ("粗", 6)]
+    _WIDTHS = [1, 2, 3, 5, 8]
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -906,17 +887,17 @@ class _WidthPickBtn(QToolButton):
         self._build_menu()
 
     def _label(self) -> str:
-        for lab, px in self._WIDTHS:
-            if px == self._width:
-                return lab
-        return "中"
+        try:
+            return f"{int(self._width)}px"
+        except (TypeError, ValueError):
+            return "3px"
 
     def _build_menu(self):
         menu = QMenu(self)
         menu.setStyleSheet(_POP_MENU_SS)
         self._acts = []
-        for lab, px in self._WIDTHS:
-            act = menu.addAction(lab)
+        for px in self._WIDTHS:
+            act = menu.addAction(f"{px}px")
             act.setData(px)
             act.setCheckable(True)
             if px == self._width:
@@ -993,14 +974,14 @@ class _QQToolbar(QFrame):
         lay.setContentsMargins(10, 6, 10, 6)
         lay.setSpacing(2)
 
-        self._tool_group = QButtonGroup(self)
-        self._tool_group.setExclusive(True)
         self._tool_btns = {}
 
         def add_tool(kind, tip):
+            # 工具都不进 QButtonGroup：独占组「不允许取消唯一选中」，
+            # 程序性 setChecked(False) 会被拦下 → 文字开启时旧工具仍是选中态。
+            # 这里手工维护互斥：任何工具被点，只保留它自己选中。
             b = _IconToolBtn(kind, tip, self, checkable=True)
-            b.clicked.connect(lambda _=False, k=kind: self._on_tool(k))
-            self._tool_group.addButton(b)
+            b.clicked.connect(lambda _=False, k=kind, bb=b: self._tool_clicked(bb, k))
             self._tool_btns[kind] = b
             lay.addWidget(b)
             return b
@@ -1018,9 +999,11 @@ class _QQToolbar(QFrame):
         add_tool("pen", "画笔")
         add_tool("text", "文字")
         lay.addWidget(_VSep(self))
+        lay.addWidget(self._cap_label("打码"))
         add_tool("mosaic", "马赛克")
         lay.addWidget(_VSep(self))
         # 颜色 / 粗细（原第二行精简并入）
+        lay.addWidget(self._cap_label("颜色"))
         self.btn_color = _ColorPickBtn(self)
         self.btn_color.colorChanged.connect(self.colorChanged.emit)
         lay.addWidget(self.btn_color)
@@ -1040,7 +1023,32 @@ class _QQToolbar(QFrame):
         self._tool_btns["rect"].setChecked(True)
         self.adjustSize()
 
-    def _on_tool(self, kind: str):
+    def _cap_label(self, text: str) -> QLabel:
+        """工具栏里的中文短标（打码 / 颜色 等）。"""
+        lab = QLabel(text)
+        lab.setStyleSheet(
+            "QLabel{background:transparent;color:rgba(235,235,240,0.85);"
+            "font-size:12px;padding:0 2px;border:none;}"
+        )
+        lab.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        return lab
+
+    def _tool_clicked(self, btn, kind: str):
+        if kind == "text":
+            # Qt 已替我们翻转了文字钮的状态
+            if btn.isChecked():
+                # 文字开：清掉其它绘图工具
+                for k, b in self._tool_btns.items():
+                    if k != "text":
+                        b.setChecked(False)
+                self.toolChanged.emit("text")
+            else:
+                # 文字关
+                self.toolChanged.emit("text_off")
+            return
+        # 其它绘图工具：点谁留谁（重复点同一把也不致取消选中）
+        for k, b in self._tool_btns.items():
+            b.setChecked(k == kind)
         self.toolChanged.emit(kind)
 
     def set_tool(self, kind: str):
@@ -1096,7 +1104,7 @@ class _Canvas(QWidget):
     def mousePressEvent(self, e):
         if e.button() != Qt.LeftButton:
             return
-        if self.tool == "ocr":
+        if self.tool not in ("rect", "ellipse", "arrow", "pen", "text", "mosaic"):
             return
         ip = self._to_img(e.pos())
         if self.tool == "text":
@@ -1174,6 +1182,22 @@ class _Canvas(QWidget):
                 "text": text, "color": QColor(self.color), "size": le._font_size})
         self._text_edit = None
         le.deleteLater()
+        self.update()
+
+    def _discard_text(self):
+        """取消文字输入：丢弃未提交的文字框（不加进图里）。"""
+        le = self._text_edit
+        if le is None:
+            return
+        self._text_edit = None
+        try:
+            le._committed = True
+        except Exception:
+            pass
+        try:
+            le.deleteLater()
+        except Exception:
+            pass
         self.update()
 
     def undo(self):
@@ -1764,11 +1788,28 @@ class AnnotationEditor(QWidget):
         super().mouseReleaseEvent(e)
 
     def _set_tool(self, k: str):
+        if k == "text_off":
+            self._exit_text_mode()
+            return
+        # 离开文字输入状态时，先把手头文字框提交进图（切到别的工具同理）
+        self.canvas._commit_text()
         self.canvas.tool = k
         if k == "text":
             self.canvas.setCursor(Qt.IBeamCursor)
         else:
             self.canvas.setCursor(Qt.CrossCursor)
+
+    def _exit_text_mode(self):
+        """关掉文字工具：丢弃未提交的文字框；不自动切到其它工具。"""
+        self.canvas._discard_text()
+        tb = getattr(self, "toolbar", None)
+        tbtn = tb._tool_btns.get("text") if tb is not None else None
+        if tbtn is not None and tbtn.isChecked():
+            tbtn.setChecked(False)
+        # 不选任何绘图工具：让用户自己点下一步，避免“弹起却跳回矩形”的困惑
+        self.canvas.tool = ""
+        self.canvas.setCursor(Qt.ArrowCursor)
+        self.setFocus(Qt.OtherFocusReason)
 
     def _set_color(self, c: str):
         self.canvas.color = QColor(c)
@@ -1982,17 +2023,24 @@ class AnnotationEditor(QWidget):
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:
-            self._cancel()
+            if self.canvas.tool == "text" or self.canvas._text_edit is not None:
+                # 文字模式下 Esc = 退出文字输入（丢弃未提交的文字框）
+                self._exit_text_mode()
+            else:
+                self._cancel()
         elif e.key() == Qt.Key_Z and (e.modifiers() & Qt.ControlModifier):
             self.canvas.undo()
         elif e.key() == Qt.Key_Y and (e.modifiers() & Qt.ControlModifier):
             self.canvas.redo()
-        elif e.key() in (Qt.Key_Return, Qt.Key_Enter) and not (e.modifiers() & Qt.ControlModifier):
-            # 对勾 ≈ 保存并关闭；Enter 与绿勾一致
-            if self.canvas._text_edit is None:
+        elif e.key() in (Qt.Key_Return, Qt.Key_Enter):
+            if self.canvas.tool == "text":
+                # 文字输入态：回车只用于确认文字输入，绝不触发保存/关闭
+                e.accept()
+                return
+            if e.modifiers() & Qt.ControlModifier:
                 self._save()
-        elif e.key() in (Qt.Key_Return, Qt.Key_Enter) and (e.modifiers() & Qt.ControlModifier):
-            self._save()
+            elif self.canvas._text_edit is None:
+                self._save()
         else:
             super().keyPressEvent(e)
 
@@ -2265,7 +2313,9 @@ class PageScreenshot(QWidget):
         if path:
             self.path.setText(path)
             try:
-                ensure_dir(path)
+                from utils.app_paths import is_other_user_profile_path
+                if not is_other_user_profile_path(path):
+                    ensure_dir(path)
             except Exception:
                 pass
 
@@ -2469,6 +2519,15 @@ class PageScreenshot(QWidget):
             self._bind_hotkey()
             if self._hotkey_registered:
                 self._log(f"⌨️ 快捷键切换为：{self.hotkey.upper()}")
+        # 同步游戏助手页上的快捷键提示
+        try:
+            win = self.window()
+            ga = getattr(win, "page_gameassist", None) if win is not None else None
+            fn = getattr(ga, "_refresh_shot_hotkey_hint", None) if ga is not None else None
+            if callable(fn):
+                fn()
+        except Exception:
+            pass
 
     # === 主窗口隐藏/恢复 ===
     def _hide_main(self):
@@ -2525,7 +2584,8 @@ class PageScreenshot(QWidget):
                     cb()
                 except Exception:
                     log.debug("截图前切换到截图页失败", exc_info=True)
-        hide = bool(self.chk_hide.isChecked()) or bool(self._quick_mode)
+        # 游戏助手快捷截图：主程序保持可见，不强制隐藏
+        hide = bool(self.chk_hide.isChecked()) and (not bool(self._quick_mode))
         if hide:
             self._hide_main()
             QTimer.singleShot(180, self._start_overlay)   # 等窗口真正消失再抓屏
@@ -2540,9 +2600,11 @@ class PageScreenshot(QWidget):
         )
 
     def _on_overlay_cancel(self):
+        was_quick = bool(getattr(self, "_quick_mode", False))
         self._quick_mode = False
         self._restore_main()
-        self._op_done_status("❌ 截图已取消")
+        # 游戏助手快捷截图：不弹气泡，避免挡玩家操作
+        self._op_done_status("❌ 截图已取消", toast=not was_quick)
 
     def _set_main_close_frozen(self, frozen: bool):
         """截图编辑期间冻结主程序关闭按钮；编辑结束再解开。"""
@@ -2572,7 +2634,8 @@ class PageScreenshot(QWidget):
                     sink(pixmap)
                 except Exception:
                     log.exception("快捷截图送到游戏助手失败")
-            self._op_done_status("🎮 已送到游戏助手")
+            # 游戏助手快捷截图：只记日志行，不弹气泡
+            self._op_done_status("🎮 已送到游戏助手", toast=False)
             return
         if self.chk_edit.isChecked():
             self._op_status("🖌 编辑标注中…")
@@ -2718,7 +2781,7 @@ class PageScreenshot(QWidget):
             self._refresh_current_preview()
         show_cursor_toast("截图", f"已{kind}", accent="ok")
 
-    def _op_done_status(self, status):
+    def _op_done_status(self, status, *, toast: bool = True):
         """操作以状态收尾（取消/失败/仅复制）：同一行定格为状态文本。"""
         item = self._op_item
         self._op_item = None
@@ -2727,6 +2790,8 @@ class PageScreenshot(QWidget):
         else:
             item.setText(status)
             self._refresh_current_preview()
+        if not toast:
+            return
         note, accent = self._toast_from_shot_status(status)
         show_cursor_toast("截图", note, accent=accent)
 

@@ -25,7 +25,7 @@ from pathlib import Path
 def _find_root() -> Path:
     here = Path(__file__).resolve()
     for cand in (here.parent, *here.parents):
-        if (cand / "mainv916.py").is_file():
+        if (cand / "mainv917.py").is_file() or any(cand.glob("mainv9*.py")):
             return cand
     return here.parents[1] if len(here.parents) > 1 else here.parent
 

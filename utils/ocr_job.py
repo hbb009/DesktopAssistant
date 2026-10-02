@@ -4,7 +4,7 @@
 # 切勿在本文件 import PyQt5 —— 主进程 Qt 会与 Paddle / OpenCV 抢 DLL。
 #
 # 开发：python -m utils.ocr_job <meta.json>
-# 打包：mainv916.exe --ocr-job <meta.json>
+# 打包：mainv917.exe --ocr-job <meta.json>
 # meta.json:
 #   { "action": "probe"|"ocr", "image": "可选 png", "model_dir": "...", "out": "out.json" }
 # ---------------------------------------------------------------------------
@@ -30,12 +30,8 @@ def _preload_torch_first() -> None:
 
         if importlib.util.find_spec("torch") is not None:
             import torch  # noqa: F401
-    except Exception as e:
-        # 不能静默吞掉：预载失败后 paddle→torch 会二次炸成 c10.dll / 1114
-        try:
-            sys.stderr.write(f"[ocr_job] torch 预载失败: {e!r}\n")
-        except Exception:
-            pass
+    except Exception:
+        pass
 
 
 def _prepare_env() -> None:
@@ -46,7 +42,6 @@ def _prepare_env() -> None:
     os.environ.pop("QT_PLUGIN_PATH", None)
     os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
     os.environ.setdefault("FLAGS_allocator_strategy", "naive_best_fit")
-    os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
     _preload_torch_first()
 
 

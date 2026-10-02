@@ -498,6 +498,19 @@ QScrollBar::add-page, QScrollBar::sub-page { background: none; }
 #SideBar QPushButton[kind="side"][hasPreBadge="true"]:checked:hover {
   padding-right: 36px;
 }
+
+/* 侧栏剪贴板归属小开关（22px + 边距） */
+#SideBar QPushButton[kind="side"][hasClipOwner="true"] {
+  padding-right: 36px;
+}
+#SideBar QPushButton[kind="side"][hasClipOwner="true"]:hover,
+#SideBar QPushButton[kind="side"][hasClipOwner="true"][active="true"],
+#SideBar QPushButton[kind="side"][hasClipOwner="true"]:checked,
+#SideBar QPushButton[kind="side"][hasClipOwner="true"][active="true"]:hover,
+#SideBar QPushButton[kind="side"][hasClipOwner="true"]:checked:hover {
+  padding-right: 36px;
+}
+
 /* 区域录屏状态圆标（约 12px + 边距） */
 #SideBar QPushButton[kind="side"][hasRecDot="true"] {
   padding-right: 22px;
@@ -778,8 +791,17 @@ QListWidget[recordStyle="simple"]::item:selected:!active {
   color: #eef4ff;
 }
 /* 语音克隆记录行：收紧上下 padding，保留选中左边橙色条 */
+/* 语音克隆结果记录区：四边贴边，不画顶部虚线，不画竖向滚动条
+   （滚动条隐藏只是不绘制，滚轮/触控板滚动照常；见 _style_result_list） */
+QListWidget#VoiceCloneRecords {
+  background: transparent;
+  border: none;
+  border-top: none;
+  border-radius: 0px;
+  padding: 0px;
+}
 QListWidget#VoiceCloneRecords::item {
-  padding: 2px 6px 0px 6px;
+  padding: 0px;
   margin: 0px;
 }
 QTextEdit[recordStyle="simple"],
@@ -950,6 +972,22 @@ QPushButton#RateRefreshBtn {
   font-size: 14px;
 }
 
+/* 白名单「添加」：与域名输入框同高（外框约 32；QSS 内容盒 30） */
+QPushButton#WhitelistResetBtn {
+  min-width: 24px;
+  max-width: 24px;
+  min-height: 24px;
+  max-height: 24px;
+  padding: 0;
+}
+QPushButton#WhitelistAddBtn,
+QFrame[funcCard="1"] QPushButton#WhitelistAddBtn {
+  min-height: 30px;
+  max-height: 30px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+
 QPushButton[kind="mini"]:disabled,
 QGroupBox QPushButton[kind="mini"]:disabled,
 QFrame QPushButton[kind="mini"]:disabled,
@@ -1012,6 +1050,39 @@ QFrame[funcCard="1"] QPushButton[kind="medium"]:disabled {
   color: rgba(207,224,255,0.45);
   background: rgba(255,255,255,0.04);
   border-color: rgba(255,255,255,0.10);
+}
+
+/* ══════════════════════════════════════════════════════════════════════════
+   主按钮（kind=primary）：蓝底白字。「音频处理」页签条右侧的「处理」
+   高 29px，与 medium 齐平；配色取品牌蓝 tk(accent)
+   ══════════════════════════════════════════════════════════════════════════ */
+QPushButton[kind="primary"] {
+  background: #3a8ee0;
+  border: 1px solid #2f7cc8;
+  color: #ffffff;
+  padding: 0 8px;
+  /* 高度/字号对齐 kind=mini（「打开文件夹」），两者同在共享播放行里并排 */
+  min-height: 22px;
+  max-height: 22px;
+  min-width: 26px;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 6px;
+}
+QPushButton[kind="primary"]:hover {
+  background: #4f9de8;
+  border-color: #7cbcf2;
+  color: #ffffff;
+}
+QPushButton[kind="primary"]:pressed {
+  background: #2f7cc8;
+  border-color: #2a6fb5;
+  color: #ffffff;
+}
+QPushButton[kind="primary"]:disabled {
+  background: rgba(58,142,224,0.30);
+  border-color: rgba(90,166,238,0.28);
+  color: rgba(255,255,255,0.55);
 }
 
 /* 配置页：按钮字号相对全站 +2（mini 12→14 · medium 13→15） */
@@ -1293,12 +1364,12 @@ QFrame#MetricCard {
 QFrame#MetricCard QLabel#MetricLabel {
     background: transparent;
     color: #9fb0d7;
-    font-size: 12px;
+    font-size: 14px;
 }
 QFrame#MetricCard QLabel#MetricValue {
     background: transparent;
     color: #cfe0ff;
-    font-size: 18px;
+    font-size: 15px;
     font-weight: 700;
 }
 /* 积分计算 · 单支视频在「生图」时灰显占位 */
@@ -1435,6 +1506,18 @@ QPushButton#RecordCopyBtn {
 }
 QPushButton#RecordCopyBtn:hover { background: rgba(240,165,66,0.24); }
 
+/* 粘贴助手：未选卡片时复制/删除冻结（可见、灰化、不可点） */
+QPushButton#RecordCopyBtn:disabled,
+QPushButton#RecordDelBtn:disabled {
+    background: rgba(148, 163, 184, 0.08);
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    color: rgba(148, 163, 184, 0.55);
+}
+QPushButton#RecordCopyBtn:disabled:hover,
+QPushButton#RecordDelBtn:disabled:hover {
+    background: rgba(148, 163, 184, 0.08);
+}
+
 /* 积分计算页：字段标签 */
 QLabel#CalcFieldLabel {
     color: #9fb0d7;
@@ -1468,18 +1551,18 @@ QFrame#RecordDivider {
 QPushButton#StepperBtn {
     font-size: 10px;
     padding: 0px;
-    min-width: 26px;
+    min-width: 44px;
 }
 
 /* 秒数显示标签 */
 QLabel#SecsDisplay {
-    border: 1px solid #3a4a6a;
-    border-radius: 4px;
+    border: none;
+    background: transparent;
     font-weight: 600;
 }
 QLabel#SecsDisplay:disabled {
     color: rgba(128,128,128,0.55);
-    border: 1px solid #3a4a6a;
+    border: none;
 }
 
 /* 计算/重新计算按钮（独立命名，不被其他样式挤压） */
@@ -1568,6 +1651,13 @@ QTextEdit#PasteContentEdit:focus {
     border: 1px solid #3b82f6;
     background: #0e1530;
 }
+/* 粘贴助手录入：字号 14，四边内边距 4px。
+   文本编辑页的 PasteContentEdit 没有 pasteEntry，保持上面的 13px。 */
+QLineEdit#PasteThemeInput[pasteEntry="1"],
+QTextEdit#PasteContentEdit[pasteEntry="1"] {
+    padding: 4px;
+    font-size: 14px;
+}
 
 /* 仓库搜索“取消”按钮：高度锁 30px，与搜索框对齐 */
 QPushButton#SearchClearBtn {
@@ -1591,3 +1681,46 @@ QPushButton#SearchClearBtn:pressed { background: rgba(240,165,66,0.12); }
    本条置于文件末尾、同特异性靠后覆盖，恢复标签透明；需要背景的标签自带
    更高特异性(#id/[role]) 规则，不受影响。 */
 QLabel { background: transparent; }
+
+/* 白名单「添加」最终高度（压过 AboutScroll/mini 的 max-height） */
+QPushButton#WhitelistAddBtn {
+  min-height: 30px;
+  max-height: 30px;
+  padding: 0 12px;
+}
+
+/* 比例计算页：所有按钮悬停蓝底 */
+/* 比例计算：分辨率数值芯片（强制小字号，避免被 nav 按钮 13px 盖掉） */
+QPushButton#RatioResChip {
+    font-size: 12px;
+    padding: 5px 4px;
+    min-height: 0px;
+}
+
+QScrollArea#RatioScroll QPushButton:hover,
+QWidget#RatioScrollHost QPushButton:hover {
+  background: rgba(59, 130, 246, 0.45);
+  border-color: #3b82f6;
+  color: #ffffff;
+}
+QScrollArea#RatioScroll QPushButton:checked,
+QWidget#RatioScrollHost QPushButton:checked {
+  background: rgba(59, 130, 246, 0.35);
+  border-color: #3b82f6;
+}
+
+/* 比例预设选中：实心蓝底 */
+QScrollArea#RatioScroll QPushButton#RatioChip:checked,
+QWidget#RatioScrollHost QPushButton#RatioChip:checked {
+  background: #3b82f6;
+  border: 1px solid #2563eb;
+  color: #ffffff;
+  font-weight: 700;
+}
+QScrollArea#RatioScroll QPushButton#RatioChip:checked:hover,
+QWidget#RatioScrollHost QPushButton#RatioChip:checked:hover {
+  background: #2563eb;
+  border-color: #1d4ed8;
+  color: #ffffff;
+}
+

@@ -618,15 +618,23 @@ def update_record_bubble_count(n: int):
 # 批处理气泡平台展示名：key（引擎内部）→ 气泡前缀 ZZ
 _BATCH_PLATFORM_LABELS = {
     "douyin": "抖音",
+    "qishui": "汽水音乐",
     "bilibili": "B站",
     "youtube": "YouTube",
+    "jimeng": "即梦",
+    "liblib": "LibTV",
+    "xvideos": "XVideos",
     "ehentai": "e-hentai.org",
     "pixiv": "pixiv",
     "hitomi": "hitomi.la",
     # 展示名自身也可直接传入
     "抖音": "抖音",
+    "汽水音乐": "汽水音乐",
     "B站": "B站",
     "YouTube": "YouTube",
+    "即梦": "即梦",
+    "LibTV": "LibTV",
+    "XVideos": "XVideos",
     "e-hentai.org": "e-hentai.org",
     "exhentai.org": "e-hentai.org",
     "pixiv.net": "pixiv",

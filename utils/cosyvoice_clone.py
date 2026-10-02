@@ -57,12 +57,23 @@ def _pkg_available(name: str) -> bool:
 
 
 def work_dir() -> str:
+    """语音克隆工作目录：优先走 app_paths 的公共保存根。
+
+    app_paths 不可用时（打包态缺模块等）退到系统临时目录。
+    这里绝不能退回用户主目录 —— 早期版本硬编码 expanduser("~")/Desktop Assistant，
+    会在 C:\\Users\\<你> 下凭空造出一个「Desktop Assistant」文件夹，
+    看起来像是程序在往家目录里复制自己。
+    """
     try:
         from utils.app_paths import voice_clone_dir
         return voice_clone_dir()
     except Exception:
-        d = os.path.join(os.path.expanduser("~"), "Desktop Assistant", "voice_clone")
-        os.makedirs(d, exist_ok=True)
+        import tempfile
+        d = os.path.join(tempfile.gettempdir(), "DesktopAssistant_VoiceClone")
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
         return d
 
 
@@ -233,11 +244,6 @@ def _job_cmd(meta_path: str) -> list:
     except Exception:
         frozen = bool(getattr(sys, "frozen", False)) or hasattr(sys, "_MEIPASS")
     if frozen:
-        from utils.deskassist_runtime import find_python, meipass
-        py = find_python()
-        worker = meipass() / "cosyvoice_worker" / "run.py"
-        if py and worker.is_file():
-            return [py, str(worker), meta_path]
         return [sys.executable, "--cosyvoice-job", meta_path]
     return [sys.executable, "-m", "utils.cosyvoice_job", meta_path]
 
@@ -274,14 +280,52 @@ def _app_cwd() -> str:
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def brief_clone_error(text: str) -> str:
+    """把子进程 traceback 收成操作记录能看完的一句。"""
+    raw = (text or "").strip()
+    if not raw:
+        return "未知错误"
+    blob = raw.replace(" · ", "\n")
+    m = re.search(r"No module named ['\"]([^'\"]+)['\"]", blob, re.I)
+    if m:
+        pkg = m.group(1)
+        pip_name = {
+            "hyperpyyaml": "HyperPyYAML",
+            "whisper": "openai-whisper",
+        }.get(pkg.lower(), pkg)
+        return f"缺少 Python 包 {pkg}，请 pip install {pip_name}"
+    for ln in blob.splitlines():
+        s = ln.strip()
+        if "缺少 Python 包" in s or "请执行：pip install" in s or "请 pip install" in s:
+            return re.sub(r"^(ModuleNotFoundError|RuntimeError|ImportError):\s*", "", s)[:200]
+    useful = []
+    for ln in blob.splitlines():
+        s = ln.strip()
+        if not s or s.startswith(("File ", "Traceback", "During handling")):
+            continue
+        if s.startswith("File ") or (", line " in s and s.endswith(")")):
+            continue
+        if re.match(r"^[A-Za-z]+(?:Error|Exception):\s*", s):
+            useful.append(re.sub(r"^[A-Za-z]+(?:Error|Exception):\s*", "", s))
+    if useful:
+        return useful[-1][:200]
+    lines = [ln.strip() for ln in blob.splitlines() if ln.strip()]
+    return (lines[-1] if lines else "未知错误")[:160]
+
+
 def _run_job(meta: dict, timeout: int, cancel_flag=None) -> dict:
     import subprocess
     import tempfile
 
     work = work_dir()
     os.makedirs(work, exist_ok=True)
+    job_root = os.path.join(work, "_job")
+    try:
+        os.makedirs(job_root, exist_ok=True)
+    except Exception:
+        job_root = work
     result_path = meta.get("result") or ""
-    with tempfile.TemporaryDirectory(prefix="deskassist_cosy_", dir=work) as td:
+    with tempfile.TemporaryDirectory(prefix="deskassist_cosy_", dir=job_root) as td:
         meta_path = os.path.join(td, "meta.json")
         if not result_path:
             result_path = os.path.join(td, "result.json")
@@ -295,13 +339,6 @@ def _run_job(meta: dict, timeout: int, cancel_flag=None) -> dict:
         env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
         env.pop("QT_PLUGIN_PATH", None)
         env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
-        try:
-            from utils.deskassist_runtime import meipass
-            env["COSYVOICE_MEIPASS"] = str(meipass())
-            env["OCR_MEIPASS"] = env["COSYVOICE_MEIPASS"]
-            env["PYTHONPATH"] = str(meipass()) + os.pathsep + env.get("PYTHONPATH", "")
-        except Exception:
-            pass
         home = (meta.get("cosyvoice_home") or "").strip()
         if home:
             env["COSYVOICE_HOME"] = home
@@ -479,12 +516,41 @@ def load_wav_float32(path: str):
     return None, 0
 
 
+def load_audio_float32(path: str):
+    """读取任意常见音频 → (float32 数组, 采样率)。读不了返回 (None, 0)，不抛异常。
+
+    wav 走本模块原有的 wave/riff 解析（CosyVoice 默认写 IEEE float wav，
+    标准库 wave 会报 unknown format: 3）；mp3/flac/ogg/aiff 等交给 soundfile，
+    这样声音卡里非 wav 的文件也能在程序内播，不必弹外部播放器。
+    """
+    if not path or not os.path.isfile(path):
+        return None, 0
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".wav":
+        return load_wav_float32(path)
+    try:
+        import soundfile as sf
+    except Exception:
+        return None, 0
+    try:
+        audio, sr = sf.read(path, dtype="float32", always_2d=False)
+    except Exception:
+        return None, 0
+    if audio is None or sr is None or sr <= 0 or getattr(audio, "size", 0) <= 0:
+        return None, 0
+    return audio, int(sr)
+
+
 def new_ref_wav_path() -> str:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     return os.path.join(work_dir(), f"ref_{ts}.wav")
 
 
 _HANZI_RE = re.compile(r"[\u4e00-\u9fff]")
+
+# 产物文件名各段取几个汉字
+VOICE_HANZI = 5      # 声音卡简写（改名优先）
+CAPTION_HANZI = 6    # 中间段：AUK 处理方式 / CosVoice3 字幕内容
 
 
 def _first_hanzi(text: str, n: int, fallback: str) -> str:
@@ -500,7 +566,7 @@ def _first_hanzi(text: str, n: int, fallback: str) -> str:
 
 
 def _next_wav_version(folder: str, prefix: str) -> int:
-    """已有 {prefix}_{NN}.wav 的下一号，从 1 起。"""
+    """已有 {prefix}_{NN}.wav 的下一号，从 1 起。超过 99 继续排 100、101…"""
     max_n = 0
     head = prefix + "_"
     try:
@@ -525,14 +591,22 @@ def new_out_wav_path(
     voice_name: str = "",
     tts_text: str = "",
 ) -> str:
-    """原声名前5字_字幕前8字_YYYYMMDD_版本号.wav"""
+    """产物文件名（音频处理页两页共用一条规则）：
+
+        声音卡简写_中间段_YYYYMMDD_NN.wav
+
+    - 声音卡简写：``voice_name`` 的前 5 个汉字。调用方要传**改名优先**的名字
+      （卡片改过名就用改名），所以 AUK 与 CosVoice3 传的是同一个值。
+    - 中间段：AUK 传处理方式简写（降噪/换词/配音…），CosVoice3 传字幕前 6 个汉字。
+    - NN：同前缀当天从 01 顺排，超过 99 继续排 100、101…
+    """
     folder = (save_dir or "").strip() or work_dir()
     try:
         os.makedirs(folder, exist_ok=True)
     except Exception:
         folder = work_dir()
-    voice = _first_hanzi(voice_name, 5, "原声")
-    caption = _first_hanzi(tts_text, 8, "字幕")
+    voice = _first_hanzi(voice_name, VOICE_HANZI, "原声")
+    caption = _first_hanzi(tts_text, CAPTION_HANZI, "字幕")
     date = datetime.now().strftime("%Y%m%d")
     prefix = f"{voice}_{caption}_{date}"
     ver = _next_wav_version(folder, prefix)
@@ -553,6 +627,40 @@ def wav_duration_sec(path: str) -> float:
     if audio is None or sr <= 0:
         return 0.0
     return float(len(audio)) / float(sr)
+
+
+def audio_duration_sec(path: str) -> float:
+    """只读文件头的时长。
+
+    wav_duration_sec 会把整段音频解码进内存，选卡时同步调它会卡住界面，
+    这个走 soundfile 的 header（mp3/flac/ogg/wav 都支持），够快。
+    """
+    path = (path or "").strip()
+    if not path or not os.path.isfile(path):
+        return 0.0
+    # 标准 wav 直接读头，最快也不依赖 soundfile
+    if os.path.splitext(path)[1].lower() == ".wav":
+        try:
+            import wave
+
+            with wave.open(path, "rb") as w:
+                sr = w.getframerate() or 0
+                n = w.getnframes() or 0
+            if sr > 0 and n > 0:
+                return float(n) / float(sr)
+        except Exception:
+            pass
+    try:
+        import soundfile as sf
+
+        info = sf.info(path)
+        sr = int(getattr(info, "samplerate", 0) or 0)
+        n = int(getattr(info, "frames", 0) or 0)
+        if sr > 0 and n > 0:
+            return float(n) / float(sr)
+    except Exception:
+        return 0.0
+    return 0.0
 
 
 def is_audio_file(path: str) -> bool:
@@ -603,8 +711,10 @@ def import_audio_file(src: str) -> str:
     return dest
 
 
-def _crop_wav(src: str, max_sec: float) -> str:
-    """把 wav 裁到 max_sec 秒（保持 16k 单声道），另存 crop_<ts>.wav。失败返回空串。"""
+def _crop_wav_to(src: str, max_sec: float, out: str) -> str:
+    """把音频裁到 max_sec 秒（16k 单声道 PCM），写到 out。失败返回空串。"""
+    if not src or not os.path.isfile(src) or not out:
+        return ""
     try:
         from utils.region_recorder import find_ffmpeg
         ff = find_ffmpeg()
@@ -614,8 +724,6 @@ def _crop_wav(src: str, max_sec: float) -> str:
         return ""
     import subprocess
 
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out = os.path.join(os.path.dirname(src) or ".", f"crop_{ts}.wav")
     cmd = [ff, "-y", "-i", src, "-t", f"{max_sec:.3f}", "-c:a", "pcm_s16le", "-vn", out]
     kw = {"capture_output": True, "timeout": 120}
     if sys.platform == "win32":
@@ -629,17 +737,33 @@ def _crop_wav(src: str, max_sec: float) -> str:
     return ""
 
 
-def import_reference_audio(
+def _crop_wav(src: str, max_sec: float) -> str:
+    """把 wav 裁到 max_sec 秒，写到同目录临时名再替换源文件。失败返回空串。"""
+    tmp = (src or "") + ".crop.tmp.wav"
+    out = _crop_wav_to(src, max_sec, tmp)
+    if not out:
+        return ""
+    try:
+        os.replace(out, src)
+        return src
+    except Exception:
+        return out
+
+
+def prepare_reference_audio(
     src: str, max_sec: float = REF_AUDIO_MAX_SEC
 ) -> tuple:
-    """导入参考音频，返回 (wav路径, 是否已自动裁剪)。
+    """在源文件所在目录转 wav / 裁 30 秒，不拷到 VoiceClone。
 
-    超过 max_sec 秒会自动裁掉尾部并另存 crop_*.wav（CosyVoice 只支持
-    ≤30s 参考音频）。不弹窗，调用方用第二个返回值更新提示即可。
+    返回 (路径, 是否已裁剪)。调用方必须传入自己管理的副本（VoiceEdit），
+    不要拿用户桌面上的原文件来转，以免在原目录旁生出 wav。
     """
-    dest = import_audio_file(src)
+    dest = os.path.abspath(src or "")
     if not dest or not os.path.isfile(dest):
-        return dest, False
+        return "", False
+    wav = _ffmpeg_to_wav(dest)
+    if wav and os.path.isfile(wav):
+        dest = wav
     try:
         max_sec = float(max_sec or 0.0)
     except (TypeError, ValueError):
@@ -653,6 +777,16 @@ def import_reference_audio(
     if crop and os.path.isfile(crop):
         return crop, True
     return dest, False
+
+
+def import_reference_audio(
+    src: str, max_sec: float = REF_AUDIO_MAX_SEC
+) -> tuple:
+    """导入参考音频，返回 (wav路径, 是否已自动裁剪)。
+
+    只在源文件旁做转码/裁剪，不再往 VoiceClone 写 upload_* 副本。
+    """
+    return prepare_reference_audio(src, max_sec)
 
 
 def _wav_is_pcm(path: str) -> bool:
@@ -898,7 +1032,12 @@ class SynthWorker(QThread):
 
 
 class PlayWavWorker(QThread):
-    """用 sounddevice 播 wav；没有该包时不要创建本线程。"""
+    """用 sounddevice 在程序内播音频（wav / mp3 / flac / ogg / aiff…）。
+
+    以前只读 wav，非 wav 会 fail，然后调用方退到系统播放器——那个播放器是
+    单实例的，连点两张卡就会把上一条顶掉，听感像「点别的卡就中止」。
+    没有 sounddevice 时不要创建本线程。
+    """
 
     fail = pyqtSignal(str)
     done = pyqtSignal()
@@ -920,12 +1059,12 @@ class PlayWavWorker(QThread):
         try:
             import sounddevice as sd
         except Exception:
-            self.fail.emit("缺少 sounddevice，改用系统播放器")
+            self.fail.emit("缺少 sounddevice")
             return
         try:
-            audio, sr = load_wav_float32(self.path)
+            audio, sr = load_audio_float32(self.path)
             if audio is None or sr <= 0:
-                self.fail.emit("无法读取 wav")
+                self.fail.emit("无法解码这个音频")
                 return
             sd.play(audio, sr)
             sd.wait()

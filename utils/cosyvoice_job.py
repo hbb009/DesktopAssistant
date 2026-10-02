@@ -5,7 +5,7 @@
 # 会与 PyTorch、onnxruntime 抢 DLL，表现为闪退或空 ImportError。
 #
 # 开发：python -m utils.cosyvoice_job <meta.json>
-# 打包：mainv916.exe --cosyvoice-job <meta.json>
+# 打包：mainv917.exe --cosyvoice-job <meta.json>
 # meta.json:
 #   {
 #     "action": "probe" | "synth",
@@ -114,6 +114,14 @@ def _import_automodel(home: str):
     try:
         from cosyvoice.cli.cosyvoice import AutoModel
         return AutoModel
+    except ModuleNotFoundError as e:
+        name = str(getattr(e, "name", "") or "")
+        msg = str(e)
+        if "hyperpyyaml" in (name + msg).lower():
+            raise ModuleNotFoundError(
+                "缺少 Python 包 hyperpyyaml。请执行：pip install HyperPyYAML"
+            ) from e
+        raise
     except Exception:
         from cosyvoice.cli.cosyvoice import CosyVoice as AutoModel
         return AutoModel

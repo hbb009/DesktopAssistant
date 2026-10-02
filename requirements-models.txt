@@ -1,19 +1,42 @@
-# 桌面助手 v9.16 · 模型相关依赖
-# 先 pip install -r requirements.txt
-# 再 pip install -r requirements-models.txt
-# 权重：python tools/download_models.py
-
+# Desktop Assistant v9.17 - model-related dependencies
+# (screenshot OCR / speech-to-text / voice cloning / image matting)
+# Python 3.10 / 3.11 only.
+# 1) pip install -r requirements.txt
+# 2) pip install -r requirements-models.txt
+# 3) python tools/download_models.py   (downloads weights into model/)
+#
+# ---- Speech-to-text (faster-whisper) ----
 sounddevice>=0.4.6
+soundfile>=0.12.1
 faster-whisper>=1.0.0
 huggingface_hub>=0.23.0
-
-# OCR：先按本机选 GPU/CPU 安装 paddlepaddle，再装下面
-# GPU cu126: pip install paddlepaddle-gpu==3.2.1 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
-# CPU:       pip install paddlepaddle==3.2.1 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
-# 必须带 [doc-parser]，否则 PaddleOCR-VL-1.6 初始化会缺 paddlex[ocr]
+#
+# ---- Screenshot OCR (PaddleOCR-VL-1.6) ----
+# Install paddlepaddle for your CUDA version first, e.g. cu126:
+#   pip install paddlepaddle-gpu==3.2.1 -i https://www.paddlepaddle.org.cn/packages/stable/cu126/
+# CPU only:
+#   pip install paddlepaddle==3.2.1 -i https://www.paddlepaddle.org.cn/packages/stable/cpu/
+# The [doc-parser] extra is required; plain paddleocr fails to start the VL pipeline.
 paddleocr[doc-parser]>=3.6.0
-
-# 语音克隆：先按 CUDA 装 torch/torchaudio，再：
+#
+# ---- Voice cloning (CosyVoice3) + image matting (BiRefNet ONNX) ----
+# Install PyTorch for your CUDA version separately, e.g.:
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
+# onnxruntime: CosyVoice's own requirements pin onnxruntime==1.18.0 (NumPy 1.x),
+# so keep it below 1.19 to avoid a downgrade/upgrade fight.
+onnxruntime>=1.16,<1.19
+# CosyVoice weights and source code:
 #   python tools/download_models.py --only cosyvoice-code
 #   python tools/download_models.py --only cosyvoice --mirror modelscope
-onnxruntime>=1.16.0
+#   pip install -r model/CosyVoice/requirements.txt
+#
+# Optional mirror for users in mainland China:
+#   pip install modelscope
+#
+# ---- Manual installs (not covered by this file or download_models.py) ----
+# See README.md, section on manually installed optional components:
+#   AuK              -> model/AuK (auk_base.safetensors, config.yaml) + model/AuK-src/src
+#   Qwen2.5-Omni-3B  -> model/Qwen2.5-Omni-3B (used by AuK)
+#   BiRefNet-general -> model/BiRefNet-general/*.onnx (image matting)
+#   Upscayl          -> model/upscayl/upscayl-bin.exe + models (image upscaling)
+# Note: AuK expects transformers 4.57, while CosyVoice pins transformers==4.51.3.

@@ -368,7 +368,7 @@ def fmt(template: str) -> str:
 def sp(px) -> int:
     """设计像素 → int。
 
-    整站缩放改由启动时 QT_SCALE_FACTOR 完成（见 mainv916），此处固定按 1×
+    整站缩放改由启动时 QT_SCALE_FACTOR 完成（见 mainv917），此处固定按 1×
     返回，避免与全局缩放叠乘。保留 sp() 仅为兼容旧调用。
     """
     try:
@@ -733,6 +733,72 @@ def apply_btn_download(btn) -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 主按钮（蓝底白字）：「音频处理」共享播放行里的「处理」
+# ───────────────────────────────────────────────────────────────────────────
+# 用法：
+#   from styles.style_all import apply_primary_button
+#   btn = apply_primary_button(QPushButton("处理"))
+#
+# 样式：QPushButton[kind="primary"]（app.qss / app_light.qss）
+# 高度与字号跟 kind="mini"（「打开文件夹」）完全一致（22px / 12px），
+# 因为两个并排同在共享播放行里；靠蓝色 + 粗体区分主次。
+# ═══════════════════════════════════════════════════════════════════════════
+
+# 主按钮目标高度：与 mini 一致（QSS 22 + 上下边框 1 = 实测 23，控件按 22 收）
+PRIMARY_BUTTON_H = 22
+
+
+def apply_primary_button(btn: QPushButton) -> QPushButton:
+    """把 QPushButton 打成全局蓝底白字「主按钮」样式（高 29px）。
+
+    只改外观标记与指针；文案/信号由调用方自己设。
+    返回同一按钮，便于链式写法：apply_primary_button(QPushButton("处理"))
+    """
+    btn.setProperty("kind", "primary")
+    try:
+        btn.setStyleSheet("")  # 清掉内联样式，让 QSS kind=primary 生效
+    except Exception:
+        pass
+    try:
+        btn.setCursor(Qt.PointingHandCursor)
+    except Exception:
+        pass
+    try:
+        btn.setFlat(False)
+    except Exception:
+        pass
+    try:
+        btn.setFixedHeight(PRIMARY_BUTTON_H)
+    except Exception:
+        pass
+    st = btn.style()
+    if st is not None:
+        st.unpolish(btn)
+        st.polish(btn)
+    btn.update()
+    return btn
+
+
+def fit_primary_button(btn: QPushButton, extra: int = 28, sample: str = "处理中…") -> None:
+    """按**固定的参照文案**算宽度，让按钮在「处理 / 处理中… / 取消」之间不跳宽。
+
+    以前量的是 btn.text()，文案一变宽度就变，按钮会左右抖。
+    现在默认量 sample（最长的那个），宽度全程固定。
+    """
+    if btn is None:
+        return
+    try:
+        fm = btn.fontMetrics()
+        w = max(
+            fm.horizontalAdvance(sample or ""),
+            fm.horizontalAdvance(btn.text() or ""),
+        )
+        btn.setFixedWidth(max(w + extra, 60))
+    except Exception:
+        pass
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 路径输入框（速存图文「文件夹」同款：圆角外框 + 左侧文件夹图标 + 路径文字）
 # ───────────────────────────────────────────────────────────────────────────
 # 用法：
@@ -947,7 +1013,8 @@ def apply_simple_record(widget):
     except Exception:
         pass
     try:
-        widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+        # 内容溢出时才出现竖向滚动条，避免空白区也常驻一条空滚轨
+        widget.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     except Exception:
         pass
@@ -1136,6 +1203,8 @@ _CARD_THEME = {
 
 CARD_RADIUS = 10             # 功能区标准圆角（px）
 CARD_BORDER_PX = 1           # 描边宽度
+CARD_ACTIVE_BG_TINT = 0.40   # 激活态背景向 sel_bg 提亮比例（暗色主题）
+CARD_ACTIVE_BG_TINT_LIGHT = 0.55  # 激活态背景向 sel_bg 提亮比例（亮色主题）
 CARD_TITLE_FONT_SIZE = 12    # 标题字号（px）
 CARD_TITLE_FONT_WEIGHT = 600 # 标题字重
 
@@ -1207,8 +1276,31 @@ def make_card(object_name: str, borderless: bool = False) -> QFrame:
     return frame
 
 
+def _blend_hex(src: str, toward: str, frac: float) -> str:
+    """把色值 src 向 toward 混入 frac 比例，用于卡片激活态提亮。"""
+    try:
+        a = QColor(src)
+        b = QColor(toward)
+    except Exception:
+        return src
+    t = max(0.0, min(1.0, frac))
+    r = int(round(a.red() + (b.red() - a.red()) * t))
+    g = int(round(a.green() + (b.green() - a.green()) * t))
+    bl = int(round(a.blue() + (b.blue() - a.blue()) * t))
+    try:
+        return QColor(r, g, bl).name()
+    except Exception:
+        return src
+
+
 def restyle_card_frame(frame: QFrame) -> None:
-    """按当前主题重刷 make_card 帧外观；主题切换时调用。"""
+    """按当前主题重刷 make_card 帧外观；主题切换时调用。
+
+    frame 上若打了 property cardActive="1"（如图片处理页的当前激活操作卡），
+    则背景向选中色轻微提亮。注意：这里**绝不改描边宽度**——QSS 边框会
+    计入 frameWidth、改变 sizeHint，激活卡一粗一细会带动整列卡片重排抖动；
+    加粗描边的"激活环"应由页面用不占布局的叠加子控件绘制。
+    """
     name = frame.objectName() or "FuncCardAnon"
     if not frame.objectName():
         frame.setObjectName(name)
@@ -1218,10 +1310,18 @@ def restyle_card_frame(frame: QFrame) -> None:
         )
         return
     c = _card_colors()
+    is_dark = theme.is_dark
+    is_active = str(frame.property("cardActive") or "").strip() == "1"
+    if is_active:
+        sel_bg = (DARK if is_dark else LIGHT)["sel_bg"]
+        frac = CARD_ACTIVE_BG_TINT_LIGHT if not is_dark else CARD_ACTIVE_BG_TINT
+        bg = _blend_hex(c["bg"], sel_bg, frac)
+    else:
+        bg = c["bg"]
     frame.setStyleSheet(
         _CARD_FRAME_QSS_TEMPLATE.format(
             name=name,
-            bg=c["bg"],
+            bg=bg,
             border=c["border"],
             bw=sp(CARD_BORDER_PX),
             radius=sp(CARD_RADIUS),
@@ -1249,7 +1349,20 @@ def restyle_func_area(widget) -> None:
 
     与 make_card / 系统总览三块卡同底色、同描边、同圆角（CARD_RADIUS）。
     优先走内联样式，避免被其它 QSS 规则冲掉；主题切换时由主窗口批量调用。
+    borderless 卡（make_card(..., borderless=True)）：保持无描边/透明底。
     """
+    if _is_borderless_card(widget):
+        apply_func_card(widget)
+        if isinstance(widget, QFrame):
+            restyle_card_frame(widget)
+        else:
+            name = widget.objectName() or f"FuncArea_{id(widget) & 0xFFFFFF:x}"
+            if not widget.objectName():
+                widget.setObjectName(name)
+            widget.setStyleSheet(
+                f"#{name}{{background:transparent;border:none;border-radius:0px;}}"
+            )
+        return
     apply_func_card(widget)
     name = widget.objectName()
     if not name:

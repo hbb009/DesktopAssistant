@@ -28,6 +28,77 @@ def _records_path(key: str) -> str:
     return os.path.join(_ensure_dir(), f"{key}.txt")
 
 
+def records_path(key: str) -> str:
+    """当前 key 对应的记录文件路径（records/gallery_eh.txt 等）。"""
+    return _records_path(key)
+
+
+def _decode_record_bytes(raw: bytes) -> str:
+    """按 BOM / 常见编码解开记录文件。"""
+    if not raw:
+        return ""
+    if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+        return raw.decode("utf-16")
+    if raw.startswith(b"\xef\xbb\xbf"):
+        return raw.decode("utf-8-sig")
+    for enc in ("utf-8", "gbk", "gb18030"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def read_record_file_lines(path: str):
+    """读取外部记录文件：非空、非分隔线的行。
+
+    成功返回 list；读失败返回 None；空文件返回 []。
+    """
+    p = (path or "").strip().strip('"')
+    if p.lower().startswith("file:///"):
+        p = p[8:]
+    if not p or not os.path.isfile(p):
+        return None
+    try:
+        with open(p, "rb") as f:
+            raw = f.read()
+        text = _decode_record_bytes(raw)
+    except Exception:
+        log.exception("读取外部记录文件失败 path=%s", p)
+        return None
+    return [
+        ln.strip()
+        for ln in (text or "").splitlines()
+        if ln.strip() and not is_record_sep(ln)
+    ]
+
+
+def merge_record_lines(existing, incoming) -> tuple:
+    """把 incoming 去重追加到 existing。返回 (合并后的行, 新增行)。"""
+    out = []
+    seen = set()
+    for ln in existing or []:
+        s = str(ln or "").strip()
+        if not s:
+            continue
+        if is_record_sep(s):
+            out.append(s)
+            continue
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+    added = []
+    for ln in incoming or []:
+        s = str(ln or "").strip()
+        if not s or is_record_sep(s):
+            continue
+        if s not in seen:
+            seen.add(s)
+            out.append(s)
+            added.append(s)
+    return out, added
+
+
 def load_records(key: str) -> list:
     path = _records_path(key)
     if not os.path.isfile(path):

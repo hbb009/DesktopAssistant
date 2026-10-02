@@ -1,10 +1,75 @@
 # styles/side_nav_icons.py
 # 侧栏导航彩色图标：圆角色底 + 白色矢量符号（不依赖 emoji 宽窄）
 
-from PyQt5.QtCore import Qt, QRectF, QPointF, QSize
+import os
+
+from PyQt5.QtCore import Qt, QRect, QRectF, QPointF, QSize
 from PyQt5.QtGui import (
-    QIcon, QPixmap, QPainter, QColor, QPen, QBrush, QPainterPath, QLinearGradient,
+    QIcon, QIconEngine, QPixmap, QPainter, QColor, QPen, QBrush, QPainterPath,
+    QLinearGradient,
 )
+
+
+def qt_ui_scale() -> float:
+    """当前进程 QT_SCALE_FACTOR（界面缩放）。"""
+    try:
+        s = float(os.environ.get("QT_SCALE_FACTOR", "1") or "1")
+    except (TypeError, ValueError):
+        s = 1.0
+    return max(1.0, s)
+
+
+def _new_painter(pm: QPixmap) -> QPainter:
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+    try:
+        p.setRenderHint(QPainter.HighQualityAntialiasing, True)
+    except Exception:
+        pass
+    return p
+
+
+_RASTER_CACHE = {}
+
+
+class _BlitIconEngine(QIconEngine):
+    """按屏幕像素栅格化，再画进逻辑矩形。
+
+    本程序用 QT_SCALE_FACTOR 放大界面。若把大图直接塞进 QIcon，Windows 样式
+    会把像素宽高当成逻辑尺寸，图标撑爆。paint() 时 painter 已带缩放：把
+    「逻辑边长 × scale」的位图 stretch 进逻辑 rect，屏幕上正好 1:1。
+    """
+
+    def __init__(self, raster_fn, logical: int):
+        super().__init__()
+        self._raster = raster_fn
+        self._logical = int(logical)
+
+    def clone(self):
+        return _BlitIconEngine(self._raster, self._logical)
+
+    def paint(self, painter, rect, mode, state):
+        del mode, state
+        if rect is None or not rect.isValid() or rect.isEmpty():
+            return
+        side = max(float(rect.width()), float(rect.height()), 1.0)
+        px = max(1, int(round(side * qt_ui_scale())))
+        pm = self._raster(px)
+        painter.save()
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        painter.drawPixmap(rect, pm)
+        painter.restore()
+
+    def pixmap(self, size, mode, state):
+        w = max(1, int(size.width()))
+        h = max(1, int(size.height()))
+        out = QPixmap(w, h)
+        out.fill(Qt.transparent)
+        p = QPainter(out)
+        self.paint(p, QRect(0, 0, w, h), mode, state)
+        p.end()
+        return out
 
 
 # 每项固定品牌色（亮/暗主题都够醒目）
@@ -12,17 +77,22 @@ _NAV_COLORS = {
     "overview":  ("#3B82F6", "#2563EB"),   # 蓝 · 总览
     "fast":      ("#22C55E", "#16A34A"),   # 绿 · 速存
     "video":     ("#F43F5E", "#E11D48"),   # 玫红 · 视频
+    "audio":     ("#14B8A6", "#0F766E"),   # 青绿 · 音频
     "gallery":   ("#A855F7", "#9333EA"),   # 紫 · 图集
-    "paste":     ("#EAB308", "#CA8A04"),   # 黄 · 粘贴（避开速存绿 / 语音编辑青绿）
-    "voice":     ("#2DD4BF", "#14B8A6"),   # 青绿 · 语音编辑
-    "voice_clone":("#8B5CF6", "#6D28D9"),  # 紫 · 语音克隆
-    "game_assist":("#0EA5E9", "#0284C7"),  # 天蓝 · 游戏助手
+    "paste":     ("#EAB308", "#CA8A04"),   # 黄 · 粘贴（避开速存绿 / 音频下载青绿）
+    "voice":     ("#8B5CF6", "#6D28D9"),   # 紫 · 语音录入（已拆出语音克隆 → 用扬声器声波图标）
+    "auk":       ("#F97316", "#C2410C"),   # 橙 · 音频处理（AUK / CosVoice3）
+    "text_edit": ("#A3E635", "#84CC16"),   # 黄绿 · 文本编辑
+    "gameassist":("#0EA5E9", "#0284C7"),  # 天蓝 · 游戏助手
+    "gamebrain": ("#EF4444", "#DC2626"),  # 红 · 游戏大脑
+    "gamemeet":  ("#2DD4BF", "#0F766E"),  # teal - game meeting
     "digital_human":("#E879F9", "#C026D3"),  # 品红 · 数字人
     "prompt":    ("#38BDF8", "#0284C7"),   # 天蓝 · 提示词
     "points":    ("#F59E0B", "#D97706"),   # 琥珀 · 积分
     "shot":      ("#06B6D4", "#0891B2"),   # 青蓝 · 截图
     "ratio":     ("#6366F1", "#4F46E5"),   # 靛 · 比例（实用工具子页图标）
     "dir_link":  ("#F97316", "#EA580C"),   # 橙 · 目录（实用工具子页图标）
+    "dup_clean": ("#14B8A6", "#0D9488"),   # 青 · 同名清理
     "tz_fx":     ("#10B981", "#059669"),   # 翠绿 · 时区汇率（实用工具子页图标）
     "region_rec":("#EF4444", "#DC2626"),   # 录制红 · 区域录屏
     "img_proc":  ("#EC4899", "#DB2777"),   # 品红 · 图片处理
@@ -95,6 +165,27 @@ def _draw_video(p, s):
     p.drawPath(path)
 
 
+def _draw_audio(p, s):
+    """八分音符"""
+    _w(p)
+    p.drawEllipse(QRectF(s * 0.26, s * 0.56, s * 0.24, s * 0.18))
+    p.drawRoundedRect(QRectF(s * 0.46, s * 0.26, s * 0.07, s * 0.40), 1.2, 1.2)
+    flag = QPainterPath()
+    flag.moveTo(s * 0.53, s * 0.28)
+    flag.cubicTo(s * 0.74, s * 0.30, s * 0.72, s * 0.50, s * 0.53, s * 0.46)
+    flag.closeSubpath()
+    p.drawPath(flag)
+
+
+def _draw_auk(p, s):
+    """三根声波，和语音录入的扬声器分开。"""
+    _w(p)
+    heights = (0.22, 0.42, 0.30)
+    for i, h in enumerate(heights):
+        x = s * (0.26 + i * 0.16)
+        p.drawRoundedRect(QRectF(x, s * (0.70 - h), s * 0.10, s * h), 1.4, 1.4)
+
+
 def _draw_gallery(p, s):
     """2×2 图块网格"""
     _w(p)
@@ -118,6 +209,28 @@ def _draw_paste(p, s):
     p.setBrush(QBrush(QColor(255, 255, 255, 100)))
     p.drawRoundedRect(QRectF(s * 0.36, s * 0.44, s * 0.28, s * 0.05), 1.0, 1.0)
     p.drawRoundedRect(QRectF(s * 0.36, s * 0.54, s * 0.22, s * 0.05), 1.0, 1.0)
+
+
+def _draw_text_edit(p, s):
+    """文稿 + 横线：文本编辑"""
+    # 纸张
+    _w(p)
+    paper = QPainterPath()
+    paper.moveTo(s * 0.30, s * 0.20)
+    paper.lineTo(s * 0.64, s * 0.20)
+    paper.lineTo(s * 0.74, s * 0.30)
+    paper.lineTo(s * 0.74, s * 0.80)
+    paper.lineTo(s * 0.30, s * 0.80)
+    paper.closeSubpath()
+    p.drawPath(paper)
+    # 折角
+    p.drawLine(QPointF(s * 0.64, s * 0.20), QPointF(s * 0.64, s * 0.30))
+    p.drawLine(QPointF(s * 0.64, s * 0.30), QPointF(s * 0.74, s * 0.30))
+    # 正文横线（一条段落缩进略短）
+    p.setBrush(Qt.NoBrush)
+    p.drawRoundedRect(QRectF(s * 0.36, s * 0.40, s * 0.28, s * 0.045), 1.0, 1.0)
+    p.drawRoundedRect(QRectF(s * 0.36, s * 0.52, s * 0.28, s * 0.045), 1.0, 1.0)
+    p.drawRoundedRect(QRectF(s * 0.36, s * 0.64, s * 0.18, s * 0.045), 1.0, 1.0)
 
 
 def _draw_voice(p, s):
@@ -156,7 +269,7 @@ def _draw_voice_clone(p, s):
     p.drawArc(QRectF(s * 0.54, s * 0.38, s * 0.22, s * 0.24), -55 * 16, 110 * 16)
 
 
-def _draw_game_assist(p, s):
+def _draw_gameassist(p, s):
     """手柄：游戏助手"""
     p.setBrush(Qt.NoBrush)
     pen = QPen(QColor("#FFFFFF"), max(1.6, s * 0.07))
@@ -168,6 +281,25 @@ def _draw_game_assist(p, s):
     p.drawRoundedRect(QRectF(s * 0.355, s * 0.39, s * 0.05, s * 0.16), 1.0, 1.0)
     p.drawEllipse(QRectF(s * 0.56, s * 0.40, s * 0.08, s * 0.08))
     p.drawEllipse(QRectF(s * 0.66, s * 0.48, s * 0.08, s * 0.08))
+
+
+def _draw_gamebrain(p, s):
+    """左右脑叶：游戏大脑"""
+    _w(p)
+    p.drawEllipse(QRectF(s * 0.22, s * 0.26, s * 0.32, s * 0.40))
+    p.drawEllipse(QRectF(s * 0.46, s * 0.26, s * 0.32, s * 0.40))
+    p.drawRoundedRect(QRectF(s * 0.44, s * 0.60, s * 0.12, s * 0.16), 2.0, 2.0)
+
+
+
+def _draw_gamemeet(p, s):
+    """Two chat bubbles: game meeting"""
+    _w(p)
+    p.drawRoundedRect(QRectF(s * 0.18, s * 0.28, s * 0.38, s * 0.30), s * 0.08, s * 0.08)
+    p.drawRoundedRect(QRectF(s * 0.44, s * 0.46, s * 0.38, s * 0.30), s * 0.08, s * 0.08)
+    p.setBrush(QBrush(QColor(255, 255, 255, 220)))
+    p.drawEllipse(QRectF(s * 0.28, s * 0.18, s * 0.12, s * 0.12))
+    p.drawEllipse(QRectF(s * 0.60, s * 0.70, s * 0.12, s * 0.12))
 
 
 def _draw_digital_human(p, s):
@@ -263,6 +395,18 @@ def _draw_dir_link(p, s):
     p.drawArc(QRectF(s * 0.48, s * 0.48, s * 0.22, s * 0.18), 30 * 16, 200 * 16)
 
 
+def _draw_dup_clean(p, s):
+    """叠放两份文件：同名清理"""
+    p.setBrush(QBrush(QColor(255, 255, 255, 140)))
+    p.drawRoundedRect(QRectF(s * 0.34, s * 0.22, s * 0.38, s * 0.46), 2.0, 2.0)
+    _w(p)
+    p.drawRoundedRect(QRectF(s * 0.24, s * 0.30, s * 0.38, s * 0.46), 2.2, 2.2)
+    p.setBrush(QBrush(QColor(255, 255, 255, 90)))
+    p.drawRoundedRect(QRectF(s * 0.30, s * 0.40, s * 0.26, s * 0.05), 1.0, 1.0)
+    p.drawRoundedRect(QRectF(s * 0.30, s * 0.50, s * 0.20, s * 0.05), 1.0, 1.0)
+    p.drawRoundedRect(QRectF(s * 0.30, s * 0.60, s * 0.16, s * 0.05), 1.0, 1.0)
+
+
 def _draw_tz_fx(p, s):
     """地球 / 时钟"""
     _w(p)
@@ -346,17 +490,22 @@ _DRAWERS = {
     "overview": _draw_overview,
     "fast": _draw_fast,
     "video": _draw_video,
+    "audio": _draw_audio,
     "gallery": _draw_gallery,
     "paste": _draw_paste,
-    "voice": _draw_voice,
-    "voice_clone": _draw_voice_clone,
-    "game_assist": _draw_game_assist,
+    "voice": _draw_voice_clone,
+    "auk": _draw_auk,
+    "text_edit": _draw_text_edit,
+    "gameassist": _draw_gameassist,
+    "gamebrain": _draw_gamebrain,
+    "gamemeet": _draw_gamemeet,
     "digital_human": _draw_digital_human,
     "prompt": _draw_prompt,
     "points": _draw_points,
     "shot": _draw_shot,
     "ratio": _draw_ratio,
     "dir_link": _draw_dir_link,
+    "dup_clean": _draw_dup_clean,
     "tz_fx": _draw_tz_fx,
     "region_rec": _draw_region_rec,
     "img_proc": _draw_img_proc,
@@ -364,21 +513,42 @@ _DRAWERS = {
 }
 
 
-def paint_header_rename_icon(size: int = 14, color: str = "#9fb0d7") -> QIcon:
-    """侧栏分区改名：线框铅笔，不带圆角色底。"""
-    size = max(10, int(size))
-    pm = QPixmap(size, size)
+def _raster_nav(key: str, px: int) -> QPixmap:
+    px = max(1, int(px))
+    cache_key = ("nav", key, px)
+    hit = _RASTER_CACHE.get(cache_key)
+    if hit is not None:
+        return hit
+    pm = QPixmap(px, px)
     pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing, True)
-    s = float(size)
+    p = _new_painter(pm)
+    s = float(px)
+    c0, c1 = _NAV_COLORS.get(key, ("#64748B", "#475569"))
+    _fill_badge(p, s, c0, c1)
+    drawer = _DRAWERS.get(key)
+    if drawer:
+        drawer(p, s)
+    p.end()
+    _RASTER_CACHE[cache_key] = pm
+    return pm
+
+
+def _raster_rename(px: int, color: str) -> QPixmap:
+    px = max(1, int(px))
+    cache_key = ("rename", px, color)
+    hit = _RASTER_CACHE.get(cache_key)
+    if hit is not None:
+        return hit
+    pm = QPixmap(px, px)
+    pm.fill(Qt.transparent)
+    p = _new_painter(pm)
+    s = float(px)
     c = QColor(color)
     pen = QPen(c, max(1.2, s * 0.10))
     pen.setCapStyle(Qt.RoundCap)
     pen.setJoinStyle(Qt.RoundJoin)
     p.setPen(pen)
     p.setBrush(Qt.NoBrush)
-    # 45° 铅笔外轮廓：左下笔尖 → 右上橡皮
     body = QPainterPath()
     body.moveTo(s * 0.18, s * 0.82)
     body.lineTo(s * 0.32, s * 0.58)
@@ -389,21 +559,23 @@ def paint_header_rename_icon(size: int = 14, color: str = "#9fb0d7") -> QIcon:
     body.lineTo(s * 0.46, s * 0.72)
     body.closeSubpath()
     p.drawPath(body)
-    # 笔尖切线、橡皮分界
     p.drawLine(QPointF(s * 0.32, s * 0.58), QPointF(s * 0.46, s * 0.72))
     p.drawLine(QPointF(s * 0.58, s * 0.32), QPointF(s * 0.72, s * 0.46))
     p.end()
-    return QIcon(pm)
+    _RASTER_CACHE[cache_key] = pm
+    return pm
 
 
-def paint_header_clock_icon(size: int = 18, color: str = "#9fb0d7") -> QIcon:
-    """顶栏「时间」线框钟：圆盘 + 时针分针，不带色底。"""
-    size = max(14, int(size))
-    pm = QPixmap(size, size)
+def _raster_clock(px: int, color: str) -> QPixmap:
+    px = max(1, int(px))
+    cache_key = ("clock", px, color)
+    hit = _RASTER_CACHE.get(cache_key)
+    if hit is not None:
+        return hit
+    pm = QPixmap(px, px)
     pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing, True)
-    s = float(size)
+    p = _new_painter(pm)
+    s = float(px)
     c = QColor(color)
     pen = QPen(c, max(1.6, s * 0.09))
     pen.setCapStyle(Qt.RoundCap)
@@ -413,37 +585,36 @@ def paint_header_clock_icon(size: int = 18, color: str = "#9fb0d7") -> QIcon:
     m = s * 0.14
     p.drawEllipse(QRectF(m, m, s - 2 * m, s - 2 * m))
     cx = cy = s * 0.50
-    # 12 点刻度短线
     p.drawLine(QPointF(cx, m + s * 0.04), QPointF(cx, m + s * 0.12))
-    # 时针（约 10 点方向）/ 分针（约 2 点方向）
     p.drawLine(QPointF(cx, cy), QPointF(cx - s * 0.10, cy - s * 0.12))
     p.drawLine(QPointF(cx, cy), QPointF(cx + s * 0.16, cy - s * 0.04))
     p.setPen(Qt.NoPen)
     p.setBrush(QBrush(c))
     p.drawEllipse(QPointF(cx, cy), s * 0.05, s * 0.05)
     p.end()
-    return QIcon(pm)
+    _RASTER_CACHE[cache_key] = pm
+    return pm
+
+
+def paint_header_rename_icon(size: int = 14, color: str = "#9fb0d7") -> QIcon:
+    """侧栏分区改名：线框铅笔，不带圆角色底。"""
+    size = max(10, int(size))
+    col = str(color or "#9fb0d7")
+    return QIcon(_BlitIconEngine(lambda px, c=col: _raster_rename(px, c), size))
+
+
+def paint_header_clock_icon(size: int = 18, color: str = "#9fb0d7") -> QIcon:
+    """顶栏「时间」线框钟：圆盘 + 时针分针，不带色底。"""
+    size = max(14, int(size))
+    col = str(color or "#9fb0d7")
+    return QIcon(_BlitIconEngine(lambda px, c=col: _raster_clock(px, c), size))
 
 
 def paint_side_nav_icon(key: str, size: int = 20) -> QIcon:
     """绘制侧栏导航彩色图标。key 见 _NAV_COLORS / _DRAWERS。"""
     size = max(14, int(size))
-    pm = QPixmap(size, size)
-    pm.fill(Qt.transparent)
-    p = QPainter(pm)
-    p.setRenderHint(QPainter.Antialiasing, True)
-    p.setRenderHint(QPainter.SmoothPixmapTransform, True)
-
-    s = float(size)
-    c0, c1 = _NAV_COLORS.get(key, ("#64748B", "#475569"))
-    _fill_badge(p, s, c0, c1)
-
-    drawer = _DRAWERS.get(key)
-    if drawer:
-        drawer(p, s)
-
-    p.end()
-    return QIcon(pm)
+    k = str(key or "")
+    return QIcon(_BlitIconEngine(lambda px, kk=k: _raster_nav(kk, px), size))
 
 
 def side_nav_icon_size() -> QSize:

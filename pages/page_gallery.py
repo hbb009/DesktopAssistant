@@ -14,7 +14,8 @@ from PyQt5.QtGui import QTextCursor, QIcon, QPixmap, QPainter, QColor, QPen, QBr
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QTextEdit, QFileDialog, QApplication,
-    QCheckBox, QComboBox, QFrame, QScrollArea, QSizePolicy,
+    QCheckBox, QFrame, QScrollArea, QSizePolicy,
+    QAbstractSpinBox, QDoubleSpinBox,
     QTabWidget, QTabBar, QDialog, QMessageBox,
 )
 
@@ -29,6 +30,7 @@ from styles.style_all import (
     apply_transparent_surface,
     install_card_title,
     message_box_warn,
+    message_box_info,
     restyle_card_title,
     restyle_card_frame,
     make_card,
@@ -41,6 +43,7 @@ from styles.style_all import (
     CARD_RIGHT_GAP,
     CARD_BOTTOM_GAP,
     MEDIUM_BUTTON_H,
+    COMBO_H,
 )
 from utils.logger import get_logger
 from utils.flow_layout import FlowLayout
@@ -52,6 +55,7 @@ from utils.gallery_records import (
     has_record, add_record, scan_dir_records, load_records,
     parse_record_text, save_records,
     is_record_sep, split_suspect_record_lines, format_records_with_suspects,
+    read_record_file_lines, merge_record_lines,
 )
 
 try:
@@ -112,82 +116,79 @@ class _RatioCol(QWidget):
         return QSize(0, sh.height())
 
 
-# 下载间隔：界面用「秒」思考，内部仍存 ms（prefs / 下载线程）
+# 下载间隔：界面「间隔 N.N 秒」，内部仍存 ms（prefs / 下载线程）
+_DELAY_SEC_MIN = 0.0
+_DELAY_SEC_MAX = 3.0
 _DELAY_MS_MIN = 0
-_DELAY_MS_MAX = 10000  # 最长 10 秒，够慢网/严限额
-_DELAY_PRESETS = (
-    # (显示, ms) — 文案宜短，避免可编辑下拉框把「1.2」左侧裁掉
-    ("无间隔", 0),
-    ("0.5 秒", 500),
-    ("1.0 秒", 1000),
-    ("1.2 秒 · 荐", 1200),
-    ("1.5 秒", 1500),
-    ("2.0 秒", 2000),
-    ("3.0 秒", 3000),
-    ("5.0 秒", 5000),
-)
+_DELAY_MS_MAX = int(_DELAY_SEC_MAX * 1000)
+_DELAY_DEFAULT_SEC = 1.0
 
 
 def _clamp_delay_ms(ms: int) -> int:
     try:
         v = int(ms)
     except (TypeError, ValueError):
-        v = 1200
+        v = int(round(_DELAY_DEFAULT_SEC * 1000))
     return max(_DELAY_MS_MIN, min(_DELAY_MS_MAX, v))
 
 
-def _format_delay_ms(ms: int) -> str:
-    """把毫秒格式化成下拉/编辑框文案。"""
+def _ms_to_sec(ms: int) -> float:
     ms = _clamp_delay_ms(ms)
-    if ms <= 0:
-        return "无间隔"
-    for label, preset in _DELAY_PRESETS:
-        if preset == ms and preset > 0:
-            return label
-    # 整秒 / 一位小数
-    sec = ms / 1000.0
-    if abs(sec - round(sec)) < 1e-6:
-        return f"{int(round(sec))}.0 秒"
-    return f"{sec:.1f} 秒"
+    sec = round(ms / 1000.0, 1)
+    return max(_DELAY_SEC_MIN, min(_DELAY_SEC_MAX, sec))
 
 
-def _parse_delay_to_ms(text: str) -> int:
-    """解析用户输入：1.5 / 1.5秒 / 1500 / 1500ms / 无间隔 → 毫秒。
-
-    规则：带 ms/毫秒 → 毫秒；带 秒/s → 秒；纯数字 ≤10 当秒，>10 当毫秒。
-    """
-    t = (text or "").strip()
-    if not t:
-        return 1200
-    # 去掉推荐标记、空白
-    t = re.sub(r"[（(]推荐[）)]", "", t).strip()
-    t_compact = re.sub(r"\s+", "", t).lower()
-    if t_compact in ("无", "无间隔", "0", "0秒", "0s", "0.0秒", "0.0s"):
-        return 0
-
-    has_ms = t_compact.endswith("ms") or t_compact.endswith("毫秒")
-    has_sec = (not has_ms) and (
-        t_compact.endswith("秒")
-        or t_compact.endswith("s")
-        or "秒" in t_compact
-    )
-    # 抽出第一个数字（支持 1.5）
-    m = re.search(r"(\d+(?:\.\d+)?)", t_compact)
-    if not m:
-        return 1200
+def _sec_to_ms(sec) -> int:
     try:
-        num = float(m.group(1))
-    except ValueError:
-        return 1200
+        v = float(sec)
+    except (TypeError, ValueError):
+        v = _DELAY_DEFAULT_SEC
+    if v < 0:
+        v = 0.0
+    v = max(_DELAY_SEC_MIN, min(_DELAY_SEC_MAX, v))
+    v = round(v, 1)
+    return int(round(v * 1000))
 
-    if has_ms:
-        return _clamp_delay_ms(int(round(num)))
-    if has_sec:
-        return _clamp_delay_ms(int(round(num * 1000)))
-    # 裸数字：小值当秒（1.5 → 1500），大值当毫秒（1500 → 1500）
-    if num <= 10:
-        return _clamp_delay_ms(int(round(num * 1000)))
-    return _clamp_delay_ms(int(round(num)))
+
+def _style_delay_spin(spin: QDoubleSpinBox) -> None:
+    if spin is None:
+        return
+    text = tk("text")
+    accent = tk("accent")
+    line = tk("border")
+    try:
+        spin.setFrame(False)
+    except Exception:
+        pass
+    try:
+        le = spin.lineEdit()
+        if le is not None:
+            le.setFrame(False)
+            le.setAlignment(Qt.AlignCenter)
+    except Exception:
+        pass
+    spin.setStyleSheet(
+        f"QAbstractSpinBox#GalleryDelaySpin {{"
+        f"  background: transparent;"
+        f"  color: {text};"
+        f"  border: none;"
+        f"  border-radius: 0px;"
+        f"  border-bottom: 1px solid {line};"
+        f"  padding: 0px 2px;"
+        f"  min-height: {int(COMBO_H)}px;"
+        f"  font-size: 13px;"
+        f"}}"
+        f"QAbstractSpinBox#GalleryDelaySpin:focus {{"
+        f"  border: none;"
+        f"  border-bottom: 1px solid {accent};"
+        f"}}"
+        f"QAbstractSpinBox#GalleryDelaySpin QLineEdit {{"
+        f"  background: transparent;"
+        f"  border: none;"
+        f"  color: {text};"
+        f"  padding: 0px;"
+        f"}}"
+    )
 
 
 # ── Cookie 自动扫描（对齐 YouTube 页逻辑）────────────────────────────────────
@@ -1870,6 +1871,28 @@ def parse_gallery_url(
 
 def gallery_folder_path(save_dir: str, title: str) -> str:
     return os.path.join(save_dir, _safe_folder_name(title, "gallery"))
+
+
+def _next_pixiv_seq_leaf(save_dir: str, safe_leaf: str) -> str:
+    """Pixiv 同名目录：原名已被占用时，改用「原名01」…「原名99」。
+
+    原名未占用则返回原名；01–99 都占用返回空串。
+    序号占 2 位，原名过长时先截到 78，避免再过 _safe_folder_name(max_len=80) 把序号截掉。
+    """
+    save_dir = (save_dir or "").strip()
+    leaf = (safe_leaf or "").strip() or "pixiv"
+    if not save_dir:
+        return leaf
+    if not os.path.exists(os.path.join(save_dir, leaf)):
+        return leaf
+    stem = leaf if len(leaf) <= 78 else (leaf[:78].rstrip(" .") or "pixiv")
+    for i in range(1, 100):
+        cand = _safe_folder_name(f"{stem}{i:02d}", "pixiv")
+        if cand == leaf:
+            continue
+        if not os.path.exists(os.path.join(save_dir, cand)):
+            return cand
+    return ""
 
 
 def _numeric_name_candidates(stem: str) -> list:
@@ -4124,8 +4147,8 @@ def _open_gallery_records_dialog(page):
         dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowContextHelpButtonHint)
     except Exception:
         pass
-    dlg.resize(640, 360)
-    dlg.setMinimumSize(480, 280)
+    dlg.resize(720, 360)
+    dlg.setMinimumSize(560, 280)
     try:
         if page is not None and page.styleSheet():
             dlg.setStyleSheet(page.styleSheet())
@@ -4207,6 +4230,84 @@ def _open_gallery_records_dialog(page):
         _gallery_reload_record_editor(page, preview)
         _set_total_text()
 
+    def _do_add_file():
+        def _tell(text, *, warn=False):
+            fn = message_box_warn if warn else message_box_info
+            QTimer.singleShot(0, lambda t=text, w=warn, f=fn: f(dlg, "添加记录文件", t))
+
+        try:
+            start = os.path.join(os.path.expanduser("~"), "Desktop")
+            if not os.path.isdir(start):
+                start = os.path.expanduser("~")
+            path, _ = QFileDialog.getOpenFileName(
+                dlg, "选择记录文件", start,
+                "文本文件 (*.txt);;所有文件 (*.*)",
+            )
+            path = (path or "").strip().strip('"')
+            if not path:
+                return
+            log.info("添加记录文件 选中 %s", path)
+            incoming = read_record_file_lines(path)
+            if incoming is None:
+                log.warning("添加记录文件 读取失败 path=%s", path)
+                _tell(f"无法读取该文件：\n{path}", warn=True)
+                return
+            if not incoming:
+                log.info("添加记录文件 无可用行 path=%s", path)
+                _tell("文件里没有可用记录（需要每行一条名称）。", warn=True)
+                return
+            current = parse_record_text(preview.toPlainText())
+            new_lines, added = merge_record_lines(current, incoming)
+            skipped = len(incoming) - len(added)
+            log.info(
+                "添加记录文件 incoming=%s added=%s skipped=%s sample=%s",
+                len(incoming), len(added), skipped, (added or incoming)[:3],
+            )
+            if added:
+                new_text = "\n".join(new_lines)
+                if new_text:
+                    new_text += "\n"
+                preview.blockSignals(True)
+                try:
+                    preview.setPlainText(new_text)
+                finally:
+                    preview.blockSignals(False)
+                if not save_records(key, parse_record_text(new_text)):
+                    _tell("已读入编辑框，但写入记录文件失败。", warn=True)
+                    _set_total_text()
+                    return
+                if hasattr(page, "_refresh_record_count"):
+                    page._refresh_record_count()
+                else:
+                    _gallery_apply_record_hint(page)
+                try:
+                    page._log(f"已下载：从文件新增 {len(added)} 条记录", "ok")
+                except Exception:
+                    pass
+                try:
+                    cur = preview.textCursor()
+                    cur.movePosition(cur.End)
+                    preview.setTextCursor(cur)
+                    preview.ensureCursorVisible()
+                except Exception:
+                    pass
+            else:
+                try:
+                    page._log("已下载：文件中无新记录", "ok")
+                except Exception:
+                    pass
+            _set_total_text()
+            extra = f" · 本次新增 {len(added)} 条，跳过 {skipped} 条已有"
+            lbl_total.setText(f"共 {_editor_count()} 条{extra}")
+            _tell(
+                f"已读 {len(incoming)} 条\n"
+                f"新增 {len(added)} 条\n"
+                f"跳过 {skipped} 条（已有）"
+            )
+        except Exception as e:
+            log.exception("添加记录文件失败")
+            _tell(f"导入出错：{e}", warn=True)
+
     def _scroll_to_sep():
         text = preview.toPlainText()
         idx = text.find("-----")
@@ -4261,6 +4362,14 @@ def _open_gallery_records_dialog(page):
     )
     btn_add.clicked.connect(_do_add_dir)
     btn_row.addWidget(btn_add)
+
+    btn_add_file = _make_btn(
+        "添加记录文件",
+        bg="#1d4ed8", fg="#dbeafe", bd="#2563eb", hover_bg="#2563eb",
+    )
+    btn_add_file.setToolTip("从其它 .txt 合并记录（去重追加）")
+    btn_add_file.clicked.connect(_do_add_file)
+    btn_row.addWidget(btn_add_file)
 
     btn_dedupe = _make_btn(
         "整理记录",
@@ -4781,7 +4890,7 @@ class _GalleryEHentaiPage(QWidget):
     def _delay_ms(self) -> int:
         if hasattr(self, "_gallery_delay_fn") and self._gallery_delay_fn:
             return self._gallery_delay_fn()
-        return 1200
+        return _DELAY_DEFAULT_SEC * 1000
 
     # ── 用户习惯（records/user.txt · gallery 段）────────────────────────────
     def export_settings(self) -> dict:
@@ -5022,7 +5131,10 @@ class _GalleryEHentaiPage(QWidget):
             try:
                 idx = mw.stack.indexOf(pv)
                 if idx >= 0:
-                    mw._switch(idx, mw.btn_douyin)
+                    if hasattr(mw, "_auto_switch"):
+                        mw._auto_switch(idx, mw.btn_douyin)
+                    else:
+                        mw._switch(idx, mw.btn_douyin)
             except Exception:
                 pass
         self._log("批处理 → 自动下载（混链按平台分发）…", "ok")
@@ -5031,13 +5143,13 @@ class _GalleryEHentaiPage(QWidget):
             self._set_status("自动下载未启动", tk("warn"))
 
     def request_batch_stop(self) -> bool:
-        """F6：优先转自动下载引擎中止；其次序列补全；再处理本页遗留本地批。"""
+        """F6：优先转自动下载引擎；否则立刻取消本页任务并收口（用户中止）。"""
         pv, _mw = self._find_page_video_engine()
         if pv is not None and getattr(pv, "_batch_mode", False):
             if hasattr(pv, "request_batch_stop"):
                 return bool(pv.request_batch_stop())
             return False
-        # 序列补全进行中：立刻置取消（解析/下载线程会响应）
+        # 序列补全进行中：立刻置取消
         if getattr(self, "_fill_active_once", False) or getattr(
             self, "_fill_only_names", None
         ) is not None:
@@ -5045,35 +5157,28 @@ class _GalleryEHentaiPage(QWidget):
                 self._cancel[0] = True
             except Exception:
                 pass
-            set_batch_progress_note("正在中止…")
+            set_batch_progress_note("用户中止")
             try:
-                self._fill_bubble(note="正在中止…")
+                self._fill_bubble(note="用户中止")
             except Exception:
                 pass
             return True
         if not getattr(self, "_batch_mode", False):
             return False
         if getattr(self, "_batch_stop_requested", False):
-            set_batch_progress_note("已预约中止")
+            set_batch_progress_note("用户中止")
             return True
         self._batch_stop_requested = True
-        busy = False
-        for attr in ("_dl_worker", "_parse_worker"):
-            w = getattr(self, attr, None)
-            try:
-                if w is not None and w.isRunning():
-                    busy = True
-                    break
-            except Exception:
-                pass
-        if not busy:
-            try:
-                self._batch_timer.stop()
-            except Exception:
-                pass
-            QTimer.singleShot(0, self._batch_next)
-        else:
-            set_batch_progress_note("当前条后中止")
+        set_batch_progress_note("用户中止")
+        try:
+            self._cancel[0] = True
+        except Exception:
+            pass
+        try:
+            self._batch_timer.stop()
+        except Exception:
+            pass
+        QTimer.singleShot(0, self._batch_next)
         return True
 
     def _batch_current_record_url(self) -> str:
@@ -5170,7 +5275,7 @@ class _GalleryEHentaiPage(QWidget):
             if cnt > 0:
                 show_cursor_toast(
                     "批处理",
-                    "已中止" if stopped else "完成",
+                    "用户中止" if stopped else "完成",
                     current=cnt, total=cnt,
                     ok=ok, skip=skip, err=err,
                     accent="info" if stopped else "ok",
@@ -5512,7 +5617,10 @@ class _GalleryEHentaiPage(QWidget):
                 try:
                     pf = mw.page_fast
                     if hasattr(mw, "btn_fast") and hasattr(mw, "stack"):
-                        mw._switch(mw.stack.indexOf(pf), mw.btn_fast)
+                        if hasattr(mw, "_auto_switch"):
+                            mw._auto_switch(mw.stack.indexOf(pf), mw.btn_fast)
+                        else:
+                            mw._switch(mw.stack.indexOf(pf), mw.btn_fast)
                     if hasattr(pf, "on_sequence_fill_done"):
                         pf.on_sequence_fill_done(
                             ok=bool(ok),
@@ -7481,7 +7589,10 @@ class _GalleryPixivPage(QWidget):
             try:
                 idx = mw.stack.indexOf(pv)
                 if idx >= 0:
-                    mw._switch(idx, mw.btn_douyin)
+                    if hasattr(mw, "_auto_switch"):
+                        mw._auto_switch(idx, mw.btn_douyin)
+                    else:
+                        mw._switch(idx, mw.btn_douyin)
             except Exception:
                 pass
         self._log("批处理 → 自动下载（混链按平台分发）…", "ok")
@@ -7490,7 +7601,7 @@ class _GalleryPixivPage(QWidget):
             self._set_status("自动下载未启动", tk("warn"))
 
     def request_batch_stop(self) -> bool:
-        """F6：优先转自动下载引擎中止；无则处理本页遗留本地批。"""
+        """F6：优先转自动下载引擎；无则立刻取消本页批处理（用户中止）。"""
         pv, _mw = self._find_page_video_engine()
         if pv is not None and getattr(pv, "_batch_mode", False):
             if hasattr(pv, "request_batch_stop"):
@@ -7499,26 +7610,19 @@ class _GalleryPixivPage(QWidget):
         if not getattr(self, "_batch_mode", False):
             return False
         if getattr(self, "_batch_stop_requested", False):
-            set_batch_progress_note("已预约中止")
+            set_batch_progress_note("用户中止")
             return True
         self._batch_stop_requested = True
-        busy = False
-        for attr in ("_dl_worker", "_parse_worker"):
-            w = getattr(self, attr, None)
-            try:
-                if w is not None and w.isRunning():
-                    busy = True
-                    break
-            except Exception:
-                pass
-        if not busy:
-            try:
-                self._batch_timer.stop()
-            except Exception:
-                pass
-            QTimer.singleShot(0, self._batch_next)
-        else:
-            set_batch_progress_note("当前条后中止")
+        set_batch_progress_note("用户中止")
+        try:
+            self._cancel[0] = True
+        except Exception:
+            pass
+        try:
+            self._batch_timer.stop()
+        except Exception:
+            pass
+        QTimer.singleShot(0, self._batch_next)
         return True
 
     def _batch_current_record_url(self) -> str:
@@ -7615,7 +7719,7 @@ class _GalleryPixivPage(QWidget):
             if cnt > 0:
                 show_cursor_toast(
                     "批处理",
-                    "已中止" if stopped else "完成",
+                    "用户中止" if stopped else "完成",
                     current=cnt, total=cnt,
                     ok=ok, skip=skip, err=err,
                     accent="info" if stopped else "ok",
@@ -7649,7 +7753,7 @@ class _GalleryPixivPage(QWidget):
     def _delay_ms(self) -> int:
         if hasattr(self, "_gallery_delay_fn") and self._gallery_delay_fn:
             return self._gallery_delay_fn()
-        return 1200
+        return _DELAY_DEFAULT_SEC * 1000
 
     # ── 主流程 ────────────────────────────────────────────────────────────────
 
@@ -7898,54 +8002,42 @@ class _GalleryPixivPage(QWidget):
         dialog_title: str = "Pixiv 下载 · 发现同名文件",
         fallback_leaf: str = "pixiv",
     ):
-        """同名处理：
+        """同名目录：只要保存根下已有同名文件夹，本次下载改用「原名01」…「原名99」。
 
-        1) 有同名但未下全 → 不弹窗，继续下缺失
-        2) 有同名且内容卡已全部在盘 → 弹窗 中止/改名/覆盖
+        不同作品常撞同一标题；旧逻辑按文件名续下，会把新作品混进旧目录。
+        序列补全必须写回原目录，不走这套。下完仍按文件大小比对，真重复则删新目录。
         """
         images = list(images or [])
         save_dir = self._save_root()
-        title = self._work_title(fallback_leaf)
-        folder = gallery_folder_path(save_dir, title)
+        # 序号始终相对作品原标题，不叠在上次的 01/02 后面
+        raw_title = (self._info or {}).get("title") or fallback_leaf
+        old_leaf = _safe_folder_name(raw_title, fallback_leaf)
+        folder = os.path.join(save_dir, old_leaf) if save_dir else old_leaf
         self._dup_compare_dir = ""
 
-        total = len(images)
-        if total <= 0:
-            return {"title": title, "skip_existing": None}
-
-        done_n = 0
-        for it in images:
-            name = str(it.get("name") or f"{int(it.get('index') or 0):04d}")
-            if image_file_exists(folder, name):
-                done_n += 1
-
-        if done_n <= 0:
-            return {"title": title, "skip_existing": None}
-
-        if done_n < total:
-            self._log(
-                f"目录已有 {done_n}/{total} 张，未下全 — 继续下载缺失项（不弹窗）",
-                "ok",
-            )
-            return {"title": title, "skip_existing": True}
-
-        try:
-            from utils.download_confirm import next_numbered_dir_title
-        except Exception as e:
-            self._log(f"同名处理模块加载失败：{e}", "warn")
-            return {"title": title, "skip_existing": None}
-
-        # Pixiv 与抖音相同：目录已齐也不弹窗。另存到 leaf_N，下完再比各文件大小。
-        # 序列补全必须写回原目录，不走这套。
         if getattr(self, "_fill_only_names", None):
+            title = self._work_title(fallback_leaf)
             return {"title": title, "skip_existing": True}
 
-        old_leaf = _safe_folder_name(title, fallback_leaf)
-        new_leaf = next_numbered_dir_title(save_dir, old_leaf)
+        if not images:
+            return {"title": raw_title, "skip_existing": None}
+
+        if not save_dir or not os.path.exists(folder):
+            return {"title": raw_title, "skip_existing": None}
+
+        new_leaf = _next_pixiv_seq_leaf(save_dir, old_leaf)
+        if not new_leaf or new_leaf == old_leaf:
+            self._log(
+                f"目录「{old_leaf}」及 01–99 均已占用，无法为本次下载另建目录",
+                "err",
+            )
+            self._set_status("同名目录过多，已中止", tk("err"))
+            return None
+
         self._folder_title_override = new_leaf
-        self._dup_compare_dir = os.path.join(save_dir, old_leaf)
+        self._dup_compare_dir = folder
         self._log(
-            f"目录已齐 {done_n}/{total} 张：将另存为「{new_leaf}」，"
+            f"目录「{old_leaf}」已存在：本次下载改为「{new_leaf}」，"
             "完成后按文件大小判定是否真重复",
             "blue",
         )
@@ -8079,7 +8171,7 @@ class _GalleryPixivPage(QWidget):
                 self._emit_nav_progress(False)
             return
 
-        # 解析后：未下全静默续下；已下全才弹窗
+        # 解析后：保存根已有同名目录则改用 原名01…99，避免不同作品混进同一文件夹
         resolved = self._resolve_same_name(
             imgs,
             dialog_title="Pixiv 下载 · 发现同名文件",
@@ -9184,6 +9276,24 @@ class PageGallery(QWidget):
     # 侧栏「图集下载」下 2px 进度线（汇总各子页）
     nav_progress = pyqtSignal(bool, int, str)
 
+    # ===== 窗口高度 BUG 防护（与截图/速存/时区汇率页同一套路）=====
+    # FlowLayout / wordWrap 会让整页 hasHeightForWidth()=True，Qt 拖窗口时抬高推荐高度。
+    # 切断整页 HFW；内部滚动/换行照常。
+    def hasHeightForWidth(self):
+        return False
+
+    def minimumSizeHint(self):
+        return QSize(0, 0)
+
+    def sizeHint(self):
+        sh = super().sizeHint()
+        if not sh.isValid() or sh.height() <= 0:
+            return QSize(0, 0)
+        cap = 700
+        if int(sh.height()) > cap:
+            return QSize(sh.width(), cap)
+        return sh
+
     def __init__(self):
         super().__init__()
         apply_transparent_surface(self, "PageGallery")
@@ -9242,31 +9352,38 @@ class PageGallery(QWidget):
         self._refresh_tab_deco()
         self.tabs.currentChanged.connect(lambda _i: self._refresh_tab_deco())
 
-        # 下载间隔（共享 · 右上角）
+        # 下载间隔（共享 · 右上角）：间隔 + 数字 + 秒
         corner = QWidget()
         corner.setStyleSheet("background: transparent;")
         corner_lay = QHBoxLayout(corner)
-        corner_lay.setContentsMargins(0, 0, 0, 0)
+        corner_lay.setContentsMargins(0, 0, 8, 0)
         corner_lay.setSpacing(4)
         lbl_delay = QLabel("间隔")
         lbl_delay.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         corner_lay.addWidget(lbl_delay)
-        self.cmb_delay = QComboBox()
-        self.cmb_delay.setEditable(True)
-        self.cmb_delay.setInsertPolicy(QComboBox.NoInsert)
-        self.cmb_delay.setSizeAdjustPolicy(QComboBox.AdjustToContents)
-        self.cmb_delay.setMinimumWidth(80)
-        self.cmb_delay.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-        for label, ms in _DELAY_PRESETS:
-            self.cmb_delay.addItem(label, ms)
-        self._set_delay_ms(1200)
-        self.cmb_delay.activated.connect(self._on_delay_activated)
-        le_delay = self.cmb_delay.lineEdit()
-        if le_delay is not None:
-            le_delay.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            le_delay.setMinimumWidth(0)
-            le_delay.editingFinished.connect(self._on_delay_edit_finished)
-        corner_lay.addWidget(self.cmb_delay)
+        self.spin_delay = QDoubleSpinBox()
+        self.spin_delay.setObjectName("GalleryDelaySpin")
+        self.spin_delay.setDecimals(1)
+        self.spin_delay.setRange(_DELAY_SEC_MIN, _DELAY_SEC_MAX)
+        self.spin_delay.setSingleStep(0.1)
+        self.spin_delay.setKeyboardTracking(False)
+        self.spin_delay.setAlignment(Qt.AlignCenter)
+        self.spin_delay.setButtonSymbols(QAbstractSpinBox.NoButtons)
+        self.spin_delay.setCorrectionMode(QAbstractSpinBox.CorrectToNearestValue)
+        self.spin_delay.setFixedHeight(int(COMBO_H))
+        fm = self.spin_delay.fontMetrics()
+        try:
+            num_w = int(fm.horizontalAdvance("3.0"))
+        except AttributeError:
+            num_w = int(fm.width("3.0"))
+        self.spin_delay.setFixedWidth(max(16, max(36, num_w + 8) - 20))
+        self.spin_delay.setToolTip("每张下载间隔（秒，0～3.0），0 为无间隔")
+        _style_delay_spin(self.spin_delay)
+        self._set_delay_ms(_sec_to_ms(_DELAY_DEFAULT_SEC))
+        corner_lay.addWidget(self.spin_delay)
+        lbl_sec = QLabel("秒")
+        lbl_sec.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        corner_lay.addWidget(lbl_sec)
         self.tabs.setCornerWidget(corner)
 
         # 各子页共享下载间隔
@@ -9329,7 +9446,7 @@ class PageGallery(QWidget):
                 QTimer.singleShot(0, place)
 
     def _install_pre_dl_tab_badges(self):
-        """页签右侧内边距叠数字角标（不占按钮位，宽度不随条数变）。"""
+        """页签右侧内边距叠数字角标（不占按钮位）。超过两位时该页签加数字宽。"""
         from ui_main import TabPreDlBadgeHost
 
         return TabPreDlBadgeHost(
@@ -9337,7 +9454,7 @@ class PageGallery(QWidget):
         )
 
     def set_pre_dl_counts(self, counts: dict):
-        """子页页签右侧显示预下载条数；0 条隐藏角标，页签宽度不变。"""
+        """子页页签右侧显示预下载条数；0 条隐藏。到三位数起该页签加一格数字宽。"""
         counts = counts or {}
         for key, _base in getattr(self, "_pre_dl_tab_specs", ()):
             try:
@@ -9445,53 +9562,25 @@ class PageGallery(QWidget):
         host = getattr(self, "_pre_dl_badge_host", None)
         if host is not None:
             host.refresh_theme()
+        _style_delay_spin(getattr(self, "spin_delay", None))
 
     # ── 下载间隔（由子页共享）───────────────────────────────────────────
 
     def _delay_ms(self) -> int:
-        cmb = getattr(self, "cmb_delay", None)
-        if cmb is None:
-            return 1200
-        idx = cmb.currentIndex()
-        if 0 <= idx < cmb.count():
-            data = cmb.itemData(idx)
-            label = cmb.itemText(idx)
-            cur = (cmb.currentText() or "").strip()
-            if data is not None and cur in (label, _format_delay_ms(int(data))):
-                return _clamp_delay_ms(int(data))
-        return _parse_delay_to_ms(cmb.currentText())
+        spin = getattr(self, "spin_delay", None)
+        if spin is None:
+            return _sec_to_ms(_DELAY_DEFAULT_SEC)
+        return _sec_to_ms(spin.value())
 
     def _set_delay_ms(self, ms: int):
-        cmb = getattr(self, "cmb_delay", None)
-        if cmb is None:
+        spin = getattr(self, "spin_delay", None)
+        if spin is None:
             return
-        ms = _clamp_delay_ms(ms)
-        cmb.blockSignals(True)
+        spin.blockSignals(True)
         try:
-            hit = -1
-            for i in range(cmb.count()):
-                data = cmb.itemData(i)
-                if data is not None and int(data) == ms:
-                    hit = i
-                    break
-            if hit >= 0:
-                cmb.setCurrentIndex(hit)
-            else:
-                cmb.setCurrentIndex(-1)
-                cmb.setEditText(_format_delay_ms(ms))
+            spin.setValue(_ms_to_sec(ms))
         finally:
-            cmb.blockSignals(False)
-
-    def _on_delay_activated(self, index: int):
-        cmb = self.cmb_delay
-        if 0 <= index < cmb.count():
-            data = cmb.itemData(index)
-            if data is not None:
-                self._set_delay_ms(int(data))
-
-    def _on_delay_edit_finished(self):
-        ms = _parse_delay_to_ms(self.cmb_delay.currentText())
-        self._set_delay_ms(ms)
+            spin.blockSignals(False)
 
     def handoff_fill_missing(
         self,

@@ -66,6 +66,425 @@ def base_dir() -> str:
         )
 
 
+def ve_op_msg(action: str, *paths, extra: str = "") -> str:
+    """操作记录一行：VoiceEdit 复制 · voice_xxx.wav"""
+    names = []
+    for p in paths:
+        n = os.path.basename((p or "").strip())
+        if n and n not in names:
+            names.append(n)
+    action = (action or "").strip() or "操作"
+    if action == "转码" and len(names) >= 2:
+        body = f"{names[0]} → {names[1]}"
+    else:
+        body = "、".join(names)
+    parts = [f"VoiceEdit {action}"]
+    if body:
+        parts.append(body)
+    extra = (extra or "").strip()
+    if extra:
+        parts.append(extra)
+    return " · ".join(parts)
+
+
+def work_dir() -> str:
+    """语音录入输入/输出目录：程序根 \\VoiceEdit。"""
+    try:
+        from utils.app_paths import voice_edit_dir
+        return voice_edit_dir()
+    except Exception:
+        d = os.path.join(base_dir(), "VoiceEdit")
+        try:
+            os.makedirs(d, exist_ok=True)
+        except Exception:
+            pass
+        return d
+
+
+def _stamp() -> str:
+    from datetime import datetime
+    return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+
+def _safe_name(name: str) -> str:
+    base = os.path.basename(name or "") or "audio"
+    out = []
+    for ch in base:
+        if ch.isalnum() or ch in "._- ()[]{}+":
+            out.append(ch)
+        else:
+            out.append("_")
+    s = "".join(out).strip(" ._") or "audio"
+    return s[:80]
+
+
+def save_recording_wav(audio, samplerate: int, dest_wav: str = "") -> str:
+    """把内存录音写成 wav。dest_wav 为空则 VoiceEdit/rec_时间戳.wav。失败返回空串。"""
+    try:
+        import numpy as np
+        import wave
+    except Exception:
+        return ""
+    if audio is None:
+        return ""
+    samples = np.asarray(audio, dtype="float32").reshape(-1)
+    if samples.size <= 0:
+        return ""
+    path = (dest_wav or "").strip() or os.path.join(work_dir(), f"rec_{_stamp()}.wav")
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        pcm = (np.clip(samples, -1.0, 1.0) * 32767.0).astype("<i2")
+        with wave.open(path, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(int(samplerate or SAMPLE_RATE))
+            w.writeframes(pcm.tobytes())
+        return path
+    except Exception:
+        return ""
+
+
+def copy_input_audio(src: str, prefix: str = "in") -> str:
+    """把用户选的音频复制进 VoiceEdit，失败则返回原路径。
+
+    prefix：voice=克隆声音素材。转写上传不再复制原文件。
+    """
+    import shutil
+    src = os.path.normpath(src or "")
+    if not src or not os.path.isfile(src):
+        return src
+    d = work_dir()
+    try:
+        if os.path.normcase(os.path.abspath(os.path.dirname(src))) == os.path.normcase(
+            os.path.abspath(d)
+        ):
+            return src
+    except Exception:
+        pass
+    tag = (prefix or "in").strip() or "in"
+    dest = os.path.join(d, f"{tag}_{_stamp()}_{_safe_name(src)}")
+    try:
+        shutil.copy2(src, dest)
+        return dest
+    except Exception:
+        try:
+            from utils.logger import get_logger
+            get_logger("voice_input").exception(
+                "复制音频到 VoiceEdit 失败 src=%s dest=%s", src, dest
+            )
+        except Exception:
+            pass
+        return src
+
+
+def audio_duration_sec(path: str) -> float:
+    """读 wav 头得到秒数；非 wav / 失败返回 0。"""
+    path = (path or "").strip()
+    if not path or not os.path.isfile(path):
+        return 0.0
+    if os.path.splitext(path)[1].lower() != ".wav":
+        return 0.0
+    try:
+        import wave
+        with wave.open(path, "rb") as w:
+            n = int(w.getnframes() or 0)
+            r = int(w.getframerate() or 0)
+        if n > 0 and r > 0:
+            return float(n) / float(r)
+    except Exception:
+        pass
+    return 0.0
+
+
+def transcript_path_for(audio_path: str) -> str:
+    """声音文件对应的同目录同名 .txt。"""
+    audio_path = (audio_path or "").strip()
+    if not audio_path:
+        return ""
+    stem, _ext = os.path.splitext(audio_path)
+    return (stem + ".txt") if stem else ""
+
+
+_AUDIO_EXTS = {
+    ".wav", ".mp3", ".flac", ".m4a", ".aac", ".ogg", ".opus", ".wma",
+    ".mp4", ".m4v", ".webm", ".mkv",
+}
+_SKIP_TXT_NAMES = frozenset({"out.txt", "err.txt", "meta.txt"})
+_OLD_PAIR_SEC = 600  # 旧版 rec_时间戳.wav 与 out_时间戳.txt 允许相差的秒数
+
+
+def _read_transcript(path: str) -> str:
+    path = (path or "").strip()
+    if not path or not os.path.isfile(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            return f.read().strip()
+    except Exception:
+        return ""
+
+
+def _name_stamp(name: str) -> str:
+    """从 rec_/in_/out_YYYYMMDD_HHMMSS… 取出时间戳。"""
+    base = os.path.splitext(os.path.basename(name or ""))[0]
+    lower = base.lower()
+    for prefix in ("rec_", "in_", "out_"):
+        if not lower.startswith(prefix):
+            continue
+        rest = base[len(prefix):]
+        if len(rest) >= 15 and rest[8] == "_" and rest[:8].isdigit() and rest[9:15].isdigit():
+            return rest[:15]
+    return ""
+
+
+def _stamp_epoch(stamp: str) -> int:
+    if not stamp:
+        return 0
+    try:
+        from datetime import datetime
+        return int(datetime.strptime(stamp, "%Y%m%d_%H%M%S").timestamp())
+    except Exception:
+        return 0
+
+
+def _file_mtime(path: str) -> float:
+    try:
+        return float(os.path.getmtime(path))
+    except Exception:
+        return 0.0
+
+
+def list_voice_edit_records() -> list:
+    """扫描 VoiceEdit：同名音文成对（含旧版 rec_ / out_ 邻近配对），按时间升序。
+
+    每项：audio_path, txt_path, text, duration, mtime
+    """
+    d = work_dir()
+    if not os.path.isdir(d):
+        return []
+    try:
+        names = os.listdir(d)
+    except Exception:
+        return []
+
+    files = []
+    for name in names:
+        if not name or name.startswith("."):
+            continue
+        if name.lower().startswith("job_"):
+            continue
+        path = os.path.join(d, name)
+        if not os.path.isfile(path):
+            continue
+        files.append(name)
+
+    used_txt = set()
+    rows = []
+    audio_names = [
+        n for n in files if os.path.splitext(n)[1].lower() in _AUDIO_EXTS
+    ]
+    for name in audio_names:
+        lower = name.lower()
+        if lower.startswith("voice_"):
+            continue
+        path = os.path.join(d, name)
+        stem, _ext = os.path.splitext(name)
+        txt_name = stem + ".txt"
+        txt_path = os.path.join(d, txt_name)
+        text = ""
+        if os.path.isfile(txt_path):
+            used_txt.add(txt_name.lower())
+            text = _read_transcript(txt_path)
+        else:
+            txt_path = ""
+        # 转写结果只收：录音 rec_*，或已写出同名 txt 的上传。
+        # 克隆素材（voice_/无 txt 的 in_）不当成录音。
+        if not txt_path and not lower.startswith("rec_"):
+            continue
+        rows.append({
+            "audio_path": path,
+            "txt_path": txt_path,
+            "text": text,
+            "duration": audio_duration_sec(path),
+            "mtime": _file_mtime(path),
+            "name": name,
+        })
+
+    leftover_txt = []
+    for name in files:
+        if os.path.splitext(name)[1].lower() != ".txt":
+            continue
+        if name.lower() in used_txt or name.lower() in _SKIP_TXT_NAMES:
+            continue
+        leftover_txt.append(name)
+
+    # 旧版：rec_时间戳.wav 与稍后写出的 out_时间戳_audio.txt 不成对同名
+    unmatched_audio = [r for r in rows if not r.get("txt_path")]
+    unused_out = [n for n in leftover_txt if n.lower().startswith("out_")]
+    unused_out.sort(key=lambda n: (_name_stamp(n), n.lower()))
+    used_out = set()
+    for rec in unmatched_audio:
+        rec_st = _stamp_epoch(_name_stamp(rec.get("name") or ""))
+        if rec_st <= 0:
+            continue
+        best = ""
+        best_dt = None
+        for name in unused_out:
+            if name in used_out:
+                continue
+            out_st = _stamp_epoch(_name_stamp(name))
+            if out_st <= 0:
+                continue
+            dt = out_st - rec_st
+            if dt < 0 or dt > _OLD_PAIR_SEC:
+                continue
+            if best_dt is None or dt < best_dt:
+                best, best_dt = name, dt
+        if not best:
+            continue
+        used_out.add(best)
+        used_txt.add(best.lower())
+        txt_path = os.path.join(d, best)
+        rec["txt_path"] = txt_path
+        rec["text"] = _read_transcript(txt_path)
+        rec["mtime"] = max(float(rec.get("mtime") or 0), _file_mtime(txt_path))
+
+    for name in leftover_txt:
+        if name.lower() in used_txt:
+            continue
+        path = os.path.join(d, name)
+        text = _read_transcript(path)
+        if not text:
+            continue
+        rows.append({
+            "audio_path": "",
+            "txt_path": path,
+            "text": text,
+            "duration": 0.0,
+            "mtime": _file_mtime(path),
+            "name": name,
+        })
+
+    rows.sort(key=lambda r: (float(r.get("mtime") or 0), str(r.get("name") or "").lower()))
+    for r in rows:
+        r.pop("name", None)
+    return rows
+
+
+def delete_voice_edit_record(audio_path: str = "", txt_path: str = "") -> list:
+    """只删 VoiceEdit 里这条记录对应的声音 / 文本，不碰目录外文件。
+
+    返回实际删掉的路径（已按出现顺序去重）。
+    """
+    removed = []
+    try:
+        root = os.path.normcase(os.path.abspath(work_dir()))
+    except Exception:
+        return removed
+    seen = set()
+    paths = [audio_path, txt_path]
+    if audio_path:
+        paths.append(transcript_path_for(audio_path))
+    for p in paths:
+        p = os.path.normpath((p or "").strip())
+        if not p or p in seen:
+            continue
+        seen.add(p)
+        try:
+            ap = os.path.normcase(os.path.abspath(p))
+        except Exception:
+            continue
+        if ap != root and not ap.startswith(root + os.sep):
+            continue
+        if not os.path.isfile(p):
+            continue
+        try:
+            os.remove(p)
+        except Exception:
+            continue
+        removed.append(p)
+    return removed
+
+
+def save_transcript_beside(text: str, audio_path: str) -> str:
+    """把转写结果写成与声音文件同目录、同名的 .txt。失败返回空串。"""
+    body = (text or "").strip()
+    path = transcript_path_for(audio_path)
+    if not body or not path:
+        return ""
+    try:
+        parent = os.path.dirname(path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(body)
+            if not body.endswith("\n"):
+                f.write("\n")
+        return path
+    except Exception:
+        return ""
+
+
+def save_transcript_versioned(text: str, src_audio: str) -> str:
+    """把转写结果写到 VoiceEdit/{原文件名}_{版本}.txt，版本从 01 起。
+
+    不复制、不改动原声音文件。同名已存在则 02、03… 递增。
+    """
+    body = (text or "").strip()
+    if not body:
+        return ""
+    stem = os.path.splitext(os.path.basename(src_audio or ""))[0]
+    stem = _safe_name(stem)
+    if not stem:
+        stem = "audio"
+    folder = work_dir()
+    n = 1
+    dest = ""
+    while n < 1000:
+        dest = os.path.join(folder, f"{stem}_{n:02d}.txt")
+        if not os.path.exists(dest):
+            break
+        n += 1
+    else:
+        dest = os.path.join(folder, f"{stem}_{_stamp()}.txt")
+    try:
+        os.makedirs(folder, exist_ok=True)
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write(body)
+            if not body.endswith("\n"):
+                f.write("\n")
+        return dest
+    except Exception:
+        return ""
+
+
+def save_transcript_txt(text: str, src_name: str = "") -> str:
+    """兼容旧调用：src_name 是完整路径则写同名 txt，否则 VoiceEdit/out_时间戳.txt。"""
+    body = (text or "").strip()
+    if not body:
+        return ""
+    src = (src_name or "").strip()
+    if src and (os.path.isabs(src) or os.path.sep in src or (
+        os.path.altsep and os.path.altsep in src
+    )):
+        return save_transcript_beside(body, src)
+    stem = os.path.splitext(_safe_name(src))[0] if src else ""
+    name = f"out_{_stamp()}"
+    if stem:
+        name = f"{name}_{stem}"
+    path = os.path.join(work_dir(), f"{name}.txt")
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(body)
+            if not body.endswith("\n"):
+                f.write("\n")
+        return path
+    except Exception:
+        return ""
+
+
 def local_model_dir(model_size: str) -> str:
     """本地模型：model/faster-whisper-<size>/（优先 exe 旁，其次包内）。"""
     name = f"faster-whisper-{model_size}"
@@ -140,10 +559,7 @@ class RecordWorker(QThread):
             import numpy as np
             import sounddevice as sd
         except Exception:
-            self.fail.emit(
-                "缺少录音依赖 sounddevice / numpy。\n"
-                "请执行：pip install sounddevice numpy"
-            )
+            self.fail.emit("缺少 sounddevice / numpy")
             return
         try:
             def _cb(indata, frames, time_info, status):
@@ -165,10 +581,7 @@ class RecordWorker(QThread):
                 audio = np.zeros(0, dtype="float32")
             self.finished_audio.emit(audio, self.samplerate)
         except Exception as e:
-            self.fail.emit(
-                f"录音失败：{type(e).__name__}: {e}\n"
-                "请检查系统麦克风权限与默认录音设备。"
-            )
+            self.fail.emit(f"录音失败：{e}")
 
 
 def load_whisper_model(model_size: str = "small", *, force_cpu: bool = True):
@@ -261,7 +674,14 @@ def _run_whisper_job(
     import subprocess
     import tempfile
 
-    with tempfile.TemporaryDirectory(prefix="deskassist_whisper_") as td:
+    td_kw = {"prefix": "job_"}
+    try:
+        root = work_dir()
+        os.makedirs(root, exist_ok=True)
+        td_kw["dir"] = root
+    except Exception:
+        td_kw["prefix"] = "deskassist_whisper_"
+    with tempfile.TemporaryDirectory(**td_kw) as td:
         out_path = os.path.join(td, "out.txt")
         err_path = os.path.join(td, "err.txt")
         meta = dict(build_meta(td) or {})
@@ -272,29 +692,20 @@ def _run_whisper_job(
             json.dump(meta, f, ensure_ascii=False)
 
         # 子进程必须用无 Qt 的 whisper_job（import PyQt 会触发 ctranslate2 硬崩）
-        # 开发：python -m utils.whisper_job；打包：exe --whisper-job（mainv916 在 import Qt 前分流）
+        # 开发：python -m utils.whisper_job；打包：exe --whisper-job（mainv917 在 import Qt 前分流）
         try:
             from utils.app_paths import is_frozen
             frozen = is_frozen()
         except Exception:
             frozen = bool(getattr(sys, "frozen", False)) or hasattr(sys, "_MEIPASS")
+        if frozen:
+            cmd = [sys.executable, "--whisper-job", meta_path]
+        else:
+            cmd = [sys.executable, "-m", "utils.whisper_job", meta_path]
         env = os.environ.copy()
         env.setdefault("OMP_NUM_THREADS", "1")
         env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
         env.pop("QT_PLUGIN_PATH", None)
-
-        if frozen:
-            from utils.deskassist_runtime import find_python, meipass
-            _py = find_python()
-            _worker = meipass() / "whisper_worker" / "run.py"
-            if _py and _worker.is_file():
-                cmd = [_py, str(_worker), meta_path]
-                env["WHISPER_MEIPASS"] = str(meipass())
-                env["OCR_MEIPASS"] = str(meipass())
-            else:
-                cmd = [sys.executable, "--whisper-job", meta_path]
-        else:
-            cmd = [sys.executable, "-m", "utils.whisper_job", meta_path]
 
         # Windows：隐藏子进程黑框（python.exe 默认会闪一下 CMD）
         popen_kw = dict(
@@ -353,7 +764,8 @@ def _run_whisper_job(
             )
         if not os.path.isfile(out_path):
             raise RuntimeError("识别子进程未写出结果文件")
-        return open(out_path, encoding="utf-8", errors="replace").read().strip()
+        text = open(out_path, encoding="utf-8", errors="replace").read().strip()
+        return text
 
 
 def transcribe_in_subprocess(
@@ -450,16 +862,16 @@ class TranscribeWorker(QThread):
     def run(self):
         try:
             if self.audio is None or len(self.audio) < int(self.samplerate * 0.3):
-                self.fail.emit("录音太短，没有识别到有效语音。")
+                self.fail.emit("录音太短")
                 return
             local_dir = local_model_dir(self.model_size)
             if os.path.isdir(local_dir) and os.listdir(local_dir):
-                self.status.emit("正在子进程加载本地语音模型…")
+                self.status.emit("加载模型…")
             else:
-                self.status.emit("本地无该模型，子进程可能联网下载（首次较慢）…")
+                self.status.emit("下载模型…")
 
             if self.use_subprocess:
-                self.status.emit("正在识别语音（独立进程，避免崩溃）…")
+                self.status.emit("识别中…")
                 text = transcribe_in_subprocess(
                     self.audio,
                     self.samplerate,
@@ -469,7 +881,7 @@ class TranscribeWorker(QThread):
                 )
             else:
                 # 仅无 Qt 的环境可走进程内
-                self.status.emit("正在识别语音…")
+                self.status.emit("识别中…")
                 text = transcribe_audio_array(
                     self.audio,
                     self.samplerate,
@@ -507,14 +919,14 @@ class TranscribeFileWorker(QThread):
     def run(self):
         try:
             if not self.audio_file or not os.path.isfile(self.audio_file):
-                self.fail.emit("找不到所选音频文件。")
+                self.fail.emit("找不到音频文件")
                 return
             local_dir = local_model_dir(self.model_size)
             if os.path.isdir(local_dir) and os.listdir(local_dir):
-                self.status.emit("正在子进程加载本地语音模型…")
+                self.status.emit("加载模型…")
             else:
-                self.status.emit("本地无该模型，子进程可能联网下载（首次较慢）…")
-            self.status.emit("正在识别音频（独立进程，避免崩溃）…")
+                self.status.emit("下载模型…")
+            self.status.emit("识别中…")
             text = transcribe_file_in_subprocess(
                 self.audio_file,
                 model_size=self.model_size,
@@ -528,5 +940,5 @@ class TranscribeFileWorker(QThread):
 
 # 子进程入口：
 #   开发：python -m utils.whisper_job <meta.json>
-#   打包：mainv916.exe --whisper-job <meta.json>（main 在 import Qt 前分流）
+#   打包：mainv917.exe --whisper-job <meta.json>（main 在 import Qt 前分流）
 # 不可用本模块作 -m 入口（顶层 import 了 PyQt5，会触发硬崩）

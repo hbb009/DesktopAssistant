@@ -20,6 +20,7 @@ from PyQt5.QtWidgets import (
 )
 
 from pages.page_douyin import MediaCard, MediaItem, _ElideLabel, DouyinProgressLine
+from utils.xvideos import looks_like_xvideos as _looks_like_xvideos
 
 from styles.style_all import (
     theme,
@@ -688,11 +689,21 @@ def _scan_winget_package_exe(exe_name: str):
 
 
 def _which_exe(name: str):
-    """PATH + Windows 常见安装路径查找可执行文件。"""
+    """PATH + 便携包 _internal + Windows 常见安装路径。"""
     p = shutil.which(name)
     hit = _resolve_exe(p) if p else None
     if hit:
         return hit
+    # 便携：exe 旁 _internal（ffmpeg/deno）
+    bare = name if name.lower().endswith(".exe") else f"{name}.exe"
+    try:
+        from utils.region_recorder import _bundled_tool_dirs
+        for d in _bundled_tool_dirs():
+            hit = _resolve_exe(os.path.join(d, bare))
+            if hit:
+                return hit
+    except Exception:
+        pass
     home = os.path.expanduser("~")
     local = os.environ.get("LOCALAPPDATA", "")
     candidates = []
@@ -2615,6 +2626,16 @@ class PageBilibili(QWidget):
             or "music.youtube.com" in t
         )
 
+    @staticmethod
+    def _looks_like_jimeng(text: str) -> bool:
+        t = (text or "").lower()
+        return ("jimeng.jianying.com" in t) or ("jimeng.com" in t)
+
+    @staticmethod
+    def _looks_like_liblib(text: str) -> bool:
+        t = (text or "").lower()
+        return ("liblib.tv" in t) and ("/detail/" in t)
+
     def _find_page_video(self):
         w = self.parent()
         while w is not None:
@@ -2673,6 +2694,50 @@ class PageBilibili(QWidget):
             else:
                 self._log("请手动点上方 Tab「YouTube」后再粘贴解析", "warn")
             return
+
+
+        # XVideos 链接 → 「其它视频」
+        if probe and _looks_like_xvideos(probe):
+            handoff = text or raw_clip
+            self._log(
+                "检测到 XVideos 链接，已自动切换到「其它视频」分页并开始解析…",
+                "ok",
+            )
+            pv = self._find_page_video()
+            if pv is not None and hasattr(pv, "handoff_to_other"):
+                pv.handoff_to_other(handoff, auto_start=True)
+            else:
+                self._log("请手动点上方 Tab「其它视频」后再粘贴解析", "warn")
+            return
+
+        # 即梦链接 → 切到即梦分页
+        if probe and self._looks_like_jimeng(probe):
+            handoff = text or raw_clip
+            self._log(
+                "检测到即梦链接，已自动切换到「即梦」分页并开始解析…",
+                "ok",
+            )
+            pv = self._find_page_video()
+            if pv is not None and hasattr(pv, "handoff_to_jimeng"):
+                pv.handoff_to_jimeng(handoff, auto_start=True)
+            else:
+                self._log("请手动点上方 Tab「即梦」后再粘贴解析", "warn")
+            return
+
+        # LibTV 链接 → 切到 LibTV 分页
+        if probe and self._looks_like_liblib(probe):
+            handoff = text or raw_clip
+            self._log(
+                "检测到 LibTV 链接，已自动切换到「LibTV」分页并开始解析…",
+                "ok",
+            )
+            pv = self._find_page_video()
+            if pv is not None and hasattr(pv, "handoff_to_liblib"):
+                pv.handoff_to_liblib(handoff, auto_start=True)
+            else:
+                self._log("请手动点上方 Tab「LibTV」后再粘贴解析", "warn")
+            return
+
 
         if not text:
             self._log("剪贴板里没有 B站链接，输入框也是空的", "warn")

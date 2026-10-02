@@ -25,7 +25,7 @@ from pages.settings_section import SettingsSection
 # 统一行高（像素）：环境信息 / 资源监控 两栏共用，逐行对齐。
 # 相对旧值 26 加高 2px（行距加大）；字号比全局正文 14px 小一码。
 ROW_H = 26
-OVERVIEW_ROW_H = ROW_H + 2
+OVERVIEW_ROW_H = ROW_H + 2  # 收紧行高，全页项对齐
 OVERVIEW_FONT_PX = 13
 
 
@@ -84,8 +84,9 @@ class _EqualWidthRow(QWidget):
         self._left = None
         self._right = None
         self._placing = False
+        self._place_queued = False
         self.setMinimumWidth(0)
-        pol = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        pol = QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         pol.setHeightForWidth(True)
         self.setSizePolicy(pol)
 
@@ -96,7 +97,7 @@ class _EqualWidthRow(QWidget):
             w.setParent(self)
             w.setMinimumWidth(0)
             w.setMaximumWidth(16777215)
-            w.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Maximum)
+            w.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
             w.show()
         self.updateGeometry()
         self._place()
@@ -119,11 +120,17 @@ class _EqualWidthRow(QWidget):
     def _col_h(self, col, half):
         if col is None:
             return 0
+        h = 1
+        # heightForWidth 在 Maximum 子项上容易偏矮，只作下限，再和 sizeHint 取大
         if col.hasHeightForWidth():
-            return max(0, int(col.heightForWidth(half)))
+            h = max(h, int(col.heightForWidth(half)))
         sh = col.sizeHint()
         mh = col.minimumSizeHint()
-        return max(int(sh.height()), int(mh.height()), int(col.minimumHeight()), 1)
+        h = max(h, int(sh.height()), int(mh.height()), int(col.minimumHeight()))
+        lay = col.layout()
+        if lay is not None:
+            h = max(h, int(lay.sizeHint().height()), int(lay.minimumSize().height()))
+        return h
 
     def _needed_height(self, total_w):
         half = self._half(total_w)
@@ -132,10 +139,21 @@ class _EqualWidthRow(QWidget):
     def event(self, e):
         if e.type() == QEvent.LayoutRequest and not self._placing:
             self.updateGeometry()
+            self._queue_place()
         return super().event(e)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._place()
+
+    def _queue_place(self):
+        if self._place_queued or self._placing:
+            return
+        self._place_queued = True
+        QTimer.singleShot(0, self._flush_place)
+
+    def _flush_place(self):
+        self._place_queued = False
         self._place()
 
     def _place(self):
@@ -147,9 +165,18 @@ class _EqualWidthRow(QWidget):
         self._placing = True
         try:
             half = self._half(w)
-            h = max(self.height(), 1)
-            self._left.setGeometry(0, 0, half, h)
-            self._right.setGeometry(half + self._spacing, 0, w - half - self._spacing, h)
+            # 列高至少要能放下布局真实内容；过矮 setGeometry 会把子控件叠在一起
+            lh = max(1, self._col_h(self._left, half), int(self._left.minimumSizeHint().height()))
+            rh = max(1, self._col_h(self._right, half), int(self._right.minimumSizeHint().height()))
+            needed = max(lh, rh, 1)
+            # 各列按自身内容高度（顶对齐），避免矮列被拉高后在「环境信息」下留空
+            self._left.setGeometry(0, 0, half, lh)
+            self._right.setGeometry(half + self._spacing, 0, w - half - self._spacing, rh)
+            self.setMinimumHeight(needed)
+            if self.maximumHeight() < needed:
+                self.setMaximumHeight(16777215)
+            if self.height() < needed:
+                self.resize(w, needed)
         finally:
             self._placing = False
 
@@ -325,6 +352,24 @@ except Exception:
     psutil = None
 
 class PageOverview(QWidget):
+    # ===== 窗口高度 BUG 防护（与截图/速存/时区汇率页同一套路）=====
+    # FlowLayout / wordWrap 会让整页 hasHeightForWidth()=True，Qt 拖窗口时抬高推荐高度。
+    # 切断整页 HFW；内部滚动/换行照常。
+    def hasHeightForWidth(self):
+        return False
+
+    def minimumSizeHint(self):
+        return QSize(0, 0)
+
+    def sizeHint(self):
+        sh = super().sizeHint()
+        if not sh.isValid() or sh.height() <= 0:
+            return QSize(0, 0)
+        cap = 700
+        if int(sh.height()) > cap:
+            return QSize(sh.width(), cap)
+        return sh
+
     def __init__(self):
         super().__init__()
         outer = QVBoxLayout(self)
@@ -337,6 +382,8 @@ class PageOverview(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QFrame.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # 垂直：保留滚轮滚动，隐藏滚动条
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         scroll.setAttribute(Qt.WA_StyledBackground, True)
         scroll.setStyleSheet(
             "QScrollArea#OverviewScroll{background:transparent;border:none;}"
@@ -359,32 +406,36 @@ class PageOverview(QWidget):
         # 主内容区 ContentRoot 已有约 18px 内边距；这里若再套 12px，
         # 左右会叠出约「两个汉字」宽的空白。总览贴齐主区，只保留卡片之间的间距。
         root = QVBoxLayout(host)
-        root.setContentsMargins(0, 0, 0, 8)
-        root.setSpacing(8)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(6)
         root.setAlignment(Qt.AlignTop)
 
-        # 整页真正两列：左=环境信息+功能与说明，右=资源监控+设置卡。
-        # 同一列共享宽度；_EqualWidthRow 在任意窗口宽度下都强制 1:1。
-        # 原「配置」页内容接在这两列下面一行。
+        # 整页通栏左右两列（顶对齐）：
+        # 左：功能与说明 → 白名单 → 环境信息
+        # 右：缩放/Cookie/预下载/数据管理 → 模型与组件 → 热键占用 → 资源监控
         left_wrap = QWidget()
         left_wrap.setObjectName("OverviewLeftCol")
         left_wrap.setMinimumWidth(0)
+        left_wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         left_col = QVBoxLayout(left_wrap)
         left_col.setContentsMargins(0, 0, 0, 0)
-        left_col.setSpacing(8)
+        left_col.setSpacing(6)
         left_col.setAlignment(Qt.AlignTop)
 
         right_wrap = QWidget()
         right_wrap.setObjectName("OverviewRightCol")
         right_wrap.setMinimumWidth(0)
+        right_wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         right_col = QVBoxLayout(right_wrap)
         right_col.setContentsMargins(0, 0, 0, 0)
-        right_col.setSpacing(8)
+        right_col.setSpacing(6)
         right_col.setAlignment(Qt.AlignTop)
 
-        cols_row = _EqualWidthRow(spacing=8)
+        cols_row = _EqualWidthRow(spacing=6)
+        cols_row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         cols_row.set_columns(left_wrap, right_wrap)
-        root.addWidget(cols_row)
+        self._cols_row = cols_row
+        root.addWidget(cols_row, 0, Qt.AlignTop)
 
         def _apply_new_title(box: QGroupBox):
             box.setProperty("titleClass", "newTitle1")   # 让 QSS 命中“新标题1”
@@ -407,14 +458,14 @@ class PageOverview(QWidget):
         self._theme_frames.append(card_env)
 
         _env_box = QVBoxLayout(card_env)
-        _env_box.setContentsMargins(CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
+        _env_box.setContentsMargins(CARD_LEFT_GAP, 8, CARD_RIGHT_GAP, 8)
         _env_box.setSpacing(0)
         self._theme_titles.append(install_card_title(card_env, _env_box, "环境信息"))
 
         # 环境信息正文：
         #  - 左列字段名去掉「：」
         #  - 右列从本区宽度 20% 处起左对齐（stretch 1:4）
-        #  - 字号减一码；行高 = OVERVIEW_ROW_H（行距加大 2px）
+        #  - 字号减一码；行高 = OVERVIEW_ROW_H（与资源监控项对齐）
         for label_text, value_text in self._env_fields():
             row_widget, row_lay = make_grid_row(OVERVIEW_ROW_H, spacing=0)
             row_widget.setMinimumWidth(0)
@@ -438,8 +489,7 @@ class PageOverview(QWidget):
             self._theme_secondary_bold.append(lab)
             self._theme_secondary_plain.append(val)
 
-        # 不再在卡片内部加 addStretch：让卡片高度贴合内容本身。
-        left_col.addWidget(card_env)
+        # 环境信息卡先建好，稍后沉到页面最底部。
 
         # 右：资源监控 —— 卡片
         card_res = make_card("CardRes")
@@ -447,11 +497,11 @@ class PageOverview(QWidget):
         self._theme_frames.append(card_res)
 
         res_layout = QVBoxLayout(card_res)
-        res_layout.setContentsMargins(CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
+        res_layout.setContentsMargins(CARD_LEFT_GAP, 8, CARD_RIGHT_GAP, 8)
         res_layout.setSpacing(0)
         self._theme_titles.append(install_card_title(card_res, res_layout, "资源监控"))
 
-        right_col.addWidget(card_res)
+        # 资源监控卡先建好，稍后沉到页面最底部。
 
         # 资源监控：与环境信息同规格
         #  - 左列去掉「：」、常规字重（不加粗）；右列从 20% 处起（stretch 1:4）
@@ -538,21 +588,20 @@ class PageOverview(QWidget):
         # 检测显卡名称（监控占位/日志用）
         self._gpu_name = _detect_gpu_name()
 
-        # 设置区拆进整页两列：左=功能与说明（与环境信息同列），右=缩放/Cookie/预下载/数据管理
+        # 设置 + 白名单/组件/热键 都进整页两列；环境/资源挂各列底部
         self.settings_section = SettingsSection(self)
         self.settings_section.install_into(left_col, right_col)
 
-        # 原「配置」页：热键 / OCR / 录屏 / 语音 / 白名单，接在两列下面
         from pages.page_about import PageAbout
         self.about_section = PageAbout(embedded=True)
-        self.about_section.setMinimumWidth(0)
-        self.about_section.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
-        root.addWidget(self.about_section)
+        self.about_section.install_into(left_col, right_col)
+
+        left_col.addWidget(card_env, 0, Qt.AlignTop)
+        right_col.addWidget(card_res, 0, Qt.AlignTop)
 
         # 定时刷新（每 1s）
         self.timer = QTimer(self); self.timer.timeout.connect(self._tick)
-        self.timer.start(1000)  # 每 1 秒刷新一次
-        self._tick()
+        self.timer.start(1000)  # 每 1 秒刷新一次；首次也等定时器，不挡窗口出现
 
         # v9.9.2：这几张卡片改用内联样式画外观，不再随全局 QSS 自动换肤，
         # 所以要监听主题切换信号，手动重刷一遍配色（背景/边框/标题/正文）。
@@ -649,6 +698,17 @@ class PageOverview(QWidget):
         about = getattr(self, "about_section", None)
         if about is not None and hasattr(about, "set_main_window"):
             about.set_main_window(mw)
+
+    def relayout_columns(self):
+        """热键占用等异步内容填入后，按新 sizeHint 重切两列高度。"""
+        row = getattr(self, "_cols_row", None)
+        if row is None:
+            return
+        try:
+            row.updateGeometry()
+            row._place()
+        except Exception:
+            pass
 
     def on_enter(self, cookie_alert: bool = False):
         about = getattr(self, "about_section", None)

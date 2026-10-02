@@ -1,6 +1,6 @@
 # pages/pre_download_panel.py
 # 「预下载记录」：弹窗浏览/删除/清空队列（系统总览「预处理文件」或按平台打开）。
-# 「预处理文件」：系统总览开关旁按钮，整表查看/编辑六平台 + 无法处理（样式对齐速存「记录文件」）。
+# 「预处理文件」：系统总览开关旁按钮，整表查看/编辑七平台 + 无法处理（样式对齐速存「记录文件」）。
 
 from __future__ import annotations
 
@@ -60,7 +60,8 @@ except ImportError:
     # 主进程若仍是改分类前加载的 utils.pre_download，按字面补齐，避免弹窗直接起不来
     FAILED_PLAT = "failed"
     SECTION_KEYS = (
-        "douyin", "bilibili", "youtube", "ehentai", "pixiv", "hitomi", FAILED_PLAT,
+        "douyin", "qishui", "bilibili", "youtube", "jimeng", "liblib",
+        "xvideos", "pornhub", "ehentai", "pixiv", "hitomi", FAILED_PLAT,
     )
     if FAILED_PLAT not in PLAT_LABEL:
         PLAT_LABEL = dict(PLAT_LABEL)
@@ -71,7 +72,7 @@ log = get_logger(__name__)
 
 
 def format_pre_process_text(get_store: Callable) -> str:
-    """六平台 + 无法处理 → 可读文本（# 平台名 分段，供预处理文件弹窗编辑）。"""
+    """七平台 + 无法处理 → 可读文本（# 平台名 分段，供预处理文件弹窗编辑）。"""
     store = get_store() if callable(get_store) else None
     lines: List[str] = []
     for plat in SECTION_KEYS:
@@ -297,6 +298,10 @@ _EXPORT_CARD_NAME = {
     "douyin": "抖音",
     "bilibili": "B站",
     "youtube": "YouTube",
+    "jimeng": "即梦",
+    "liblib": "LibTV",
+    "xvideos": "XVideos",
+    "pornhub": "Pornhub",
     "ehentai": "e-hentai.org",
     "pixiv": "pixiv",
     "hitomi": "hitomi.la",
@@ -552,12 +557,14 @@ def open_pre_process_file_dialog(
             log.exception("转出记录卡失败 plat=%s", plat)
             message_box_warn(dlg, "转出失败", str(e))
 
-    # ── 六平台「转出」：单行紧凑（无法处理不转出）──────────────
+    # ── 七平台「转出」：单行紧凑（无法处理不转出）──────────────
     # 短文案省宽度：e-hentai→EH，hitomi.la→hitomi
     _EXPORT_SHORT = {
         "douyin": "抖音",
         "bilibili": "B站",
         "youtube": "YT",
+        "xvideos": "XV",
+        "pornhub": "PH",
         "ehentai": "EH",
         "pixiv": "Pixiv",
         "hitomi": "hitomi",

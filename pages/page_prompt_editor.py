@@ -1,12 +1,13 @@
 # pages/page_prompt_editor.py
-# 文生视频提示词编辑：左栏填写（65%）/ 右栏预留。
-# 字段标题一字宽竖排，贴在内容左侧。
+# 文生视频提示词编辑：顶部分页（每页正文 / 预设分开存），
+# 页内左栏填写（40%）/ 右栏预设（60%）。字段标题一字宽竖排，贴在内容左侧。
 
 from __future__ import annotations
 
 import json
 import math
 import os
+import re
 from typing import Dict, List, Tuple
 
 from PyQt5.QtCore import (
@@ -15,17 +16,19 @@ from PyQt5.QtCore import (
 )
 from PyQt5.QtGui import (
     QColor, QPalette, QTextDocument, QIcon, QPixmap, QPainter, QPen, QFont,
-    QFontMetrics, QTextCursor,
+    QFontMetrics, QTextCursor, QPainterPath, QBrush,
 )
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QPlainTextEdit,
     QScrollArea, QFrame, QSizePolicy, QApplication, QInputDialog, QMenu,
     QButtonGroup, QDialog, QDialogButtonBox, QFormLayout,
-    QLineEdit,
+    QLineEdit, QTabWidget, QMessageBox,
 )
 
 from styles.style_all import (
-    theme, tk, apply_mini_button,
+    theme, tk, fmt, apply_mini_button,
+    TAB_QSS, VIDEO_TAB_QSS, apply_transparent_surface,
+    set_message_box_selectable,
 )
 from utils.flow_layout import FlowLayout
 from utils.logger import get_logger
@@ -64,7 +67,6 @@ _TITLE_COL_GAP = 3
 _HIST_MAX = 5     # 撤销最多 5 步，仅当前页、不落盘
 _CUSTOM_PLACEHOLDER = "补充说明，自由填写"
 _ORDER_DRAG_PX = 6
-_ORDER_CARD_W = 52   # 58×87 再等比缩小 10%
 _ORDER_CARD_H = 78
 _PRESET_PAD = 0
 
@@ -222,21 +224,290 @@ _ORDER_GUIDE_W = 12
 _ORDER_SLIDE_MS = 200
 _ORDER_DROP_MS = 180
 
+# ===== 预设 txt：docs/ 下两份「【分类】+ 序号. 标题 | 内容」，启动时读一次 =====
+# （旧版放在项目根 / exe 旁，仍兼容回退查找）
+# 内置预设读不到 / 没有条目时回退到上面的 _CHAR_PRESETS；H3 读不到就不显示 H3 按钮。
+_PRESET_TXT_BUILTIN = "内置预设_提示词分类.txt"
+_PRESET_TXT_H3 = "MiniMAX_H3_提示词分类.txt"
+# 每栏「自定义 + 内置 + H3」按内容去重合并：前 _TOP_N 条直接显示，其余折进「H3 ▸」；
+# 最近加进正文的条目排最前（MRU，存 prompt_editor.preset_mru，每栏最多 _MRU_MAX 条）
+_TOP_N = 15
+_MRU_MAX = 200
+# 每行标题栏右侧：左栏编辑框 / 右栏预设 按可用宽度 40% / 60% 分
+_LEFT_RATIO = 0.40
+_PRESET_TXT_CATS: Dict[str, str] = {
+    "基础": "base",
+    "基础参数": "base",
+    "镜头": "camera",
+    "人物": "person",
+    "体型": "body",
+    "服装": "outfit",
+    "装备": "accessories",
+    "环境": "scene",
+    "场景细节": "scene_detail",
+    "动作": "action",
+    "表演": "performance",
+    "台词": "line",
+    "色彩": "palette",
+    "画面质量": "quality",
+}
+_PRESET_TXT_HEAD_RE = re.compile(r"^【\s*(.+?)\s*】$")
+_PRESET_TXT_ITEM_RE = re.compile(r"^\d+\s*[.．]\s*(.+)$")
+_PRESET_TXT_SKIP_LOG_MAX = 20
+_PRESET_TXT_CACHE: dict = {}
+
+
+def _preset_txt_path(name: str) -> str:
+    """先找各根目录下的 docs/，再回退旧位置（根目录本身）。
+
+    根目录顺序：app_root（exe 旁 / 源码根）→ resource_root（打包资源）→ 本文件上级目录。
+    """
+    roots = []
+    try:
+        from utils.app_paths import app_root, resource_root
+        roots.append(app_root())
+        roots.append(resource_root())
+    except Exception:
+        pass
+    roots.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    roots = [r for r in roots if r]
+    dirs = [os.path.join(r, "docs") for r in roots] + roots
+    seen = set()
+    for d in dirs:
+        norm = os.path.normcase(os.path.abspath(d))
+        if norm in seen:
+            continue
+        seen.add(norm)
+        path = os.path.join(d, name)
+        if os.path.isfile(path):
+            return path
+    return ""
+
+
+def _parse_preset_txt(path: str):
+    """解析一份预设 txt → {字段key: [(标题, 内容), ...]}；文件读不了返回 None。
+
+    空行跳过；乱码 / 不在已知分类下 / 缺「 | 」的行跳过并记日志；按第一个「 | 」切分。
+    """
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+    except Exception:
+        log.exception("读取预设 txt 失败：%s", path)
+        return None
+    text = raw.decode("utf-8-sig", errors="replace")
+    out: Dict[str, List[Tuple[str, str]]] = {
+        k: [] for k in dict.fromkeys(_PRESET_TXT_CATS.values())
+    }
+    cur = None
+    skipped = 0
+    base = os.path.basename(path)
+
+    def _skip(ln: int, why: str):
+        nonlocal skipped
+        skipped += 1
+        if skipped <= _PRESET_TXT_SKIP_LOG_MAX:
+            log.warning("预设 txt %s 第 %d 行已跳过（%s）", base, ln, why)
+
+    for ln, line in enumerate(text.splitlines(), 1):
+        s = line.replace("\ufeff", "").strip()
+        if not s:
+            continue
+        if "\ufffd" in s:
+            _skip(ln, "乱码")
+            continue
+        m = _PRESET_TXT_HEAD_RE.match(s)
+        if m:
+            cur = _PRESET_TXT_CATS.get(m.group(1))
+            if cur is None:
+                _skip(ln, "未知分类")
+            continue
+        if cur is None:
+            _skip(ln, "不在已知分类下")
+            continue
+        m = _PRESET_TXT_ITEM_RE.match(s)
+        if not m:
+            _skip(ln, "格式不符")
+            continue
+        body = m.group(1)
+        sep = " | " if " | " in body else ("|" if "|" in body else "")
+        if not sep:
+            _skip(ln, "缺少 | 分隔")
+            continue
+        name, value = body.split(sep, 1)
+        name = name.strip()
+        value = value.strip()
+        if not name or not value:
+            _skip(ln, "标题或内容为空")
+            continue
+        out[cur].append((name, value))
+    if skipped > _PRESET_TXT_SKIP_LOG_MAX:
+        log.warning("预设 txt %s 共跳过 %d 行", base, skipped)
+    return out
+
+
+def _txt_presets(reload: bool = False):
+    """(内置 or None, H3)。进程内只读一次；内置为 None 表示回退代码里的 _CHAR_PRESETS。"""
+    if reload:
+        _PRESET_TXT_CACHE.clear()
+    data = _PRESET_TXT_CACHE.get("data")
+    if data is not None:
+        return data
+    builtin = None
+    path = _preset_txt_path(_PRESET_TXT_BUILTIN)
+    if path:
+        parsed = _parse_preset_txt(path)
+        if parsed and any(parsed.values()):
+            builtin = parsed
+        else:
+            log.warning("内置预设 txt 无可用条目，改用代码内置预设：%s", path)
+    else:
+        log.info("未找到 %s，改用代码内置预设", _PRESET_TXT_BUILTIN)
+    h3: Dict[str, List[Tuple[str, str]]] = {}
+    path = _preset_txt_path(_PRESET_TXT_H3)
+    if path:
+        parsed = _parse_preset_txt(path)
+        if parsed:
+            h3 = {k: v for k, v in parsed.items() if v}
+    else:
+        log.info("未找到 %s，不显示 H3 预设", _PRESET_TXT_H3)
+    log.info(
+        "提示词预设 txt：内置 %s 条，H3 %d 条",
+        "回退" if builtin is None else sum(len(v) for v in builtin.values()),
+        sum(len(v) for v in h3.values()),
+    )
+    data = (builtin, h3)
+    _PRESET_TXT_CACHE["data"] = data
+    return data
+
+
+# ===== 预设按钮绿色判定：按分隔段整段比较 =====
+# 正文按 , ， ; ； 换行 切段；预设内容也切段，连续几段完全相等才算命中。
+# 内容本身带逗号也能整体命中；短条若只落在某条更长预设的命中范围内，不算（长条优先）。
+_CHIP_SEP_CHARS = ",，;；\n\r"
+_CHIP_SEG_RE = re.compile(r"[^,，;；\n\r]+")
+_CHIP_PAD = " \t\u3000\r"
+
+
+def _chip_segments(text: str) -> List[Tuple[str, int, int]]:
+    out = []
+    for m in _CHIP_SEG_RE.finditer(text or ""):
+        raw = m.group(0)
+        s = raw.strip()
+        if not s:
+            continue
+        st = m.start() + (len(raw) - len(raw.lstrip()))
+        out.append((s, st, st + len(s)))
+    return out
+
+
+_CHIP_VALUE_SEGS: Dict[str, Tuple[str, ...]] = {}
+
+
+def _chip_value_segs(value: str) -> Tuple[str, ...]:
+    segs = _CHIP_VALUE_SEGS.get(value)
+    if segs is None:
+        segs = tuple(s for s, _a, _b in _chip_segments(value))
+        if len(_CHIP_VALUE_SEGS) < 8192:
+            _CHIP_VALUE_SEGS[value] = segs
+    return segs
+
+
+def _chip_all_runs(text: str, values):
+    """返回 (正文分段, {预设内容: [(起段, 止段), ...]})。"""
+    segs = _chip_segments(text)
+    words = [s for s, _a, _b in segs]
+    index: Dict[str, List[int]] = {}
+    for i, w in enumerate(words):
+        index.setdefault(w, []).append(i)
+    runs: Dict[str, List[Tuple[int, int]]] = {}
+    for v in values or []:
+        v = (v or "").strip()
+        if not v or v in runs:
+            continue
+        vs = _chip_value_segs(v)
+        n = len(vs)
+        if not n:
+            continue
+        hit = [
+            (i, i + n) for i in index.get(vs[0], ())
+            if tuple(words[i:i + n]) == vs
+        ]
+        if hit:
+            runs[v] = hit
+    return segs, runs
+
+
+def _chip_free_runs(runs: dict, value: str) -> List[Tuple[int, int]]:
+    """value 的命中里，没有被别的更长预设整段包住的那些。"""
+    others = [(i, j) for v, rs in runs.items() if v != value for i, j in rs]
+    out = []
+    for i, j in runs.get(value, ()):
+        if any(oi <= i and j <= oj and (oj - oi) > (j - i) for oi, oj in others):
+            continue
+        out.append((i, j))
+    return out
+
+
+def _active_chip_values(text: str, values) -> set:
+    _segs, runs = _chip_all_runs(text, values)
+    return {v for v in runs if _chip_free_runs(runs, v)}
+
+
+def _strip_chip_segments(text: str, value: str, values=None) -> str:
+    """去掉正文里这条预设命中的整段（连同一侧的一个分隔符），别的段原样保留。"""
+    out = text or ""
+    value = (value or "").strip()
+    if not value:
+        return out
+    pool = list(values or [])
+    if value not in pool:
+        pool.append(value)
+    for _ in range(64):
+        segs, runs = _chip_all_runs(out, pool)
+        free = _chip_free_runs(runs, value)
+        if not free:
+            break
+        i, j = free[0]
+        st, en = segs[i][1], segs[j - 1][2]
+        before = out[:st].rstrip(_CHIP_PAD)
+        after = out[en:].lstrip(_CHIP_PAD)
+        if before and before[-1] in _CHIP_SEP_CHARS:
+            before = before[:-1].rstrip(_CHIP_PAD)
+        elif after and after[0] in _CHIP_SEP_CHARS:
+            after = after[1:].lstrip(_CHIP_PAD)
+        out = before + after
+    return out.strip()
+
+
+def _join_chip_value(cur: str, value: str) -> str:
+    """追加一条预设：两边都是英文用「, 」，否则用中文「，」。"""
+    cur = (cur or "").rstrip()
+    value = (value or "").strip()
+    if not value:
+        return cur
+    if not cur:
+        return value
+    ascii_pair = cur[-1].isascii() and value[0].isascii()
+    if cur[-1] in _CHIP_SEP_CHARS:
+        return cur + (" " if ascii_pair else "") + value
+    return cur + (", " if ascii_pair else "，") + value
 
 def _legacy_editor_paths() -> list:
     """旧提示词文件候选路径（已迁入 user.txt，仅作一次性回读）。
 
-    平铺后主位置为 data/prompts_editor.json；更旧版本在 data/prompts/
-    或项目根 prompts/，一并保留作兼容回读。
+    主位置 records/prompts_editor.json；兼容旧 data/ 与项目根 prompts/。
     """
     paths = []
     try:
-        from utils.app_paths import data_dir, app_root
+        from utils.app_paths import records_dir, data_dir, app_root
+        paths.append(os.path.join(records_dir(), "prompts_editor.json"))
         paths.append(os.path.join(data_dir(), "prompts_editor.json"))
         paths.append(os.path.join(data_dir(), "prompts", "editor.json"))
         paths.append(os.path.join(app_root(), "prompts", "editor.json"))
     except Exception:
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        paths.append(os.path.join(here, "records", "prompts_editor.json"))
         paths.append(os.path.join(here, "data", "prompts_editor.json"))
         paths.append(os.path.join(here, "data", "prompts", "editor.json"))
         paths.append(os.path.join(here, "prompts", "editor.json"))
@@ -245,6 +516,140 @@ def _legacy_editor_paths() -> list:
 
 def _catalog_map() -> Dict[str, Tuple[str, str, str]]:
     return {k: (k, t, p) for k, t, p in _FIELDS}
+
+
+_PAGE_TITLE_MAX = 24
+_PAGE_SETTING_KEYS = (
+    "orig", "new", "field_order", "custom_fields",
+    "field_titles", "custom_presets", "frozen_fields",
+)
+
+
+def _clean_page_title(text: str, fallback: str) -> str:
+    title = " ".join(str(text or "").replace("\n", " ").replace("\r", " ").split())
+    if len(title) > _PAGE_TITLE_MAX:
+        title = title[:_PAGE_TITLE_MAX].rstrip()
+    return title or fallback
+
+
+def _clean_page_id(raw, fallback: str) -> str:
+    s = str(raw or "").strip()
+    if (
+        s
+        and len(s) <= 32
+        and all(c.isalnum() or c in "-_" for c in s)
+    ):
+        return s
+    return fallback
+
+
+def _fresh_page_id(used) -> str:
+    n = 1
+    while f"p{n}" in used:
+        n += 1
+    return f"p{n}"
+
+
+def _blank_prompt_page(page_id: str, title: str) -> dict:
+    return {
+        "id": page_id,
+        "title": title,
+        "orig": {},
+        "new": {},
+        "field_order": [],
+        "custom_fields": [],
+        "field_titles": {},
+        "custom_presets": {},
+        "frozen_fields": [],
+    }
+
+
+def _copy_page_settings(src: dict) -> dict:
+    if not isinstance(src, dict):
+        return {}
+    return {k: src.get(k) for k in _PAGE_SETTING_KEYS if k in src}
+
+
+def _prompt_dict_has_body(data: dict) -> bool:
+    """这一份里有没有正文、预设或字段结构。空壳页不算。"""
+    if not isinstance(data, dict):
+        return False
+    for side in ("orig", "new"):
+        block = data.get(side)
+        if isinstance(block, dict) and any(str(v or "").strip() for v in block.values()):
+            return True
+    presets = data.get("custom_presets")
+    if isinstance(presets, dict) and presets:
+        return True
+    if isinstance(data.get("custom_fields"), list) and data.get("custom_fields"):
+        return True
+    if isinstance(data.get("field_order"), list) and data.get("field_order"):
+        return True
+    titles = data.get("field_titles")
+    if isinstance(titles, dict) and any(str(v or "").strip() for v in titles.values()):
+        return True
+    frozen = data.get("frozen_fields")
+    if isinstance(frozen, list) and frozen:
+        return True
+    return False
+
+
+def prompt_pages_from_store(data) -> Tuple[List[dict], str, bool]:
+    """把 user.txt 里的提示词段收成页列表。
+
+    返回 (pages, active_id, migrate_legacy_file)。
+    旧的单页字段（orig / custom_presets / …）并进标题为「默认」的第一页。
+    完全没有内容时，才允许第一页去读一次旧 editor.json。
+    """
+    data = data if isinstance(data, dict) else {}
+    raw = data.get("pages")
+    pages: List[dict] = []
+    used = set()
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            pid = _clean_page_id(item.get("id"), "")
+            if not pid or pid in used:
+                pid = _fresh_page_id(used)
+            used.add(pid)
+            title = _clean_page_title(item.get("title"), f"分类{len(pages) + 1}")
+            page = _blank_prompt_page(pid, title)
+            page.update(_copy_page_settings(item))
+            page["id"] = pid
+            page["title"] = title
+            pages.append(page)
+    # 默认结构会塞进空的 pages。有旧正文时以旧正文为准，别被空壳盖掉。
+    if pages and not any(_prompt_dict_has_body(p) for p in pages) and _prompt_dict_has_body(data):
+        pages = []
+    if pages:
+        ids = {p["id"] for p in pages}
+        active = str(data.get("active") or "").strip()
+        if active not in ids:
+            active = pages[0]["id"]
+        return pages, active, False
+    if _prompt_dict_has_body(data):
+        page = _blank_prompt_page("p1", "默认")
+        page.update(_copy_page_settings(data))
+        page["id"] = "p1"
+        page["title"] = "默认"
+        return [page], "p1", False
+    return [_blank_prompt_page("p1", "默认")], "p1", True
+
+
+def _confirm_delete_page(parent, title: str) -> bool:
+    box = QMessageBox(parent)
+    box.setIcon(QMessageBox.Warning)
+    box.setWindowTitle("删除分页")
+    box.setText(f"删除「{title}」？")
+    box.setInformativeText("这一页的正文和预设都会去掉，不能恢复。")
+    box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+    box.setDefaultButton(QMessageBox.No)
+    try:
+        set_message_box_selectable(box)
+    except Exception:
+        pass
+    return box.exec_() == QMessageBox.Yes
 
 
 def _with_missing_builtins(specs: List[Tuple[str, str, str]]) -> List[Tuple[str, str, str]]:
@@ -270,6 +675,58 @@ def _with_missing_builtins(specs: List[Tuple[str, str, str]]) -> List[Tuple[str,
         out.insert(insert_at, cat[k])
         seen.add(k)
     return out
+
+
+def _order_card_font() -> QFont:
+    """底栏内容卡：11px，每行按这个字号量 3 个汉字。"""
+    f = QFont()
+    f.setPixelSize(11)
+    f.setWeight(QFont.DemiBold)
+    return f
+
+
+def _order_card_line_width() -> int:
+    """一行正好容下 3 个汉字，第 4 个换行。"""
+    fm = QFontMetrics(_order_card_font())
+    three = int(fm.horizontalAdvance("基础参"))
+    one = max(1, int(fm.horizontalAdvance("参")))
+    return three + max(1, one // 5)
+
+
+def _order_card_w() -> int:
+    # 左右边距 4+4，再留边框，避免第 3 个字被边裁掉
+    return _order_card_line_width() + 8 + 6
+
+
+def _merge_preset_maps(a: dict, b: dict) -> dict:
+    """两份自定义预设按（分区, 标题, 内容）并成一份，不丢、不重复。"""
+    out: Dict[str, List[dict]] = {}
+
+    def _add(src):
+        if not isinstance(src, dict):
+            return
+        for key, items in src.items():
+            dest = out.setdefault(str(key), [])
+            have = {
+                (
+                    str((it or {}).get("name") or "").strip(),
+                    str((it or {}).get("value") or "").strip(),
+                )
+                for it in dest
+            }
+            for it in items or []:
+                if not isinstance(it, dict):
+                    continue
+                name = str(it.get("name") or "").strip()
+                value = str(it.get("value") or "").strip()
+                if not name or not value or (name, value) in have:
+                    continue
+                dest.append({"name": name, "value": value})
+                have.add((name, value))
+
+    _add(a)
+    _add(b)
+    return {k: v for k, v in out.items() if v}
 
 
 def _title_label_font() -> QFont:
@@ -461,7 +918,7 @@ def _clipboard_icon(size: int, color: str) -> QIcon:
 
 
 def _hist_icon(kind: str, size: int, color: str) -> QIcon:
-    """撤销=逆时针弯箭，重做=顺时针弯箭。"""
+    """撤销=向左箭头，重做=向右箭头。"""
     size = max(14, int(size))
     pm = QPixmap(size, size)
     pm.fill(Qt.transparent)
@@ -469,36 +926,42 @@ def _hist_icon(kind: str, size: int, color: str) -> QIcon:
     p.setRenderHint(QPainter.Antialiasing, True)
     s = float(size)
     c = QColor(color)
-    pen = QPen(c, max(1.6, s * 0.10))
+    cy = s * 0.5
+    to_left = kind == "undo"
+    # 箭头最左/最右（tip）坐标
+    if to_left:
+        tip_x = s * 0.16
+        far_x = s * 0.82
+    else:
+        tip_x = s * 0.84
+        far_x = s * 0.18
+    head = s * 0.24          # 三角头长度
+    half = s * 0.17          # 三角头半高
+    if to_left:
+        base_x = tip_x + head
+    else:
+        base_x = tip_x - head
+    pen = QPen(c, max(1.5, s * 0.08))
     pen.setCapStyle(Qt.RoundCap)
-    pen.setJoinStyle(Qt.RoundJoin)
     p.setPen(pen)
     p.setBrush(Qt.NoBrush)
-    cx, cy, r = s * 0.50, s * 0.52, s * 0.28
-    box = QRectF(cx - r, cy - r, 2 * r, 2 * r)
-    if kind == "undo":
-        start, span = -10.0, 230.0
-    else:
-        start, span = 190.0, -230.0
-    p.drawArc(box, int(start * 16), int(span * 16))
-    end = math.radians(start + span)
-    ex = cx + r * math.cos(end)
-    ey = cy - r * math.sin(end)
-    sign = 1.0 if kind == "undo" else -1.0
-    tx, ty = -math.sin(end) * sign, -math.cos(end) * sign
-    tl = math.hypot(tx, ty) or 1.0
-    tx, ty = tx / tl, ty / tl
-    ah = s * 0.16
-    bx, by = ex - tx * ah, ey - ty * ah
-    px, py = -ty, tx
-    p.drawLine(QPointF(ex, ey), QPointF(bx + px * ah * 0.55, by + py * ah * 0.55))
-    p.drawLine(QPointF(ex, ey), QPointF(bx - px * ah * 0.55, by - py * ah * 0.55))
+    # 箭杆：从 far 端到三角头底边
+    p.drawLine(QPointF(far_x, cy), QPointF(base_x, cy))
+    # 三角头（填充）
+    tri = QPainterPath()
+    tri.moveTo(tip_x, cy)
+    tri.lineTo(base_x, cy - half)
+    tri.lineTo(base_x, cy + half)
+    tri.closeSubpath()
+    p.setPen(Qt.NoPen)
+    p.setBrush(QBrush(c))
+    p.drawPath(tri)
     p.end()
     return QIcon(pm)
 
 
 def _freeze_icon(frozen: bool, size: int, color: str) -> QIcon:
-    """六瓣雪花：冻结时线更粗。"""
+    """可见性图标：未冻结=睁眼，冻结=闭眼。"""
     size = max(12, int(size))
     pm = QPixmap(size, size)
     pm.fill(Qt.transparent)
@@ -506,25 +969,62 @@ def _freeze_icon(frozen: bool, size: int, color: str) -> QIcon:
     p.setRenderHint(QPainter.Antialiasing, True)
     s = float(size)
     c = QColor(color)
-    pen = QPen(c, max(1.3, s * (0.12 if frozen else 0.09)))
+    pen = QPen(c, max(1.2, s * 0.10))
     pen.setCapStyle(Qt.RoundCap)
     pen.setJoinStyle(Qt.RoundJoin)
-    p.setPen(pen)
-    cx, cy = s * 0.50, s * 0.50
-    r = s * 0.36
-    for i in range(6):
-        ang = math.radians(i * 60.0)
-        dx, dy = math.cos(ang), math.sin(ang)
-        p.drawLine(QPointF(cx, cy), QPointF(cx + dx * r, cy + dy * r))
-        mx = cx + dx * r * 0.60
-        my = cy + dy * r * 0.60
-        t = s * 0.12
-        p.drawLine(
-            QPointF(mx - dy * t, my + dx * t),
-            QPointF(mx + dy * t, my - dx * t),
-        )
+    cx, cy = s * 0.50, s * 0.52
+    w, h = s * 0.80, s * 0.46
+    x0, y0 = (s - w) / 2.0, cy - h / 2.0
+    if frozen:
+        # 闭眼：中段向下弯的下眼睑弧线
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        path = QPainterPath()
+        path.moveTo(x0, cy)
+        path.quadTo(cx, cy + h * 0.62, x0 + w, cy)
+        p.drawPath(path)
+    else:
+        # 睁眼：杏核轮廓 + 实心瞳孔
+        path = QPainterPath()
+        path.moveTo(x0, cy)
+        path.cubicTo(x0, y0, x0 + w, y0, x0 + w, cy)
+        path.cubicTo(x0 + w, y0 + h, x0, y0 + h, x0, cy)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(path)
+        pr = max(1.0, s * 0.085)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(c))
+        p.drawEllipse(QPointF(cx, cy), pr, pr)
     p.end()
     return QIcon(pm)
+
+
+def _strip_chip_value(text: str, value: str) -> str:
+    """从正文里拿掉预设原文，并清掉旁边多出来的逗号。"""
+    raw = text or ""
+    value = (value or "").strip()
+    if not value or value not in raw:
+        return raw
+    if raw.strip() == value:
+        return ""
+    out = raw
+    while value in out:
+        prev = out
+        i = out.find(value)
+        before = out[:i].rstrip()
+        after = out[i + len(value):].lstrip()
+        if before.endswith(","):
+            before = before[:-1].rstrip()
+        if after.startswith(","):
+            after = after[1:].lstrip()
+        if before and after:
+            out = before + ", " + after
+        else:
+            out = before or after
+        if out == prev:
+            break
+    return out.strip()
 
 
 def _fit_card_text(text: str, fm, width: int, max_lines: int) -> str:
@@ -788,10 +1288,22 @@ class _HScrollArea(QScrollArea):
         super().wheelEvent(e)
 
 
+_ORDER_CARD_BD = 2  # 未选中边粗；选中白边再加 2px。外框尺寸固定，不挤旁边的卡
+
+
 class _OrderCard(QFrame):
     """分区顺序表里的小卡片，按住拖动改顺序。"""
 
-    def __init__(self, key: str, title: str, owner: "PagePromptEditor"):
+    def hasHeightForWidth(self):
+        return False
+
+    def sizeHint(self):
+        return QSize(_order_card_w(), _ORDER_CARD_H)
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+    def __init__(self, key: str, title: str, owner: "_PromptSheet"):
         super().__init__(owner)
         self._key = key
         self._owner = owner
@@ -804,12 +1316,14 @@ class _OrderCard(QFrame):
         self.setAutoFillBackground(False)
         self.setCursor(Qt.OpenHandCursor)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.setFixedSize(_ORDER_CARD_W, _ORDER_CARD_H)
+        self.setFixedSize(_order_card_w(), _ORDER_CARD_H)
         self._raw_title = title
         lab = QLabel()
         lab.setObjectName("PromptOrderCardLab")
-        lab.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
+        lab.setFont(_order_card_font())
+        lab.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
         lab.setWordWrap(True)
+        lab.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Maximum)
         lab.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self._lab = lab
         edit = QPlainTextEdit()
@@ -823,23 +1337,22 @@ class _OrderCard(QFrame):
         lay = QVBoxLayout(self)
         lay.setContentsMargins(4, 4, 4, 4)
         lay.setSpacing(0)
-        lay.addWidget(lab)
-        lay.addWidget(edit)
-        self.btn_thaw = QPushButton(self)
-        self.btn_thaw.setObjectName("PromptOrderThaw")
-        self.btn_thaw.setCursor(Qt.PointingHandCursor)
-        self.btn_thaw.setFocusPolicy(Qt.NoFocus)
-        self.btn_thaw.setFixedSize(_TITLE_ACT, _TITLE_ACT)
-        self.btn_thaw.setIconSize(QSize(_PASTE_ICON, _PASTE_ICON))
-        self.btn_thaw.setVisible(False)
-        self.btn_thaw.setToolTip("解冻此段")
-        self.btn_thaw.clicked.connect(
-            lambda _=False, k=key: self._owner._unfreeze_field(k)
+        lay.addWidget(lab, 0, Qt.AlignTop | Qt.AlignHCenter)
+        lay.addWidget(edit, 1)
+        self.btn_freeze = QPushButton(self)
+        self.btn_freeze.setObjectName("PromptOrderFreeze")
+        self.btn_freeze.setCursor(Qt.PointingHandCursor)
+        self.btn_freeze.setFocusPolicy(Qt.NoFocus)
+        self.btn_freeze.setFixedSize(_TITLE_ACT, _TITLE_ACT)
+        self.btn_freeze.setIconSize(QSize(_PASTE_ICON, _PASTE_ICON))
+        self.btn_freeze.setToolTip("")
+        self.btn_freeze.clicked.connect(
+            lambda _=False, k=key: self._owner._toggle_freeze_field(k)
         )
-        self._place_thaw()
+        self._place_freeze()
 
-    def _place_thaw(self):
-        btn = getattr(self, "btn_thaw", None)
+    def _place_freeze(self):
+        btn = getattr(self, "btn_freeze", None)
         if btn is None:
             return
         m = 4
@@ -853,12 +1366,14 @@ class _OrderCard(QFrame):
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
-        self._place_thaw()
+        self._place_freeze()
 
     def apply_title(self):
-        fm = self._lab.fontMetrics()
-        inner_w = max(8, _ORDER_CARD_W - 8)
-        extra = (_TITLE_ACT + 4) if self.btn_thaw.isVisible() else 0
+        self._lab.setFont(_order_card_font())
+        self._lab.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
+        fm = QFontMetrics(_order_card_font())
+        inner_w = _order_card_line_width()
+        extra = (_TITLE_ACT + 4) if self.btn_freeze.isVisible() else 0
         max_lines = max(1, (_ORDER_CARD_H - 8 - extra) // max(1, fm.lineSpacing()))
         self._lab.setText(_fit_card_text(self._raw_title, fm, inner_w, max_lines))
 
@@ -876,7 +1391,7 @@ class _OrderCard(QFrame):
             return
         self._editing = True
         self._lab.hide()
-        self.btn_thaw.hide()
+        self.btn_freeze.hide()
         self._edit.setPlainText(self._raw_title)
         self._edit.show()
         self._edit.setFocus()
@@ -921,6 +1436,16 @@ class _OrderCard(QFrame):
             return
         if e.button() == Qt.LeftButton:
             self._owner._commit_order_rename()
+            btn = getattr(self, "btn_freeze", None)
+            if btn is not None and btn.isVisible() and btn.geometry().contains(e.pos()):
+                # 点在冻结钮上：不当成拖拽。按钮在上层走 clicked；
+                # 被标题挡住时这里补一刀。
+                self._press = None
+                self._dragging = False
+                if self.childAt(e.pos()) is not btn:
+                    self._owner._toggle_freeze_field(self._key)
+                e.accept()
+                return
             self._press = e.globalPos()
             self._dragging = False
             self._owner._select_order_card(self._key)
@@ -1001,10 +1526,57 @@ class _FreezeVeil(QWidget):
         p.drawText(self.rect(), Qt.AlignCenter, "已冻结")
 
 
-class _PromptSection(QWidget):
-    """一行：竖排标题 + 65% 内容 + 右侧空位。"""
+class _PlusButton(QPushButton):
+    """预设末尾的「+」：背景 / 边框照常走 QSS，加号自己画两条线，按控件几何中心居中。
 
-    def __init__(self, owner: "PagePromptEditor", key: str, parent=None):
+    用字形「+」时，Qt 是按字体行框（ascent+descent）垂直居中的；微软雅黑下降部较大，
+    「+」墨迹贴着基线，结果整体偏下约 1px，分数缩放下还会左右差半像素。
+    """
+
+    def __init__(self, parent=None):
+        super().__init__("", parent)
+        self._plus_colors: Dict[str, str] = {}
+        self.setAccessibleName("+")
+
+    def set_plus_colors(self, normal: str, hover: str, press: str, disabled: str):
+        self._plus_colors = {
+            "normal": normal, "hover": hover, "press": press, "disabled": disabled,
+        }
+        self.update()
+
+    def paintEvent(self, e):
+        super().paintEvent(e)
+        if not self.isEnabled():
+            state = "disabled"
+        elif self.isDown():
+            state = "press"
+        elif self.underMouse():
+            state = "hover"
+        else:
+            state = "normal"
+        col = QColor(self._plus_colors.get(state) or self._plus_colors.get("normal") or "#94a3b8")
+        w, h = float(self.width()), float(self.height())
+        side = min(w, h)
+        pen_w = max(2.0, float(round(side / 12.0)))  # 24~26px 时 2px，约等于 16px 粗体加号笔画
+        half = float(round(side * 0.16))             # 26px → 半臂 4px，整长 8px（与原 16px 粗体字形同大）
+        cx, cy = w / 2.0, h / 2.0
+        p = QPainter(self)
+        try:
+            p.setRenderHint(QPainter.Antialiasing, True)
+            pen = QPen(col)
+            pen.setWidthF(pen_w)
+            pen.setCapStyle(Qt.FlatCap)
+            p.setPen(pen)
+            p.drawLine(QPointF(cx - half, cy), QPointF(cx + half, cy))
+            p.drawLine(QPointF(cx, cy - half), QPointF(cx, cy + half))
+        finally:
+            p.end()
+
+
+class _PromptSection(QWidget):
+    """一行：竖排标题 + 40% 内容 + 60% 右侧预设。"""
+
+    def __init__(self, owner: "_PromptSheet", key: str, parent=None):
         super().__init__(parent)
         self._owner = owner
         self._key = key
@@ -1016,13 +1588,32 @@ class _PromptSection(QWidget):
             owner._apply_section_widths(self._key)
 
 
-class PagePromptEditor(QWidget):
-    """左右对照的文生视频提示词编辑页。"""
+class _PromptSheet(QWidget):
+    """一个分页里的提示词编辑器。正文和自定义预设只属于这一页。"""
+
+    # ===== 窗口高度 BUG 防护（与截图/速存/时区汇率页同一套路）=====
+    # FlowLayout / wordWrap 会让整页 hasHeightForWidth()=True，Qt 拖窗口时抬高推荐高度。
+    # 切断整页 HFW；内部滚动/换行照常。
+    def hasHeightForWidth(self):
+        return False
+
+    def minimumSizeHint(self):
+        return QSize(0, 0)
+
+    def sizeHint(self):
+        sh = super().sizeHint()
+        if not sh.isValid() or sh.height() <= 0:
+            return QSize(0, 0)
+        cap = 700
+        if int(sh.height()) > cap:
+            return QSize(sh.width(), cap)
+        return sh
 
     def __init__(self):
         super().__init__()
         self.setObjectName("PageRoot")
         self.setAttribute(Qt.WA_StyledBackground, True)
+        self._page_id = ""
         self._loading = False
         self._prefs_dirty_cb = None
         self._left: Dict[str, QPlainTextEdit] = {}
@@ -1047,6 +1638,14 @@ class PagePromptEditor(QWidget):
         self._add_btns: List[QPushButton] = []
         self._preset_paste_btns: List[QPushButton] = []
         self._custom_presets: Dict[str, List[dict]] = {}
+        # H3 预设：展开状态由容器共享（落 prompt_editor.h3_expanded）；按钮首次展开才建
+        self._h3_expanded: Dict[str, bool] = {}
+        self._entry_btns: Dict[str, Dict[str, QPushButton]] = {}
+        self._field_fixed: Dict[str, tuple] = {}
+        self._entry_sig: Dict[str, tuple] = {}
+        self._preset_mru: Dict[str, List[str]] = {}
+        self._h3_toggles: Dict[str, QPushButton] = {}
+        self._h3_flows: Dict[str, FlowLayout] = {}
         self._selected_key = None
         self._order_dragging = False
         self._drag_key = None
@@ -1114,20 +1713,21 @@ class PagePromptEditor(QWidget):
         left_lay.setContentsMargins(0, 0, 0, 0)
         left_lay.setSpacing(6)
         self.btn_field_add = self._make_order_action_btn(
-            "添加", "添加分区（未用的预设，或自定义）"
-        )
-        self.btn_field_rename = self._make_order_action_btn(
-            "改名", "给选中的分区改名"
+            "+", "添加分区（未用的预设，或自定义）"
         )
         self.btn_field_del = self._make_order_action_btn(
-            "删除", "删除选中的分区"
+            "-", "删除选中的分区"
         )
         self.btn_field_add.clicked.connect(self._add_field_clicked)
-        self.btn_field_rename.clicked.connect(self._rename_selected_field)
         self.btn_field_del.clicked.connect(self._delete_selected_field)
-        left_lay.addWidget(self.btn_field_add, 1)
-        left_lay.addWidget(self.btn_field_rename, 1)
-        left_lay.addWidget(self.btn_field_del, 1)
+        for btn in (self.btn_field_add, self.btn_field_del):
+            btn.setMinimumWidth(0)
+            btn.setFixedSize(_COPY_H, _COPY_H)
+            btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+            self._style_field_square_btn(btn)
+        left_lay.addWidget(self.btn_field_add, 0)
+        left_lay.addWidget(self.btn_field_del, 0)
+        left_lay.addStretch(1)
         right_foot = QWidget()
         right_foot.setAttribute(Qt.WA_StyledBackground, True)
         right_foot.setStyleSheet("background:transparent;border:none;")
@@ -1313,7 +1913,23 @@ class PagePromptEditor(QWidget):
         host.setStyleSheet("background:transparent;border:none;")
         host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         flow = FlowLayout(host, 0, 6, 6)
-        col.addWidget(host, 1)
+        col.addWidget(host, 0)
+        # 第 16 条起单独一块 H3 区（另起一行、虚线分隔），只在展开时显示；
+        # 前 15 条 /「+」/「H3」开关留在上面的流里，两块按序号重新分配
+        h3_host = QWidget()
+        h3_host.setObjectName(f"PromptH3Area_{key}")
+        h3_host.setAttribute(Qt.WA_StyledBackground, True)
+        h3_host.setStyleSheet(
+            f"QWidget#PromptH3Area_{key}{{background:transparent;border:none;"
+            f"border-top:1px dashed rgba(148,163,184,110);}}"
+        )
+        h3_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        h3_flow = FlowLayout(h3_host, 0, 6, 6)
+        h3_flow.setContentsMargins(0, 6, 0, 0)
+        h3_host.hide()
+        col.addWidget(h3_host, 0)
+        col.addStretch(1)
+        self._h3_flows[key] = h3_flow
         slot_lay = QVBoxLayout(slot)
         slot_lay.setContentsMargins(0, 0, 0, 0)
         slot_lay.setSpacing(0)
@@ -1337,9 +1953,20 @@ class PagePromptEditor(QWidget):
             self._chip_groups[key] = group
         for btn in list(group.buttons()):
             group.removeButton(btn)
-        while flow.count():
-            item = flow.takeAt(0)
+        # 预设条目按钮（内置 + H3）和「H3」开关只建一次：重建时只从流里摘下，稍后按顺序放回
+        entry_btns = self._entry_btns.setdefault(key, {})
+        keep_ids = {id(b) for b in entry_btns.values()}
+        h3_toggle = self._h3_toggles.get(key)
+        if h3_toggle is not None:
+            keep_ids.add(id(h3_toggle))
+        i = 0
+        while i < flow.count():
+            item = flow.itemAt(i)
             w = item.widget() if item is not None else None
+            if w is not None and id(w) in keep_ids:
+                i += 1  # 留在流里（布局项不摘），稍后 _reorder_flow 只调顺序
+                continue
+            flow.takeAt(i)
             if w is None:
                 continue
             self._chip_btns = [b for b in self._chip_btns if b is not w]
@@ -1347,30 +1974,343 @@ class PagePromptEditor(QWidget):
             self._preset_paste_btns = [b for b in self._preset_paste_btns if b is not w]
             w.setParent(None)
             w.deleteLater()
+        for btn in entry_btns.values():
+            group.addButton(btn)
         paste_btn = self._make_preset_paste_btn(key)
         flow.addWidget(paste_btn)
         self._preset_paste_btns.append(paste_btn)
-        src_keys = _CHAR_PRESET_KEYS.get(key) or ()
-        for src, name, value in self._char_preset_pairs(src_keys):
-            btn = self._make_preset_chip(key, src, name, value, custom=False)
-            group.addButton(btn)
-            flow.addWidget(btn)
-            self._chip_btns.append(btn)
-        for item in self._custom_presets.get(key) or []:
-            name = str((item or {}).get("name") or "").strip()
-            value = str((item or {}).get("value") or "").strip()
-            if not name or not value:
-                continue
-            btn = self._make_preset_chip(key, "custom", name, value, custom=True)
-            group.addButton(btn)
-            flow.addWidget(btn)
-            self._chip_btns.append(btn)
+        # 自定义预设已并入 _ordered_entries（参与 MRU / 前 15 / H3），这里不再单独建
+        customs: List[QPushButton] = []
         add_btn = self._make_add_preset_btn(key)
         flow.addWidget(add_btn)
         self._add_btns.append(add_btn)
+        self._field_fixed[key] = (paste_btn, customs, add_btn)
+        self._entry_sig.pop(key, None)
+        self._layout_field_entries(key)
         self._sync_field_chips(key)
         self._refresh_preset_paste_btns()
 
+    def _builtin_pairs(self, key: str) -> List[Tuple[str, str, str]]:
+        """内置预设：优先根目录 txt，读不到再用代码里的 _CHAR_PRESETS。"""
+        builtin, _h3 = _txt_presets()
+        if builtin is not None:
+            return [("builtin", n, v) for n, v in (builtin.get(key) or [])]
+        return self._char_preset_pairs(_CHAR_PRESET_KEYS.get(key) or ())
+
+    @staticmethod
+    def _h3_entries(key: str) -> List[Tuple[str, str]]:
+        _builtin, h3 = _txt_presets()
+        return list(h3.get(key) or [])
+
+    def _field_chip_values(self, key: str) -> List[str]:
+        """这一栏所有预设内容（内置 + 自定义 + H3，H3 未展开也算），用于长条优先判定。"""
+        vals = [v for _s, _n, v in self._builtin_pairs(key)]
+        for it in self._custom_presets.get(key) or []:
+            v = str((it or {}).get("value") or "").strip()
+            if v:
+                vals.append(v)
+        vals.extend(v for _n, v in self._h3_entries(key))
+        return vals
+
+    def _active_values_for(self, key: str) -> set:
+        ed = self._left.get(key)
+        text = (ed.toPlainText() if ed is not None else "") or ""
+        if not text.strip():
+            return set()
+        return _active_chip_values(text, self._field_chip_values(key))
+
+    def _ordered_entries(self, key: str) -> List[Tuple[str, str, str]]:
+        """(来源, 标题, 内容)：内置在前、H3 在后、按内容去重；再按共享 MRU 把最近加过的提到最前。
+
+        MRU 里 txt 已没有的内容忽略；不在 MRU 里的条目保持 txt 原顺序排在后面。
+        """
+        entries: List[Tuple[str, str, str]] = []
+        seen = set()
+        # 默认顺序：本栏自定义预设 → 内置 → H3（同内容只留第一个，即自定义优先）
+        for it in self._custom_presets.get(key) or []:
+            name = str((it or {}).get("name") or "").strip()
+            value = str((it or {}).get("value") or "").strip()
+            if name and value and value not in seen:
+                seen.add(value)
+                entries.append(("custom", name, value))
+        for src, name, value in self._builtin_pairs(key):
+            if value and value not in seen:
+                seen.add(value)
+                entries.append((src, name, value))
+        for name, value in self._h3_entries(key):
+            if value and value not in seen:
+                seen.add(value)
+                entries.append(("h3", name, value))
+        mru = (getattr(self, "_preset_mru", None) or {}).get(key) or []
+        if mru and entries:
+            pos = {e[2]: i for i, e in enumerate(entries)}
+            front = []
+            used = set()
+            for v in mru:
+                i = pos.get(v)
+                if i is None or v in used:
+                    continue
+                used.add(v)
+                front.append(entries[i])
+            if front:
+                entries = front + [e for e in entries if e[2] not in used]
+        return entries
+
+    def _h3_is_expanded(self, key: str) -> bool:
+        return bool((getattr(self, "_h3_expanded", None) or {}).get(key))
+
+    @staticmethod
+    def _flow_take(flow: FlowLayout, w: QWidget) -> bool:
+        """只把 w 的布局项从流里摘掉（控件本身不动）。"""
+        for i in range(flow.count()):
+            it = flow.itemAt(i)
+            if it is not None and it.widget() is w:
+                flow.takeAt(i)
+                return True
+        return False
+
+    @classmethod
+    def _reorder_flow(cls, flow: FlowLayout, order: List[QWidget], others=()):
+        """把流里的控件按 order 排好；缺的先从 others（同一栏的另一块流）里摘出来再加进来。
+
+        只调换布局项顺序 / 搬家，不删不重建按钮。
+        """
+        present = {}
+        for i in range(flow.count()):
+            it = flow.itemAt(i)
+            w = it.widget() if it is not None else None
+            if w is not None:
+                present[id(w)] = it
+        other_ids = {}
+        for of in others or ():
+            if of is None or of is flow:
+                continue
+            for i in range(of.count()):
+                it = of.itemAt(i)
+                w = it.widget() if it is not None else None
+                if w is not None:
+                    other_ids[id(w)] = of
+        for w in order:
+            if id(w) not in present:
+                src = other_ids.pop(id(w), None)
+                if src is not None:
+                    cls._flow_take(src, w)
+                    src.invalidate()
+                flow.addWidget(w)
+                present[id(w)] = flow.itemAt(flow.count() - 1)
+        items = getattr(flow, "_items", None)
+        ordered = [present[id(w)] for w in order]
+        if isinstance(items, list):
+            ids = {id(it) for it in ordered}
+            items[:] = ordered + [it for it in items if id(it) not in ids]
+            flow.invalidate()
+            return
+        widgets = []
+        while flow.count():
+            it = flow.takeAt(0)
+            w = it.widget() if it is not None else None
+            if w is not None:
+                widgets.append(w)
+        known = {id(w) for w in order}
+        for w in list(order) + [w for w in widgets if id(w) not in known]:
+            flow.addWidget(w)
+
+    def _layout_field_entries(self, key: str, force: bool = False) -> bool:
+        """按当前顺序摆放：上面的流放粘贴、前 _TOP_N 条、「+」、「H3 ▸/▾」；第 _TOP_N+1 条起放下面的 H3 区。
+
+        前 _TOP_N 条总是建好并显示；其余只有展开（且页面可见或 force）时才建。返回是否新建了按钮。
+        """
+        flow = self._preset_flows.get(key)
+        group = self._chip_groups.get(key)
+        fixed = self._field_fixed.get(key)
+        if flow is None or group is None or fixed is None:
+            return False
+        paste_btn, customs, add_btn = fixed
+        entries = self._ordered_entries(key)
+        top, rest = entries[:_TOP_N], entries[_TOP_N:]
+        expanded = bool(rest) and self._h3_is_expanded(key)
+        build_rest = expanded and (force or self.isVisible())
+        btns = self._entry_btns.setdefault(key, {})
+        want_kind = {e[2]: (e[0] == "custom", e[1]) for e in entries}
+        for value in list(btns.keys()):
+            b = btns[value]
+            kind = want_kind.get(value)
+            try:
+                same = kind is not None and (
+                    bool(b.property("chipCustom")) == kind[0]
+                    and str(b.property("chipName") or "") == kind[1]
+                )
+            except RuntimeError:
+                same = False
+            if not same:
+                # 自定义预设被删 / 同内容换了来源：摘掉旧按钮，需要时下面重建
+                btns.pop(value, None)
+                self._drop_entry_btn(flow, group, b)
+        new_btns: List[QPushButton] = []
+        for src, name, value in top + (rest if build_rest else []):
+            if value not in btns:
+                b = self._make_preset_chip(key, src, name, value, custom=(src == "custom"))
+                btns[value] = b
+                group.addButton(b)
+                new_btns.append(b)
+        if new_btns:
+            self._chip_btns.extend(new_btns)
+        toggle = self._h3_toggles.get(key)
+        if rest and toggle is None:
+            toggle = self._make_h3_toggle(key)
+            self._h3_toggles[key] = toggle
+        if toggle is not None:
+            toggle.setText("H3 ▾" if expanded else "H3 ▸")
+        order: List[QWidget] = [paste_btn] + [btns[e[2]] for e in top] + list(customs) + [add_btn]
+        if rest:
+            order.append(toggle)
+        rest_btns = [btns[e[2]] for e in rest if e[2] in btns]
+        h3_flow = self._h3_flows.get(key)
+        if h3_flow is None:
+            # 没有独立 H3 区（理论上不会）：退回单流
+            order += rest_btns
+            rest_btns = []
+        host = flow.parentWidget()
+        h3_host = h3_flow.parentWidget() if h3_flow is not None else None
+        hosts = [h for h in (host, h3_host) if h is not None and h.isVisible()]
+        batch = len(new_btns) > 3 and bool(hosts)
+        if batch:
+            for h in hosts:
+                h.hide()  # 一次新建很多按钮时先藏父控件，避免逐个触发整流重排
+        try:
+            # 每次都按序号重新分配：前 _TOP_N 条进上面的流，其余进 H3 区（互相搬家）
+            self._reorder_flow(flow, order, (h3_flow,))
+            if h3_flow is not None:
+                self._reorder_flow(h3_flow, rest_btns, (flow,))
+            want = []
+            for e in top:
+                want.append((btns[e[2]], True))
+            for b in rest_btns:
+                want.append((b, True))  # H3 区里的按钮本身常显，靠 H3 区整体显隐
+            if h3_flow is None:
+                for e in rest:
+                    b = btns.get(e[2])
+                    if b is not None:
+                        want.append((b, expanded))
+            if toggle is not None:
+                want.append((toggle, bool(rest)))
+            todo = [(b, vis) for b, vis in want if b.isHidden() == vis]
+            inner = (not batch) and host is not None and host.isVisible() and len(todo) > 3
+            if inner:
+                host.hide()
+            try:
+                for b, vis in todo:
+                    b.setHidden(not vis)
+            finally:
+                if inner:
+                    host.show()
+        finally:
+            if batch:
+                for h in hosts:
+                    h.show()
+        if h3_host is not None:
+            show_h3 = expanded and bool(rest_btns)
+            if h3_host.isHidden() == show_h3:
+                h3_host.setVisible(show_h3)
+        self._entry_sig[key] = (
+            self._entries_sig(entries), expanded, bool(build_rest or not expanded),
+        )
+        return bool(new_btns)
+
+    @staticmethod
+    def _entries_sig(entries) -> tuple:
+        return tuple((e[0] == "custom", e[1], e[2]) for e in entries)
+
+    def _drop_entry_btn(self, flow: FlowLayout, group: QButtonGroup, b: QPushButton):
+        try:
+            group.removeButton(b)
+        except RuntimeError:
+            pass
+        self._chip_btns = [x for x in self._chip_btns if x is not b]
+        try:
+            pk = str(b.property("promptKey") or "")
+        except RuntimeError:
+            pk = ""
+        for fl in (flow, self._h3_flows.get(pk)):
+            if fl is not None and self._flow_take(fl, b):
+                fl.invalidate()
+                break
+        try:
+            b.setParent(None)
+            b.deleteLater()
+        except RuntimeError:
+            pass
+
+    def _make_h3_toggle(self, key: str) -> QPushButton:
+        btn = QPushButton("H3 ▸")
+        btn.setObjectName(f"PromptH3Toggle_{key}")
+        btn.setFocusPolicy(Qt.NoFocus)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setFixedHeight(24)
+        btn.setProperty("presetKey", key)
+        btn.setProperty("chipCustom", False)
+        self._style_h3_toggle(btn)
+        btn.clicked.connect(lambda _=False, k=key: self._toggle_h3(k))
+        return btn
+
+    def _style_h3_toggle(self, btn: QPushButton):
+        # 与预设按钮同一套样式（不可勾选，所以不会变绿）
+        self._style_chip(btn)
+
+    def _notify_prefs_only(self, what: str):
+        """只通知落盘（展开状态 / MRU 顺序），不进撤销历史。"""
+        if self._loading:
+            return
+        cb = getattr(self, "_prefs_dirty_cb", None)
+        if callable(cb):
+            try:
+                cb()
+            except Exception:
+                log.exception("保存%s失败", what)
+
+    def _after_entry_layout(self, key: str, built: bool):
+        if built:
+            self._sync_field_chips(key)
+        self._sync_section_row(key)
+        QTimer.singleShot(0, lambda k=key: self._sync_section_row(k))
+
+    def _toggle_h3(self, key: str):
+        if len(self._ordered_entries(key)) <= _TOP_N:
+            return
+        if self._h3_is_expanded(key):
+            self._h3_expanded.pop(key, None)
+        else:
+            self._h3_expanded[key] = True
+        built = self._layout_field_entries(key, force=True)
+        self._after_entry_layout(key, built)
+        self._notify_prefs_only(" H3 展开状态")
+
+    def _bump_mru(self, key: str, value: str):
+        """加进正文的内置 / H3 条目提到本栏最前（各分页共用一份顺序）。"""
+        value = (value or "").strip()
+        mru = getattr(self, "_preset_mru", None)
+        if not value or mru is None:
+            return
+        cur = list(mru.get(key) or [])
+        if cur and cur[0] == value:
+            return  # 已在最前
+        mru[key] = ([value] + [v for v in cur if v != value])[:_MRU_MAX]
+        built = self._layout_field_entries(key, force=True)
+        self._after_entry_layout(key, built)
+        self._notify_prefs_only("预设顺序")
+
+    def _sync_h3_all(self):
+        """进入页面时按共享的展开状态 / MRU 顺序补建、重排（别的分页可能改过）。"""
+        for key in list(self._preset_flows.keys()):
+            if key not in self._field_fixed:
+                continue
+            entries = self._ordered_entries(key)
+            expanded = len(entries) > _TOP_N and self._h3_is_expanded(key)
+            sig = (self._entries_sig(entries), expanded, True)
+            if self._entry_sig.get(key) == sig:
+                continue
+            built = self._layout_field_entries(key, force=True)
+            self._after_entry_layout(key, built)
     def _make_preset_chip(
         self, prompt_key: str, src_key: str, name: str, value: str, custom: bool = False,
     ) -> QPushButton:
@@ -1395,7 +2335,7 @@ class PagePromptEditor(QWidget):
         return btn
 
     def _make_add_preset_btn(self, key: str) -> QPushButton:
-        btn = QPushButton("+")
+        btn = _PlusButton()
         btn.setObjectName(f"PromptPresetAdd_{key}")
         btn.setFocusPolicy(Qt.NoFocus)
         btn.setCursor(Qt.PointingHandCursor)
@@ -1412,7 +2352,7 @@ class PagePromptEditor(QWidget):
         btn.setFixedSize(24, 24)
         btn.setIconSize(QSize(14, 14))
         btn.setProperty("presetKey", key)
-        btn.setToolTip("粘贴到此段")
+        btn.setToolTip("")
         self._style_preset_paste_btn(btn)
         btn.clicked.connect(lambda _=False, k=key: self._paste_into_field(k))
         return btn
@@ -1520,6 +2460,8 @@ class PagePromptEditor(QWidget):
             f"QPushButton:pressed{{"
             f"background:{h['press_bg']};border-color:{h['press_bd']};color:{h['press_fg']};}}"
         )
+        if isinstance(btn, _PlusButton):
+            btn.set_plus_colors(fg, h["hover_fg"], h["press_fg"], tk("text_dim"))
 
     def _style_chip(self, btn: QPushButton):
         h = self._hot_colors()
@@ -1561,32 +2503,26 @@ class PagePromptEditor(QWidget):
         key = str(btn.property("promptKey") or "")
         src = str(btn.property("srcKey") or "")
         value = str(btn.property("chipValue") or "").strip()
-        ed = self._left.get(key)
-        cur = ((ed.toPlainText() if ed is not None else "") or "").strip()
         if not value:
             return False
-        if src == "body":
-            body_def = (_BODY_DEFAULT or "").strip()
-            if value == body_def:
-                return cur == body_def
-            if cur == body_def:
-                return False
-            return value in cur
-        return value in cur
+        # 按分隔段整段比较 + 长条优先（短条落在长条里面不算），不再用子串
+        return value in self._active_values_for(key)
 
     def _sync_field_chips(self, key: str):
         group = self._chip_groups.get(key)
         if group is None:
             return
         frozen = key in getattr(self, "_frozen_keys", set())
+        active = self._active_values_for(key)
         for btn in group.buttons():
-            want = self._chip_matches(btn)
+            want = str(btn.property("chipValue") or "").strip() in active
             if btn.isChecked() != want:
                 btn.blockSignals(True)
                 btn.setChecked(want)
                 btn.blockSignals(False)
-            btn.setEnabled((not frozen) and (not want))
-            btn.setCursor(Qt.ArrowCursor if (frozen or want) else Qt.PointingHandCursor)
+            # 已写入正文时按钮是绿色，仍可点：再点一次把这段从左边删掉
+            btn.setEnabled(not frozen)
+            btn.setCursor(Qt.ArrowCursor if frozen else Qt.PointingHandCursor)
             self._refresh_chip_caption(btn, want)
         for btn in list(getattr(self, "_add_btns", []) or []):
             try:
@@ -1602,9 +2538,28 @@ class PagePromptEditor(QWidget):
             self._sync_field_chips(key)
             return
         if self._chip_matches(btn):
+            self._remove_chip(btn)
+        else:
+            self._apply_chip(btn)
+        # 自定义 / 内置 / H3 条目只要点过（加入或取消）都提到本栏最前（MRU）
+        self._bump_mru(key, str(btn.property("chipValue") or "").strip())
+
+    def _remove_chip(self, btn: QPushButton):
+        """绿色（已写入）预设再点一次：从左边正文拿掉这段，按钮恢复常态。"""
+        key = str(btn.property("promptKey") or "")
+        if key in getattr(self, "_frozen_keys", set()):
             self._sync_field_chips(key)
             return
-        self._apply_chip(btn)
+        value = str(btn.property("chipValue") or "").strip()
+        ed = self._left.get(key)
+        if ed is None or not value:
+            self._sync_field_chips(key)
+            return
+        new = _strip_chip_segments(ed.toPlainText() or "", value, self._field_chip_values(key))
+        if new == (ed.toPlainText() or ""):
+            self._sync_field_chips(key)
+            return
+        ed.setPlainText(new)
 
     def _apply_chip(self, btn: QPushButton):
         key = str(btn.property("promptKey") or "")
@@ -1619,11 +2574,7 @@ class PagePromptEditor(QWidget):
         if self._chip_matches(btn):
             self._sync_field_chips(key)
             return
-        cur = (ed.toPlainText() or "").rstrip()
-        if not cur:
-            ed.setPlainText(value)
-        else:
-            ed.setPlainText(cur + ", " + value)
+        ed.setPlainText(_join_chip_value(ed.toPlainText() or "", value))
 
     def _add_custom_preset(self, key: str):
         if key in getattr(self, "_frozen_keys", set()):
@@ -1637,6 +2588,10 @@ class PagePromptEditor(QWidget):
         items = list(self._custom_presets.get(key) or [])
         items.append({"name": name, "value": value})
         self._custom_presets[key] = items
+        mru = getattr(self, "_preset_mru", None)
+        if mru is not None:
+            # 新建的自定义预设直接排到本栏第 1 位，保证马上看得见
+            mru[key] = ([value] + [v for v in (mru.get(key) or []) if v != value])[:_MRU_MAX]
         self._rebuild_field_chips(key)
         ed = self._left.get(key)
         if ed is not None and value not in (ed.toPlainText() or ""):
@@ -1645,7 +2600,7 @@ class PagePromptEditor(QWidget):
                 ed.setPlainText(value)
             else:
                 ed.setPlainText(cur + ", " + value)
-        self._schedule_persist()
+        self._publish_presets()
         QTimer.singleShot(0, lambda k=key: self._sync_section_row(k))
 
     def _chip_context_menu(self, btn: QPushButton, pos):
@@ -1671,8 +2626,16 @@ class PagePromptEditor(QWidget):
         else:
             self._custom_presets.pop(key, None)
         self._rebuild_field_chips(key)
-        self._schedule_persist()
+        self._publish_presets()
         QTimer.singleShot(0, lambda k=key: self._sync_section_row(k))
+
+    def _publish_presets(self):
+        """自定义预设是各分页共用的。改完通知容器刷新每一页并落盘。"""
+        host = getattr(self, "_preset_host", None)
+        if host is not None and hasattr(host, "sync_shared_presets"):
+            host.sync_shared_presets()
+            return
+        self._schedule_persist()
 
     def _toggle_freeze_field(self, key: str):
         if key in self._frozen_keys:
@@ -1750,14 +2713,12 @@ class PagePromptEditor(QWidget):
                 bd, bg, ico = "#38bdf8", "#0c4a6e", "#7dd3fc"
             else:
                 bd, bg, ico = "#0284c7", "#e0f2fe", "#0369a1"
-            tip = "已冻结：不可编辑，不参与完整提示词（点击解冻）"
         else:
             if theme.is_dark:
                 bd, bg, ico = "#475569", "#1e293b", tk("text_dim")
             else:
                 bd, bg, ico = "#94a3b8", "#e2e8f0", tk("text_dim")
-            tip = "冻结此段：不可编辑，也不参与完整提示词"
-        btn.setToolTip(tip)
+        btn.setToolTip("")
         btn.setStyleSheet(
             f"QPushButton{{"
             f"min-width:{_TITLE_ACT}px;max-width:{_TITLE_ACT}px;"
@@ -1787,11 +2748,13 @@ class PagePromptEditor(QWidget):
         bar.setAutoFillBackground(True)
         bar.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         bar_lay = QVBoxLayout(bar)
-        bar_lay.setContentsMargins(_TITLE_BAR_PAD_H, 3, _TITLE_BAR_PAD_H, 3)
-        bar_lay.setSpacing(_TITLE_COL_GAP)
+        bar_lay.setContentsMargins(_TITLE_BAR_PAD_H, 0, _TITLE_BAR_PAD_H, 0)
+        bar_lay.setSpacing(0)
         lab = _VTitle()
         lab.set_title("完整提示词")
-        bar_lay.addWidget(lab, 0, Qt.AlignHCenter | Qt.AlignTop)
+        # 没有冻结钮，五个字在标题栏里垂直居中
+        bar_lay.addStretch(1)
+        bar_lay.addWidget(lab, 0, Qt.AlignHCenter)
         bar_lay.addStretch(1)
         self._full_prompt_bar = bar
         self._full_prompt_lab = lab
@@ -1940,8 +2903,7 @@ class PagePromptEditor(QWidget):
             edit.setPlaceholderText(placeholder or "")
         else:
             edit.setPlaceholderText("")
-            if placeholder:
-                edit.setToolTip(placeholder)
+            edit.setToolTip("")
         edit.textChanged.connect(lambda _ed=edit, _t=tint: self._style_one_edit(_ed, _t))
         if persist:
             edit.textChanged.connect(self._schedule_persist)
@@ -2084,7 +3046,7 @@ class PagePromptEditor(QWidget):
                 "press_bd": "#166534",
                 "press_fg": "#ffffff",
             }
-        return PagePromptEditor._hot_colors()
+        return _PromptSheet._hot_colors()
 
     def _paste_tint_qss(self, tint: str, btn_h: int) -> str:
         c = _tint_colors(tint)
@@ -2103,7 +3065,7 @@ class PagePromptEditor(QWidget):
 
     @staticmethod
     def _hist_btn_qss() -> str:
-        h = PagePromptEditor._hot_colors()
+        h = _PromptSheet._hot_colors()
         return (
             f"QPushButton{{"
             f"min-width:{_COPY_H}px;max-width:{_COPY_H}px;"
@@ -2129,7 +3091,7 @@ class PagePromptEditor(QWidget):
 
     @staticmethod
     def _xfer_qss(btn_h: int = _XFER_BTN) -> str:
-        h = PagePromptEditor._hot_colors()
+        h = _PromptSheet._hot_colors()
         return (
             f"QPushButton{{"
             f"min-width:{_XFER_BTN}px;max-width:{_XFER_BTN}px;"
@@ -2144,7 +3106,7 @@ class PagePromptEditor(QWidget):
 
     @staticmethod
     def _copy_all_qss() -> str:
-        h = PagePromptEditor._hot_colors()
+        h = _PromptSheet._hot_colors()
         return (
             f"QPushButton{{"
             f"min-height:{_COPY_H}px;max-height:{_COPY_H}px;"
@@ -2161,9 +3123,19 @@ class PagePromptEditor(QWidget):
             f"color:{tk('text_dim')};}}"
         )
 
+    def _style_field_square_btn(self, btn: QPushButton):
+        qss = self._order_btn_qss().replace("padding:0 12px;", "padding:0;")
+        qss += (
+            "QPushButton{"
+            f"min-width:{_COPY_H}px;max-width:{_COPY_H}px;"
+            f"min-height:{_COPY_H}px;max-height:{_COPY_H}px;"
+            "font-size:18px;font-weight:700;}"
+        )
+        btn.setStyleSheet(qss)
+
     @staticmethod
     def _order_btn_qss() -> str:
-        h = PagePromptEditor._hot_colors()
+        h = _PromptSheet._hot_colors()
         return (
             f"QPushButton{{"
             f"min-height:{_COPY_H}px;max-height:{_COPY_H}px;padding:0 12px;border-radius:6px;"
@@ -2179,26 +3151,28 @@ class PagePromptEditor(QWidget):
             f"color:{tk('text_dim')};}}"
         )
 
-    def _style_order_card(self, card: _OrderCard, selected: bool = False):
+    def _style_order_card(self, card: _OrderCard, selected: bool = False, refresh_title: bool = True):
         frozen = card._key in getattr(self, "_frozen_keys", set())
         accent = _field_accent(card._key)
+        border_w = _ORDER_CARD_BD + (2 if selected else 0)
         if frozen:
             bg = "#111111" if selected else "#080808"
-            bd = "#e4e4e7" if selected else "#3f3f46"
+            bd = "#ffffff" if selected else "#3f3f46"
             fg = "#f8fafc"
         else:
             bg = accent
             if selected:
                 bg = _mix_hex(bg, "#fde68a", 0.18)
-                bd = _mix_hex(accent, "#fde68a", 0.45)
+                bd = "#ffffff"
             else:
                 bd = _mix_hex(accent, "#1e293b", 0.22)
             fg = _contrast_fg(bg)
         card.setAutoFillBackground(False)
         card.setAttribute(Qt.WA_StyledBackground, True)
+        card.setFixedSize(_order_card_w(), _ORDER_CARD_H)
         card.setStyleSheet(
             f"QFrame#PromptOrderCard{{"
-            f"background-color:{bg};border:1px solid {bd};border-radius:6px;}}"
+            f"background-color:{bg};border:{border_w}px solid {bd};border-radius:6px;}}"
             f"QFrame#PromptOrderCard QLabel{{"
             f"background:transparent;border:none;color:{fg};"
             f"font-size:11px;font-weight:600;}}"
@@ -2206,29 +3180,41 @@ class PagePromptEditor(QWidget):
             f"background:transparent;color:{fg};border:none;"
             f"padding:0;font-size:11px;font-weight:600;}}"
         )
-        btn = getattr(card, "btn_thaw", None)
+        btn = getattr(card, "btn_freeze", None)
         if btn is not None:
             editing = bool(getattr(card, "_editing", False))
-            btn.setVisible(bool(frozen) and not editing)
+            btn.setVisible(not editing)
             if frozen:
+                # 解冻钮：保持原来的暗底浅雪花
                 hov = self._hot_colors()
                 bbd, bbg, ico = "#e4e4e7", "#1a1a1a", "#f8fafc"
-                btn.setStyleSheet(
-                    f"QPushButton{{"
-                    f"background:{bbg};border:1px solid {bbd};border-radius:4px;padding:0;"
-                    f"min-width:{_TITLE_ACT}px;max-width:{_TITLE_ACT}px;"
-                    f"min-height:{_TITLE_ACT}px;max-height:{_TITLE_ACT}px;}}"
-                    f"QPushButton:hover{{"
-                    f"background:{hov['hover_bg']};border-color:{hov['hover_bd']};}}"
-                    f"QPushButton:pressed{{"
-                    f"background:{hov['press_bg']};border-color:{hov['press_bd']};}}"
-                )
-                btn.setIcon(_freeze_icon(True, _PASTE_ICON, ico))
-                btn.setToolTip("解冻此段")
-            card._place_thaw()
-        apply = getattr(card, "apply_title", None)
-        if callable(apply):
-            apply()
+                hover_bg, hover_bd = hov["hover_bg"], hov["hover_bd"]
+                press_bg, press_bd = hov["press_bg"], hov["press_bd"]
+            else:
+                # 冻结钮：框里填内容卡同色，雪花用标题对比色
+                bbd, bbg, ico = bd, bg, fg
+                hover_bg = _mix_hex(bg, fg, 0.16)
+                hover_bd = fg
+                press_bg = _mix_hex(bg, fg, 0.28)
+                press_bd = fg
+            btn.setStyleSheet(
+                f"QPushButton#PromptOrderFreeze{{"
+                f"background:{bbg};border:1px solid {bbd};border-radius:4px;padding:0;"
+                f"min-width:{_TITLE_ACT}px;max-width:{_TITLE_ACT}px;"
+                f"min-height:{_TITLE_ACT}px;max-height:{_TITLE_ACT}px;}}"
+                f"QPushButton#PromptOrderFreeze:hover{{"
+                f"background:{hover_bg};border-color:{hover_bd};}}"
+                f"QPushButton#PromptOrderFreeze:pressed{{"
+                f"background:{press_bg};border-color:{press_bd};}}"
+            )
+            btn.setIcon(_freeze_icon(frozen, _PASTE_ICON, ico))
+            btn.setToolTip("")
+            card._place_freeze()
+        card.setFixedSize(_order_card_w(), _ORDER_CARD_H)
+        if refresh_title:
+            apply = getattr(card, "apply_title", None)
+            if callable(apply):
+                apply()
 
     def _style_order_box(self):
         box = getattr(self, "_order_box", None)
@@ -2339,11 +3325,10 @@ class PagePromptEditor(QWidget):
         count = getattr(self, "lbl_hist_count", None)
         if count is not None:
             count.setStyleSheet(self._hist_count_qss())
-        order_qss = self._order_btn_qss()
-        for attr in ("btn_field_add", "btn_field_rename", "btn_field_del"):
+        for attr in ("btn_field_add", "btn_field_del"):
             btn = getattr(self, attr, None)
             if btn is not None:
-                btn.setStyleSheet(order_qss)
+                self._style_field_square_btn(btn)
         for key, card in self._order_cards.items():
             self._style_order_card(card, selected=(key == self._selected_key))
         for pane in self._preset_panes.values():
@@ -2354,6 +3339,12 @@ class PagePromptEditor(QWidget):
             except RuntimeError:
                 continue
             self._style_chip(btn)
+        for btn in list(getattr(self, "_h3_toggles", {}).values()):
+            try:
+                btn.objectName()
+            except RuntimeError:
+                continue
+            self._style_h3_toggle(btn)
         for key in list(self._chip_groups.keys()):
             self._sync_field_chips(key)
         for btn in list(self._add_btns):
@@ -2373,6 +3364,7 @@ class PagePromptEditor(QWidget):
 
     def on_enter(self):
         self._refresh_preset_paste_btns()
+        self._sync_h3_all()
         QTimer.singleShot(0, self._fit_all_edits)
         QTimer.singleShot(0, self._sync_foot_align)
 
@@ -2550,34 +3542,38 @@ class PagePromptEditor(QWidget):
         self._refresh_order_btns()
 
     def _refresh_order_btns(self):
-        has = bool(self._selected_key)
-        rename = getattr(self, "btn_field_rename", None)
-        if rename is not None:
-            rename.setEnabled(has)
         delete = getattr(self, "btn_field_del", None)
         if delete is not None:
-            delete.setEnabled(has and len(self._specs) > 1)
+            delete.setEnabled(bool(self._selected_key) and len(self._specs) > 1)
 
     def _select_order_card(self, key: str):
+        prev = self._selected_key
+        if prev == key:
+            return
         self._selected_key = key
-        for k, card in self._order_cards.items():
-            self._style_order_card(card, selected=(k == key))
+        # 只改前后两张卡的边色，不重排、不改标题，旁边的卡不会抖
+        if prev and prev in self._order_cards:
+            self._style_order_card(self._order_cards[prev], selected=False, refresh_title=False)
+        card = self._order_cards.get(key)
+        if card is not None:
+            self._style_order_card(card, selected=True, refresh_title=False)
         self._refresh_order_btns()
 
     def _clear_order_selection(self):
         if not self._selected_key:
             return
         self._commit_order_rename()
+        prev = self._selected_key
         self._selected_key = None
-        for card in self._order_cards.values():
-            self._style_order_card(card, selected=False)
+        card = self._order_cards.get(prev)
+        if card is not None:
+            self._style_order_card(card, selected=False, refresh_title=False)
         self._refresh_order_btns()
 
     def _click_keeps_order_sel(self, w) -> bool:
         cur = w
         btns = (
             getattr(self, "btn_field_add", None),
-            getattr(self, "btn_field_rename", None),
             getattr(self, "btn_field_del", None),
         )
         while cur is not None:
@@ -2609,6 +3605,12 @@ class PagePromptEditor(QWidget):
         if timer is not None:
             try:
                 timer.stop()
+            except Exception:
+                pass
+        save_timer = getattr(self, "_save_timer", None)
+        if save_timer is not None:
+            try:
+                save_timer.stop()
             except Exception:
                 pass
 
@@ -3017,6 +4019,11 @@ class PagePromptEditor(QWidget):
         self._right_slots.pop(key, None)
         self._preset_panes.pop(key, None)
         self._preset_flows.pop(key, None)
+        self._h3_flows.pop(key, None)
+        self._entry_btns.pop(key, None)
+        self._field_fixed.pop(key, None)
+        self._entry_sig.pop(key, None)
+        self._h3_toggles.pop(key, None)
         self._chip_groups.pop(key, None)
         self._custom_presets.pop(key, None)
         self._freeze_btns.pop(key, None)
@@ -3078,6 +4085,11 @@ class PagePromptEditor(QWidget):
         self._chip_btns = []
         self._add_btns = []
         self._preset_paste_btns = []
+        self._entry_btns = {}
+        self._field_fixed = {}
+        self._entry_sig = {}
+        self._h3_toggles = {}
+        self._h3_flows = {}
         self._freeze_btns = {}
         self._freeze_veils = {}
         self._xfer_btns = []
@@ -3304,12 +4316,13 @@ class PagePromptEditor(QWidget):
             "frozen_fields": sorted(self._frozen_keys),
         }
 
-    def apply_settings(self, d: dict, char_data: dict = None):
+    def apply_settings(self, d: dict, char_data: dict = None, migrate_legacy_file: bool = True):
         data = d if isinstance(d, dict) else {}
         orig = data.get("orig") if isinstance(data.get("orig"), dict) else {}
         new = data.get("new") if isinstance(data.get("new"), dict) else {}
-        # user.txt 还没有内容时，把旧的 editor.json 迁过来一次
-        if not any(orig.values()) and not any(new.values()):
+        # user.txt 还没有内容时，把旧的 editor.json 迁过来一次。
+        # 新建的空白分页不能读这份旧文件，否则每页都会被灌进同一份正文。
+        if migrate_legacy_file and not any(orig.values()) and not any(new.values()):
             legacy = self._read_legacy_file()
             if legacy:
                 orig = legacy.get("orig") if isinstance(legacy.get("orig"), dict) else orig
@@ -3354,11 +4367,9 @@ class PagePromptEditor(QWidget):
             return
         gap = 6
         title_w = bar.width()
-        content_w = max(1, int(round(total * 0.65)))
-        rest = total - title_w - content_w - 2 * gap
-        if rest < 0:
-            content_w = max(1, total - title_w - 2 * gap)
-            rest = 0
+        avail = max(1, total - title_w - 2 * gap)
+        content_w = max(1, int(round(avail * _LEFT_RATIO)))
+        rest = max(0, avail - content_w)
         if left.width() != content_w:
             left.setFixedWidth(content_w)
         if slot.width() != rest:
@@ -3400,13 +4411,21 @@ class PagePromptEditor(QWidget):
             pane = self._preset_panes.get(key)
             if flow is not None:
                 pw = 0
-                if pane is not None and pane.width() > 0:
-                    pw = pane.width() - 2 * _PRESET_PAD
                 slot = self._right_slots.get(key)
+                if slot is not None and 0 < slot.minimumWidth() == slot.maximumWidth():
+                    # 右栏宽度刚由 _apply_section_widths 定死；内部 pane 可能还没重新布局，以定宽为准
+                    pw = slot.maximumWidth() - 2 * _PRESET_PAD
+                if pw <= 0 and pane is not None and pane.width() > 0:
+                    pw = pane.width() - 2 * _PRESET_PAD
                 if pw <= 0 and slot is not None:
                     pw = slot.width() - 2 * _PRESET_PAD
                 if pw > 0:
-                    h = max(h, int(flow.heightForWidth(pw)) + 2 * _PRESET_PAD)
+                    need = int(flow.heightForWidth(pw))
+                    h3f = getattr(self, "_h3_flows", {}).get(key)
+                    h3h = h3f.parentWidget() if h3f is not None else None
+                    if h3h is not None and not h3h.isHidden():
+                        need += 6 + int(h3f.heightForWidth(pw))  # 6 = pane 竖排间距
+                    h = max(h, need + 2 * _PRESET_PAD)
             edit.apply_height(h)
             if bar.minimumHeight() != h or bar.maximumHeight() != h:
                 bar.setFixedHeight(h)
@@ -3453,3 +4472,578 @@ class PagePromptEditor(QWidget):
             except Exception:
                 log.exception("读取旧提示词文件失败")
         return {}
+
+
+class PagePromptEditor(QWidget):
+    """提示词分页容器。样式对齐图集下载的页签；每页正文和预设单独保存。"""
+
+    def hasHeightForWidth(self):
+        return False
+
+    def minimumSizeHint(self):
+        return QSize(0, 0)
+
+    def sizeHint(self):
+        sh = super().sizeHint()
+        if not sh.isValid() or sh.height() <= 0:
+            return QSize(0, 0)
+        cap = 700
+        if int(sh.height()) > cap:
+            return QSize(sh.width(), cap)
+        return sh
+
+    def __init__(self):
+        super().__init__()
+        self.setObjectName("PageRoot")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self._loading = False
+        self._prefs_dirty_cb = None
+        self._shared_presets: Dict[str, List[dict]] = {}
+        # 各字段 H3 预设是否展开、预设 MRU 顺序，各分页共用一份
+        self._h3_expanded: Dict[str, bool] = {}
+        self._preset_mru: Dict[str, List[str]] = {}
+        self._tab_rename_index = -1
+        self._tab_filter_on = False
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(6)
+
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("VideoTabWidget")
+        self.tabs.setDocumentMode(False)
+        self.tabs.setMovable(False)
+        bar = self.tabs.tabBar()
+        bar.setExpanding(False)
+        bar.setElideMode(Qt.ElideNone)
+        bar.setUsesScrollButtons(True)
+        bar.setContextMenuPolicy(Qt.CustomContextMenu)
+        bar.customContextMenuRequested.connect(self._on_tab_menu)
+        bar.installEventFilter(self)
+        self.tabs.currentChanged.connect(self._on_tab_changed)
+        self._tab_editor = QLineEdit(bar)
+        self._tab_editor.setObjectName("PromptTabRename")
+        self._tab_editor.setFrame(False)
+        self._tab_editor.setAlignment(Qt.AlignCenter)
+        self._tab_editor.hide()
+        self._tab_editor.returnPressed.connect(self._commit_tab_rename)
+        self._tab_editor.installEventFilter(self)
+        self._style_tab_editor()
+        root.addWidget(self.tabs, 1)
+
+        corner = QWidget()
+        corner.setObjectName("PromptTabCorner")
+        corner.setStyleSheet("#PromptTabCorner{background:transparent;border:none;}")
+        corner_lay = QHBoxLayout(corner)
+        # 底边留 2px，让两个按钮的下边线外面有空隙
+        corner_lay.setContentsMargins(0, 0, 8, 2)
+        corner_lay.setSpacing(4)
+        corner_lay.setAlignment(Qt.AlignBottom)
+        self.btn_add_page = self._make_page_corner_btn(
+            "+", "添加分页。正文按页分开，预设各页共用。当前页再点一次改名。"
+        )
+        self.btn_del_page = self._make_page_corner_btn("-", "删除当前分页")
+        self.btn_add_page.clicked.connect(self._add_page)
+        self.btn_del_page.clicked.connect(self._delete_current_page)
+        corner_lay.addWidget(self.btn_add_page)
+        corner_lay.addWidget(self.btn_del_page)
+        self.tabs.setCornerWidget(corner, Qt.TopRightCorner)
+
+        self.setStyleSheet(self._tab_qss())
+        self._style_page_corner_btns()
+        self._refresh_page_corner()
+        try:
+            theme.changed.connect(self.restyle_theme)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _tab_qss() -> str:
+        return fmt(TAB_QSS + VIDEO_TAB_QSS)
+
+    _PAGE_CORNER_BTN = 24
+
+    def _make_page_corner_btn(self, text: str, tip: str) -> QPushButton:
+        btn = QPushButton(text)
+        btn.setFocusPolicy(Qt.NoFocus)
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setFixedSize(self._PAGE_CORNER_BTN, self._PAGE_CORNER_BTN)
+        btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        btn.setToolTip(tip)
+        return btn
+
+    def _style_page_corner_btns(self):
+        h = _PromptSheet._hot_colors()
+        n = self._PAGE_CORNER_BTN
+        # 样式里的宽高是内容区，1px 边框会再加 2px，这里扣掉才是外沿 24
+        inner = n - 2
+        qss = (
+            "QPushButton{"
+            f"min-width:{inner}px;max-width:{inner}px;min-height:{inner}px;max-height:{inner}px;"
+            "padding:0;border-radius:6px;"
+            f"border:1px solid {tk('border')};"
+            f"background:{tk('input_bg')};color:{tk('text')};"
+            "font-size:15px;font-weight:700;}"
+            "QPushButton:hover{"
+            f"background:{h['hover_bg']};border-color:{h['hover_bd']};color:{h['hover_fg']};}}"
+            "QPushButton:pressed{"
+            f"background:{h['press_bg']};border-color:{h['press_bd']};color:{h['press_fg']};}}"
+            "QPushButton:disabled{"
+            f"background:{tk('accent_dis')};border-color:{tk('border')};"
+            f"color:{tk('text_dim')};}}"
+        )
+        for btn in (
+            getattr(self, "btn_add_page", None),
+            getattr(self, "btn_del_page", None),
+        ):
+            if btn is not None:
+                btn.setStyleSheet(qss)
+                btn.setFixedSize(n, n)
+
+    def _refresh_page_corner(self):
+        btn = getattr(self, "btn_del_page", None)
+        if btn is not None:
+            btn.setEnabled(self.tabs.count() > 1)
+
+    def _delete_current_page(self):
+        self._cancel_tab_rename()
+        self._delete_tab_at(self.tabs.currentIndex())
+
+    def _style_tab_editor(self):
+        ed = getattr(self, "_tab_editor", None)
+        if ed is None:
+            return
+        # 实心底盖住页签原文字，避免改名时重影；不要外框
+        ed.setAttribute(Qt.WA_StyledBackground, True)
+        ed.setAutoFillBackground(True)
+        bg = tk("panel_2")
+        pal = ed.palette()
+        pal.setColor(ed.backgroundRole(), QColor(bg))
+        ed.setPalette(pal)
+        ed.setStyleSheet(
+            "QLineEdit#PromptTabRename{"
+            f"background:{bg};color:{tk('text_strong')};"
+            "border:none;padding:0 4px;font-size:14px;font-weight:600;}"
+        )
+
+    def restyle_theme(self, *_):
+        self.setStyleSheet(self._tab_qss())
+        self._style_page_corner_btns()
+        self._style_tab_editor()
+        self._refresh_tab_chrome()
+        self._place_tab_editor()
+
+    def _refresh_tab_chrome(self):
+        idx = self.tabs.currentIndex()
+        first = "true" if idx <= 0 else "false"
+        self.tabs.setProperty("firstSelected", first)
+        st = self.tabs.style()
+        if st is not None:
+            st.unpolish(self.tabs)
+            st.polish(self.tabs)
+        self.tabs.update()
+
+    def _used_ids(self) -> set:
+        used = set()
+        for i in range(self.tabs.count()):
+            w = self.tabs.widget(i)
+            pid = str(getattr(w, "_page_id", "") or "").strip()
+            if pid:
+                used.add(pid)
+        return used
+
+    def _sheets(self):
+        out = []
+        tabs = getattr(self, "tabs", None)
+        if tabs is None:
+            return out
+        for i in range(tabs.count()):
+            w = tabs.widget(i)
+            if isinstance(w, _PromptSheet):
+                out.append(w)
+        return out
+
+    def _rebind_shared_presets(self):
+        """每页的绿色预设都指向同一份，改一页其余页一起能看见。"""
+        shared = self._shared_presets
+        for sheet in self._sheets():
+            sheet._preset_host = self
+            sheet._custom_presets = shared
+            for key in list(sheet._spec_keys()):
+                if key in getattr(sheet, "_preset_flows", {}):
+                    sheet._rebuild_field_chips(key)
+            QTimer.singleShot(0, sheet._fit_all_edits)
+
+    def sync_shared_presets(self):
+        if self._loading:
+            return
+        self._rebind_shared_presets()
+        self._schedule_persist()
+
+    def _mount_sheet(self, sheet: _PromptSheet, title: str):
+        sheet._preset_host = self
+        sheet._custom_presets = self._shared_presets
+        sheet._h3_expanded = self._h3_expanded
+        sheet._preset_mru = self._preset_mru
+        sheet.set_prefs_dirty_callback(self._schedule_persist)
+        pid = str(getattr(sheet, "_page_id", "") or "page")
+        apply_transparent_surface(sheet, "PromptSheet_" + pid)
+        self.tabs.addTab(sheet, title)
+        idx = self.tabs.indexOf(sheet)
+        if idx >= 0:
+            self.tabs.setTabToolTip(idx, "点一次切换，当前页再点一次改名")
+        for key in list(sheet._spec_keys()):
+            if key in getattr(sheet, "_preset_flows", {}):
+                sheet._rebuild_field_chips(key)
+
+    def _discard_sheets(self):
+        while self.tabs.count():
+            w = self.tabs.widget(0)
+            self.tabs.removeTab(0)
+            if w is None:
+                continue
+            try:
+                w._teardown_click_filter()
+            except Exception:
+                pass
+            w.setParent(None)
+            w.deleteLater()
+
+    def _select_id(self, page_id: str):
+        want = str(page_id or "").strip()
+        for i in range(self.tabs.count()):
+            w = self.tabs.widget(i)
+            if w is not None and str(getattr(w, "_page_id", "") or "") == want:
+                self.tabs.setCurrentIndex(i)
+                return
+        if self.tabs.count():
+            self.tabs.setCurrentIndex(0)
+
+    def _enter_current(self):
+        w = self.tabs.currentWidget()
+        if w is None:
+            return
+        try:
+            w.on_enter()
+        except RuntimeError:
+            pass
+
+    def _on_tab_changed(self, _index: int):
+        self._refresh_tab_chrome()
+        if self._loading:
+            return
+        self._schedule_persist()
+        QTimer.singleShot(0, self._enter_current)
+
+    def _schedule_persist(self):
+        if self._loading:
+            return
+        cb = getattr(self, "_prefs_dirty_cb", None)
+        if callable(cb):
+            try:
+                cb()
+            except Exception:
+                log.exception("通知 user.txt 保存提示词分页失败")
+
+    def set_prefs_dirty_callback(self, cb):
+        self._prefs_dirty_cb = cb
+
+    def on_enter(self):
+        self._enter_current()
+
+    def _add_page(self):
+        n = self.tabs.count() + 1
+        suggest = f"分类{n}"
+        name, ok = QInputDialog.getText(self, "添加分页", "分页名称：", text=suggest)
+        if not ok:
+            return
+        self._add_page_named(_clean_page_title(name, suggest))
+
+    def _add_page_named(self, title: str) -> _PromptSheet:
+        title = _clean_page_title(title, f"分类{self.tabs.count() + 1}")
+        sheet = _PromptSheet()
+        sheet._page_id = _fresh_page_id(self._used_ids())
+        self._mount_sheet(sheet, title)
+        self.tabs.setCurrentWidget(sheet)
+        self._refresh_tab_chrome()
+        self._refresh_page_corner()
+        self._schedule_persist()
+        QTimer.singleShot(0, self._enter_current)
+        return sheet
+
+    def _install_tab_filter(self):
+        if self._tab_filter_on:
+            return
+        app = QApplication.instance()
+        if app is None:
+            return
+        app.installEventFilter(self)
+        self._tab_filter_on = True
+
+    def _remove_tab_filter(self):
+        if not self._tab_filter_on:
+            return
+        app = QApplication.instance()
+        if app is not None:
+            try:
+                app.removeEventFilter(self)
+            except Exception:
+                pass
+        self._tab_filter_on = False
+
+    def _begin_tab_rename(self, index: int):
+        """点一下页签名就地改名。回车或点空白处结束。"""
+        if self._loading:
+            return
+        if index < 0 or index >= self.tabs.count():
+            return
+        if self._tab_rename_index == index and not self._tab_editor.isHidden():
+            return
+        if self._tab_rename_index >= 0:
+            self._commit_tab_rename()
+        bar = self.tabs.tabBar()
+        self._tab_rename_index = index
+        self._tab_editor.setText(self.tabs.tabText(index))
+        self._tab_editor.show()
+        self._tab_editor.raise_()
+        self._place_tab_editor()
+        self._install_tab_filter()
+        self._tab_editor.setFocus()
+        self._tab_editor.setCursorPosition(len(self._tab_editor.text() or ""))
+        del bar
+
+    def _place_tab_editor(self):
+        ed = getattr(self, "_tab_editor", None)
+        idx = getattr(self, "_tab_rename_index", -1)
+        if ed is None or idx < 0:
+            return
+        bar = self.tabs.tabBar()
+        if idx < 0 or idx >= bar.count():
+            return
+        rect = bar.tabRect(idx)
+        if not rect.isValid() or rect.isEmpty():
+            return
+        # 铺满页签内部，盖住原来的标题，避免重影
+        ed.setGeometry(rect.adjusted(1, 1, -1, -1))
+
+    def _commit_tab_rename(self):
+        idx = getattr(self, "_tab_rename_index", -1)
+        if idx < 0:
+            return
+        self._tab_rename_index = -1
+        text = ""
+        ed = getattr(self, "_tab_editor", None)
+        if ed is not None:
+            text = ed.text() or ""
+            ed.hide()
+        self._remove_tab_filter()
+        if idx >= self.tabs.count():
+            return
+        title = _clean_page_title(text, "")
+        cur = self.tabs.tabText(idx)
+        if not title or title == cur:
+            return
+        self.tabs.setTabText(idx, title)
+        self.tabs.setTabToolTip(idx, "点一次切换，当前页再点一次改名")
+        self._schedule_persist()
+
+    def _cancel_tab_rename(self):
+        self._tab_rename_index = -1
+        ed = getattr(self, "_tab_editor", None)
+        if ed is not None:
+            ed.hide()
+        self._remove_tab_filter()
+
+    def eventFilter(self, obj, ev):
+        bar = self.tabs.tabBar() if getattr(self, "tabs", None) is not None else None
+        if obj is bar and ev.type() in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease) and ev.button() == Qt.LeftButton:
+            # 按下时当前页还没切走：只有点在已经打开的这一页上，才进入改名
+            if ev.type() == QEvent.MouseButtonPress:
+                idx = bar.tabAt(ev.pos())
+                self._tab_arm_index = idx
+                self._tab_arm_rename = idx >= 0 and idx == self.tabs.currentIndex()
+            elif ev.type() == QEvent.MouseButtonRelease:
+                idx = bar.tabAt(ev.pos())
+                armed = bool(getattr(self, "_tab_arm_rename", False))
+                arm_i = getattr(self, "_tab_arm_index", -2)
+                self._tab_arm_rename = False
+                if armed and idx == arm_i and idx >= 0:
+                    QTimer.singleShot(0, lambda i=idx: self._begin_tab_rename(i))
+        ed = getattr(self, "_tab_editor", None)
+        if ed is not None and obj is ed and ev.type() == QEvent.KeyPress:
+            if ev.key() == Qt.Key_Escape:
+                self._cancel_tab_rename()
+                return True
+        if (
+            getattr(self, "_tab_rename_index", -1) >= 0
+            and ed is not None
+            and not ed.isHidden()
+            and ev.type() == QEvent.MouseButtonPress
+        ):
+            inside = obj is ed
+            gp = ev.globalPos() if hasattr(ev, "globalPos") else None
+            if gp is not None and not inside:
+                inside = ed.rect().contains(ed.mapFromGlobal(gp))
+            if not inside:
+                self._commit_tab_rename()
+        return False
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._place_tab_editor()
+
+    def _on_tab_menu(self, pos):
+        bar = self.tabs.tabBar()
+        index = bar.tabAt(pos)
+        if index < 0:
+            return
+        menu = QMenu(self)
+        act_rename = menu.addAction("改名")
+        act_del = menu.addAction("删除")
+        act_del.setEnabled(self.tabs.count() > 1)
+        chosen = menu.exec_(bar.mapToGlobal(pos))
+        if chosen is act_rename:
+            self._begin_tab_rename(index)
+        elif chosen is act_del:
+            self._delete_tab_at(index)
+
+    def _delete_tab_at(self, index: int, confirm: bool = True):
+        if index < 0 or index >= self.tabs.count():
+            return
+        if self.tabs.count() <= 1:
+            return
+        if getattr(self, "_tab_rename_index", -1) == index:
+            self._cancel_tab_rename()
+        title = self.tabs.tabText(index) or "这一页"
+        if confirm and not _confirm_delete_page(self, title):
+            return
+        w = self.tabs.widget(index)
+        self.tabs.removeTab(index)
+        if w is not None:
+            try:
+                w._teardown_click_filter()
+            except Exception:
+                pass
+            w.setParent(None)
+            w.deleteLater()
+        self._refresh_tab_chrome()
+        self._refresh_page_corner()
+        self._schedule_persist()
+        QTimer.singleShot(0, self._enter_current)
+
+    def export_settings(self) -> dict:
+        pages = []
+        active = ""
+        current = self.tabs.currentIndex()
+        for i in range(self.tabs.count()):
+            sheet = self.tabs.widget(i)
+            if sheet is None or not hasattr(sheet, "export_settings"):
+                continue
+            item = sheet.export_settings()
+            pid = str(getattr(sheet, "_page_id", "") or "").strip() or _fresh_page_id(
+                {p.get("id") for p in pages}
+            )
+            sheet._page_id = pid
+            item["id"] = pid
+            item["title"] = _clean_page_title(self.tabs.tabText(i), f"分类{i + 1}")
+            # 预设不跟某一页走，统一写在外面
+            item.pop("custom_presets", None)
+            pages.append(item)
+            if i == current:
+                active = pid
+        if not pages:
+            pages = [_blank_prompt_page("p1", "默认")]
+            active = "p1"
+        if not active:
+            active = pages[0]["id"]
+        shared = {}
+        probe = self._sheets()
+        if probe:
+            probe[0]._custom_presets = self._shared_presets
+            shared = probe[0]._export_custom_presets()
+        h3 = {k: True for k in sorted(self._h3_expanded) if self._h3_expanded.get(k)}
+        return {
+            "active": active, "pages": pages, "custom_presets": shared,
+            "h3_expanded": h3,
+            "preset_mru": {
+                k: [str(v) for v in lst][:_MRU_MAX]
+                for k, lst in sorted(self._preset_mru.items()) if lst
+            },
+        }
+
+    def apply_settings(self, d: dict, char_data: dict = None):
+        data = d if isinstance(d, dict) else {}
+        pages, active, migrate_file = prompt_pages_from_store(data)
+        raw = data.get("pages")
+        has_saved_pages = (
+            isinstance(raw, list)
+            and any(isinstance(p, dict) and _prompt_dict_has_body(p) for p in raw)
+        )
+        legacy_flat = (not has_saved_pages) and _prompt_dict_has_body(data)
+        if legacy_flat:
+            log.info("提示词旧数据已收进「默认」分页")
+        use_char = bool(char_data) and (legacy_flat or migrate_file)
+        self._cancel_tab_rename()
+        self._shared_presets = _merge_preset_maps(
+            _PromptSheet._parse_custom_presets(data),
+            {},
+        )
+        for item in pages:
+            self._shared_presets = _merge_preset_maps(
+                self._shared_presets,
+                _PromptSheet._parse_custom_presets(item),
+            )
+        raw_h3 = data.get("h3_expanded")
+        self._h3_expanded.clear()
+        if isinstance(raw_h3, dict):
+            for hk, hv in raw_h3.items():
+                hk = str(hk or "").strip()
+                if hk and hv:
+                    self._h3_expanded[hk] = True
+        raw_mru = data.get("preset_mru")
+        self._preset_mru.clear()
+        if isinstance(raw_mru, dict):
+            for mk, mv in raw_mru.items():
+                mk = str(mk or "").strip()
+                if not mk or not isinstance(mv, list):
+                    continue
+                vals: List[str] = []
+                seen_v = set()
+                for v in mv:
+                    v = str(v or "").strip()
+                    if v and v not in seen_v:
+                        seen_v.add(v)
+                        vals.append(v)
+                if vals:
+                    self._preset_mru[mk] = vals[:_MRU_MAX]
+        self._loading = True
+        self.tabs.blockSignals(True)
+        try:
+            self._discard_sheets()
+            for i, item in enumerate(pages):
+                sheet = _PromptSheet()
+                sheet._page_id = item.get("id") or _fresh_page_id(self._used_ids())
+                sheet._preset_host = self
+                sheet._h3_expanded = self._h3_expanded
+                sheet._preset_mru = self._preset_mru
+                sheet.apply_settings(
+                    item,
+                    char_data if (i == 0 and use_char) else None,
+                    migrate_legacy_file=bool(migrate_file and i == 0),
+                )
+                if i == 0:
+                    self._shared_presets = _merge_preset_maps(
+                        self._shared_presets, sheet._custom_presets
+                    )
+                self._mount_sheet(sheet, item.get("title") or "默认")
+            if self.tabs.count() <= 0:
+                sheet = _PromptSheet()
+                sheet._page_id = "p1"
+                self._mount_sheet(sheet, "默认")
+            self._select_id(active)
+        finally:
+            self.tabs.blockSignals(False)
+            self._loading = False
+            self._refresh_tab_chrome()
+            self._refresh_page_corner()
+            QTimer.singleShot(0, self._enter_current)

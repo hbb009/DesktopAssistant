@@ -5,6 +5,7 @@ import shutil
 import base64
 import hashlib
 import subprocess
+import tempfile
 import threading
 import time
 import urllib.request
@@ -34,6 +35,7 @@ from styles.style_all import (
     apply_folder_path_edit,
     restyle_folder_path_edit,
     apply_medium_button,
+    apply_btn_download,
     apply_simple_record,
     make_glyph_icon,
     restyle_card_frame,
@@ -82,7 +84,7 @@ if ctypes.sizeof(LPARAM) != ctypes.sizeof(ctypes.c_void_p):
     LPARAM = ctypes.c_ssize_t
 
 WM_HOTKEY = 0x0312
-VK_CODE   = {"F3": 0x72, "F4": 0x73, "F5": 0x74, "F6": 0x75, "F7": 0x76, "F8": 0x77, "F9": 0x78, "F10": 0x79, "F12": 0x7B}
+VK_CODE   = {"F3": 0x72, "F4": 0x73, "F5": 0x74, "F6": 0x75, "F8": 0x77, "F9": 0x78, "F10": 0x79, "F12": 0x7B}
 # 缩放重启会先拉起新进程再退出旧进程；旧进程还占着热键时 RegisterHotKey 会失败。
 # 失败后按这个间隔再试几次，等旧进程放掉。
 _HK_RETRY_MS = (300, 700, 1500, 3000)
@@ -875,20 +877,44 @@ class FastRunLogList(QListWidget):
         super().mousePressEvent(event)
 
 
+def _reveal_in_explorer(path: str) -> bool:
+    """打开资源管理器：文件则选中该文件，文件夹则打开该目录。"""
+    path = os.path.normpath(path or "")
+    if not path:
+        return False
+    try:
+        if os.path.isfile(path):
+            subprocess.Popen(["explorer", "/select,", path])
+            return True
+        if os.path.isdir(path):
+            subprocess.Popen(["explorer", path])
+            return True
+        folder = os.path.dirname(path)
+        if os.path.isdir(folder):
+            subprocess.Popen(["explorer", folder])
+            return True
+    except Exception:
+        log.warning("打开文件位置失败 %s", path)
+    return False
+
+
 # ═══════════════════════════════════════════════════════════════
 # 预览标签（格式对齐「截图工具」PageScreenshot.PreviewLabel）
 # · 预览内容始终绑定「当前选中的运行记录」
 # · empty：无选中 / 解析中空记录；image：已保存图片；
 #   symbol：文件夹/文本等操作（大图标 + 名称）；text：其它文案记录
 # · 尺寸随控件 resize 重算；minimumSizeHint 钉死，避免长文字把窗口顶高
+# · 有本地路径时点击预览 → 资源管理器定位该文件
 # ═══════════════════════════════════════════════════════════════
 class FastPreviewLabel(QLabel):
     _PLACEHOLDER = "（选中左侧记录可预览）"
+    _TIP_REVEAL = "点击在文件夹中显示"
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._src = None          # QPixmap or None
         self._mode = "empty"      # empty | image | symbol | text
+        self._file_path = ""      # 可定位的本地路径（文件或文件夹）
         self.setAlignment(Qt.AlignCenter)
         # 主窗最小约 700 内容宽时预览区约 2/5，140 为可用下限，避免顶高窗口
         self.setMinimumSize(140, 140)
@@ -896,6 +922,7 @@ class FastPreviewLabel(QLabel):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self._apply_style()
         self.setText(self._PLACEHOLDER)
+        self._set_clickable(False)
 
     def minimumSizeHint(self):
         # 阻断 wordWrap 文本的 heightForWidth 向上传染（同截图预览的尺寸兜底思路）
@@ -910,32 +937,44 @@ class FastPreviewLabel(QLabel):
     def _apply_style(self):
         self.setStyleSheet(f"background:transparent; color:{tk('text_dim')};")
 
+    def _set_clickable(self, on: bool):
+        self.setCursor(Qt.PointingHandCursor if on else Qt.ArrowCursor)
+        self.setToolTip(self._TIP_REVEAL if on else "")
+
+    def _bind_path(self, path: str = ""):
+        path = (path or "").strip()
+        self._file_path = path if path and os.path.exists(path) else ""
+        self._set_clickable(bool(self._file_path))
+
     def show_empty(self, hint: str = None):
         """空记录 / 无选中：居中占位（解析中的空记录也走这里）。"""
         self._src = None
         self._mode = "empty"
+        self._bind_path("")
         self._apply_style()
         self.clear()
         self.setTextFormat(Qt.PlainText)
         self.setAlignment(Qt.AlignCenter)
         self.setText(hint if hint is not None else self._PLACEHOLDER)
 
-    def set_image(self, pixmap):
+    def set_image(self, pixmap, path=""):
         self._src = pixmap if (pixmap is not None and not pixmap.isNull()) else None
         if self._src is None:
             self.show_empty()
             return
         self._mode = "image"
+        self._bind_path(path)
         self._apply_style()
         self.clear()
         self.setTextFormat(Qt.PlainText)
         self.setAlignment(Qt.AlignCenter)
         self._rescale()
 
-    def set_symbol_preview(self, glyph: str, title: str):
+    def set_symbol_preview(self, glyph: str, title: str, path=""):
         """操作类记录预览：居中大图标 + 名称（文件夹 / 文本文件等）。"""
         self._src = None
         self._mode = "symbol"
+        self._bind_path(path)
         self._apply_style()
         self.clear()
         self.setAlignment(Qt.AlignCenter)
@@ -958,6 +997,7 @@ class FastPreviewLabel(QLabel):
         """非图片运行记录：主区域展示文字（顶左对齐，格式贴近截图预览的主区占用）。"""
         self._src = None
         self._mode = "text"
+        self._bind_path("")
         self._apply_style()
         self.clear()
         self.setTextFormat(Qt.PlainText)
@@ -970,6 +1010,18 @@ class FastPreviewLabel(QLabel):
         self.setPixmap(self._src.scaled(
             self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
 
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton and self._file_path:
+            if not _reveal_in_explorer(self._file_path):
+                show_cursor_toast(
+                    "找不到文件",
+                    os.path.basename(self._file_path) or self._file_path,
+                    accent="warn",
+                )
+            e.accept()
+            return
+        super().mouseReleaseEvent(e)
+
     def resizeEvent(self, e):
         self._rescale()
         super().resizeEvent(e)
@@ -978,6 +1030,161 @@ class FastPreviewLabel(QLabel):
 # ═══════════════════════════════════════════════════════════════
 # PageFastSave
 # ═══════════════════════════════════════════════════════════════
+def _safe_filename_part(text: str) -> str:
+    cleaned = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", text or "")
+    return cleaned.strip(" .")
+
+
+_FAST_TXT_APP = "桌面助手"
+_FAST_TXT_VER = "v9.17"
+
+
+def _hanzi_count(text: str) -> int:
+    return sum(1 for ch in text or "" if _is_hanzi(ch))
+
+
+def _is_hanzi(ch: str) -> bool:
+    code = ord(ch)
+    return 0x4E00 <= code <= 0x9FFF or 0x3400 <= code <= 0x4DBF
+
+
+def _first_hanzi(text: str, n: int = 10) -> str:
+    out = []
+    for ch in text or "":
+        if _is_hanzi(ch):
+            out.append(ch)
+            if len(out) >= n:
+                break
+    return "".join(out)
+
+
+def _content_name_part(text: str, n: int = 10) -> str:
+    """文件名第三段：内容里的前 n 个汉字。没有汉字时用前 n 个可见字符。"""
+    hanzi = _first_hanzi(text, n)
+    if hanzi:
+        return hanzi
+    out = []
+    for ch in text or "":
+        if ch.isspace() or ch in '<>:"/\\|?*':
+            continue
+        out.append(ch)
+        if len(out) >= n:
+            break
+    return "".join(out)
+
+
+def _cf_unicode_text() -> str:
+    """直接读 CF_UNICODETEXT，避免 pyperclip / Qt 把中文读丢。"""
+    try:
+        user32 = ctypes.WinDLL("user32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    except Exception:
+        return ""
+    user32.OpenClipboard.argtypes = [ctypes.c_void_p]
+    user32.OpenClipboard.restype = wintypes.BOOL
+    user32.CloseClipboard.argtypes = []
+    user32.CloseClipboard.restype = wintypes.BOOL
+    user32.IsClipboardFormatAvailable.argtypes = [wintypes.UINT]
+    user32.IsClipboardFormatAvailable.restype = wintypes.BOOL
+    user32.GetClipboardData.argtypes = [wintypes.UINT]
+    user32.GetClipboardData.restype = ctypes.c_void_p
+    kernel32.GlobalLock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [ctypes.c_void_p]
+    kernel32.GlobalUnlock.restype = wintypes.BOOL
+    opened = False
+    for _ in range(10):
+        if user32.OpenClipboard(None):
+            opened = True
+            break
+        time.sleep(0.02)
+    if not opened:
+        return ""
+    try:
+        if not user32.IsClipboardFormatAvailable(13):
+            return ""
+        handle = user32.GetClipboardData(13)
+        if not handle:
+            return ""
+        ptr = kernel32.GlobalLock(handle)
+        if not ptr:
+            return ""
+        try:
+            text = ctypes.wstring_at(ptr) or ""
+        finally:
+            kernel32.GlobalUnlock(handle)
+        return text.replace("\x00", "").replace("\r\n", "\n").replace("\r", "\n")
+    except Exception:
+        log.debug("读取 CF_UNICODETEXT 失败", exc_info=True)
+        return ""
+    finally:
+        try:
+            user32.CloseClipboard()
+        except Exception:
+            pass
+
+
+def _read_fast_clip_text() -> str:
+    """剪贴板纯文本。几种读法里优先保留汉字更多的那一份。"""
+    candidates = []
+    try:
+        candidates.append(_cf_unicode_text())
+    except Exception:
+        pass
+    try:
+        cb = QApplication.clipboard()
+        if cb is not None:
+            candidates.append(cb.text() or "")
+    except Exception:
+        pass
+    try:
+        if pyperclip is not None:
+            candidates.append(pyperclip.paste() or "")
+    except Exception:
+        log.debug("pyperclip 读取剪贴板失败", exc_info=True)
+    best = ""
+    best_hanzi = -1
+    for raw in candidates:
+        text = (raw or "").strip()
+        if not text:
+            continue
+        n = _hanzi_count(text)
+        if n > best_hanzi or (n == best_hanzi and len(text) > len(best)):
+            best = text
+            best_hanzi = n
+    return best
+
+
+def _fast_txt_stem(content: str) -> str:
+    """未选中文件时的名字：桌面助手 v9.17 前10个汉字。"""
+    parts = (
+        _FAST_TXT_APP,
+        _FAST_TXT_VER,
+        _safe_filename_part(_content_name_part(content, 10)),
+    )
+    stem = " ".join(part for part in parts if part)
+    if len(stem) > 80:
+        stem = stem[:80].rstrip(" .")
+    return stem or "未命名"
+
+
+def _unique_txt_path(folder, stem, content, already_saved):
+    """同名且内容相同返回 None；同名但内容不同则加 _2、_3。"""
+    stem = stem or "未命名"
+    path = os.path.join(folder, stem + ".txt")
+    if already_saved(path, content):
+        return None
+    if not os.path.exists(path):
+        return path
+    for n in range(2, 100):
+        nxt = os.path.join(folder, f"{stem}_{n}.txt")
+        if already_saved(nxt, content):
+            return None
+        if not os.path.exists(nxt):
+            return nxt
+    return path
+
+
 class PageFastSave(QWidget):
     STATE_IDLE    = 0
     STATE_IMGSAVE = 1
@@ -1000,6 +1207,16 @@ class PageFastSave(QWidget):
         w.setProperty("typo", name)
         w.style().unpolish(w)
         w.style().polish(w)
+
+    def _restyle_hseps(self):
+        color = tk("border")
+        qss = (
+            "QFrame#FastSaveHSep{"
+            f"background:{color};border:none;"
+            f"max-height:3px;min-height:3px;}}"
+        )
+        for sep in getattr(self, "_h_seps", []) or []:
+            sep.setStyleSheet(qss)
 
     @staticmethod
     def _set_qprop(w, name, value):
@@ -1033,7 +1250,7 @@ class PageFastSave(QWidget):
         super().resizeEvent(event)
         h = self.height()
         if h > 0:
-            top_h = max(170, int(h * 0.35))
+            top_h = max(248, int(h * 0.35))
             for _card in (self._card_img, self._card_txt, self._card_mkdir, self._card_check):
                 _card.setFixedHeight(top_h)
         # 底部：运行记录 与 预览区 各占 50% 宽，写死为固定值，
@@ -1073,6 +1290,7 @@ class PageFastSave(QWidget):
         self._theme_titles = []
         self._theme_secondary_bold = []
         self._theme_secondary_plain = []
+        self._h_seps = []
 
         # ── 速存图片 ──
         gb_img  = make_card("CardFastAuto")
@@ -1092,13 +1310,19 @@ class PageFastSave(QWidget):
         self.chk_enable_all.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         img_box.addWidget(self.chk_enable_all, 0, Qt.AlignLeft)
 
-        # 二排：状态按钮（三色胶囊：绿=已连接 / 黄=等待中 / 红=不可用）
+        # 二排：连接状态（色点 + 文字，不是按钮）
         self.btn_status = QPushButton("检测中")
+        self.btn_status.setObjectName("FastStatusLamp")
+        self.btn_status.setFlat(True)
+        self.btn_status.setDefault(False)
+        self.btn_status.setAutoDefault(False)
+        self.btn_status.setFocusPolicy(Qt.NoFocus)
         self.btn_status.setCursor(Qt.PointingHandCursor)
-        self.btn_status.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.btn_status.setToolTip("点击诊断连接")
+        self.btn_status.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         self._apply_status_btn_style("#f0a500", "检测中", bold=False)
         self.btn_status.clicked.connect(self._diagnose)
-        img_box.addWidget(self.btn_status)
+        img_box.addWidget(self.btn_status, 0, Qt.AlignLeft)
 
         # 三排：Xs前心跳
         self.lbl_heartbeat = QLabel("——")
@@ -1151,7 +1375,7 @@ class PageFastSave(QWidget):
         self.chk_manual.setVisible(False)
 
         # ── 原速存文本 ──
-        lbl_hint = QLabel("可快速创建主体同名文本文件")
+        lbl_hint = QLabel("选中文件则创建同名文本；未选中时文件名为「桌面助手 v9.17 内容前10个汉字」")
         lbl_hint.setWordWrap(True)
         lbl_hint.setStyleSheet("background: transparent;")
         self._typo(lbl_hint, "muted")
@@ -1234,7 +1458,7 @@ class PageFastSave(QWidget):
         row_mkdir_key.addWidget(lbl_seq)
         self._mkdir_hotkey_group = QButtonGroup(self)
         self._mkdir_radio = {}
-        for key in ["F7", "F8"]:
+        for key in ["F8"]:  # 顺序新建仅 F8
             rb = QRadioButton(key)
             rb.setStyleSheet("background: transparent;")
             self._mkdir_radio[key] = rb
@@ -1296,6 +1520,12 @@ class PageFastSave(QWidget):
         title_check = install_card_title(gb_check, check_box, "序列文件检查")
         self._theme_titles.append(title_check)
 
+        lbl_check_hint = QLabel("指定文件夹，检查编号是否连续。")
+        lbl_check_hint.setWordWrap(True)
+        lbl_check_hint.setStyleSheet("background:transparent;")
+        self._typo(lbl_check_hint, "muted")
+        check_box.addWidget(lbl_check_hint)
+
         self.check_path = QLineEdit()
         self.check_path.setVisible(False)
 
@@ -1320,31 +1550,73 @@ class PageFastSave(QWidget):
         check_box.addLayout(row_check_opts)
         check_box.addSpacing(6)
 
-        btn_check_browse = apply_medium_button(QPushButton("指定文件夹"))
-        btn_check_browse.setCursor(Qt.PointingHandCursor)
-        btn_check_browse.clicked.connect(self._check_browse_folder)
-        check_box.addWidget(btn_check_browse)
+        self._check_folder = ""
+        self._dup_worker = None
+        self._dup_dialog = None
+
+        self.btn_check_browse = QPushButton("指定文件夹")
+        apply_btn_download(self.btn_check_browse)
+        self.btn_check_browse.setCursor(Qt.PointingHandCursor)
+        self.btn_check_browse.clicked.connect(self._check_browse_folder)
+        check_box.addWidget(self.btn_check_browse)
 
         self.lbl_check_result = QLabel("")
         self.lbl_check_result.setWordWrap(True)
         self.lbl_check_result.setStyleSheet("background:transparent; font-size:13px; color:#94a3b8; padding-top:4px;")
+        self.lbl_check_result.setVisible(False)
         check_box.addWidget(self.lbl_check_result)
+
+        check_box.addSpacing(8)
+        sep_dup = QFrame()
+        sep_dup.setObjectName("FastSaveHSep")
+        sep_dup.setFrameShape(QFrame.NoFrame)
+        sep_dup.setFixedHeight(3)
+        sep_dup.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        sep_dup.setAttribute(Qt.WA_StyledBackground, True)
+        self._h_seps.append(sep_dup)
+        self._restyle_hseps()
+        check_box.addWidget(sep_dup)
+        check_box.addSpacing(6)
+        lbl_dup_title = QLabel("检查同名文件")
+        lbl_dup_title.setProperty("role", "card-title")
+        restyle_card_title(lbl_dup_title)
+        self._theme_titles.append(lbl_dup_title)
+        check_box.addWidget(lbl_dup_title)
+        self.lbl_dup_hint = QLabel(self._dup_idle_hint())
+        self.lbl_dup_hint.setWordWrap(True)
+        self.lbl_dup_hint.setStyleSheet("background:transparent;")
+        self._typo(self.lbl_dup_hint, "muted")
+        check_box.addWidget(self.lbl_dup_hint)
+        check_box.addSpacing(4)
+        from pages.page_dup_clean import ExtFilterBar
+        self.dup_ext_bar = ExtFilterBar()
+        self.dup_ext_bar.changed.connect(self._dup_exts_changed)
+        check_box.addWidget(self.dup_ext_bar)
+        check_box.addSpacing(4)
+        self.btn_dup_clean = QPushButton("去除同名")
+        apply_btn_download(self.btn_dup_clean)
+        self.btn_dup_clean.setCursor(Qt.PointingHandCursor)
+        self.btn_dup_clean.setToolTip(self._dup_clean_tooltip())
+        self.btn_dup_clean.clicked.connect(self._dup_clean_click)
+        check_box.addWidget(self.btn_dup_clean)
+
         check_box.addStretch(1)
 
-        # 四卡宽度：图片 / 文本 / 速建 / 序列文件检查 = 8% / 30% / 19% / 15%
-        # 四卡等高由 resizeEvent 控制：最小 170px，高度占比 35%
+        # 四卡宽度 stretch：图片 / 文本 / 速建 / 序列文件检查 = 8 / 15 / 19 / 30
+        # （文本由 30 减半，序列检查由 15 加倍；合计 72 不变）
+        # 四卡等高由 resizeEvent 控制：最小 248px（含扩展名卡），高度占比 35%
         self._card_img = gb_img
         self._card_txt = gb_txt
         self._card_mkdir = gb_mkdir
         self._card_check = gb_check
         for _card in (gb_img, gb_txt, gb_mkdir, gb_check):
             _card.setMinimumWidth(0)
-            _card.setMinimumHeight(170)
+            _card.setMinimumHeight(248)
             _card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         row_top.addWidget(gb_img, 8)
-        row_top.addWidget(gb_txt, 30)
+        row_top.addWidget(gb_txt, 15)
         row_top.addWidget(gb_mkdir, 19)
-        row_top.addWidget(gb_check, 15)
+        row_top.addWidget(gb_check, 30)
 
         # ══════════ 底部：运行记录（大，占主要空间） + 预览区（右侧，选中左侧记录可预览） ══════════
         row_bottom = QHBoxLayout()
@@ -1455,7 +1727,7 @@ class PageFastSave(QWidget):
         self._sc_manual.activated.connect(self.manual_fast_save)
         self._sc_manual.setEnabled(False)
 
-        # 速建文件夹热键（顺序新建，F7-F8 可选）
+        # 速建文件夹热键（顺序新建固定 F8）
         self._mkdir_hotkey_id     = 0x1003
         self._mkdir_hotkey_filter = None
         self._mkdir_hotkey_registered = False
@@ -1539,6 +1811,11 @@ class PageFastSave(QWidget):
                 getattr(self, "chk_check_fill", None) is not None
                 and self.chk_check_fill.isChecked()
             ),
+            "dup_exts": list(
+                self.dup_ext_bar.exts()
+                if getattr(self, "dup_ext_bar", None) is not None
+                else []
+            ),
         }
 
     def apply_settings(self, d: dict):
@@ -1562,6 +1839,8 @@ class PageFastSave(QWidget):
                 self._sc_manual.setKey(QKeySequence(txt_key))
 
         mkdir_key = str(d.get("mkdir_hotkey") or "").upper()
+        if mkdir_key == "F7":
+            mkdir_key = "F8"  # 旧配置 F7 迁移为 F8
         if mkdir_key in getattr(self, "_mkdir_radio", {}):
             self._mkdir_radio[mkdir_key].setChecked(True)
 
@@ -1583,6 +1862,11 @@ class PageFastSave(QWidget):
         check_fill = d.get("check_fill")
         if check_fill is not None and hasattr(self, "chk_check_fill"):
             self.chk_check_fill.setChecked(bool(check_fill))
+
+        if hasattr(self, "dup_ext_bar") and "dup_exts" in d:
+            raw = d.get("dup_exts")
+            self.dup_ext_bar.set_exts(raw if isinstance(raw, list) else [])
+            self._dup_refresh_idle_hint()
 
         # 总开关最后应用（联动子功能与热键；quiet 避免运行记录被状态行刷屏）
         # 注：总览保存 / 反复 apply 时若再写「已启用」，同一会话会出现成套重复条目
@@ -1633,6 +1917,10 @@ class PageFastSave(QWidget):
                 self._restyle_record_btn("recording" if self._recording else "idle")
         if hasattr(self, "_record_grid_layout"):
             self._refresh_record_cards()
+        bar = getattr(self, "dup_ext_bar", None)
+        if bar is not None:
+            bar.refresh_theme()
+        self._restyle_hseps()
 
     _IMG_LOG_RE = re.compile(
         r"已保存图片[：:]\s*(.+?\.(?:jpg|jpeg|png|gif|bmp|webp|avif|tiff?|ico))",
@@ -1820,7 +2108,7 @@ class PageFastSave(QWidget):
             if full_path:
                 pix = QPixmap(full_path)
                 if not pix.isNull():
-                    self.preview.set_image(pix)
+                    self.preview.set_image(pix, full_path)
                     self._set_image_preview_meta(full_path, pix)
                     return
             # 图片路径失效：仍显示记录文案，不沿用其它记录的图
@@ -1832,7 +2120,7 @@ class PageFastSave(QWidget):
 
         if kind == "folder":
             path, name = self._resolve_runlog_folder(current)
-            self.preview.set_symbol_preview("📁", name or "文件夹")
+            self.preview.set_symbol_preview("📁", name or "文件夹", path)
             if path:
                 self.lbl_preview_meta.setText(path)
                 self.lbl_preview_meta.setToolTip(path)
@@ -1845,7 +2133,7 @@ class PageFastSave(QWidget):
 
         if kind == "textfile":
             path, name = self._resolve_runlog_textfile(current)
-            self.preview.set_symbol_preview("📄", name or "文本")
+            self.preview.set_symbol_preview("📄", name or "文本", path)
             if path:
                 self.lbl_preview_meta.setText(path)
                 self.lbl_preview_meta.setToolTip(path)
@@ -1971,15 +2259,17 @@ class PageFastSave(QWidget):
             pass
 
     def _apply_status_btn_style(self, color: str, text: str, bold: bool = False):
-        """给状态按钮刷色（参考「关于」弹窗中 Cookie 已加载的胶囊按钮）。"""
+        """连接状态：色点 + 彩色文字，透明底，不做成胶囊按钮。"""
         weight = "600" if bold else "400"
-        self.btn_status.setText(text)
+        self.btn_status.setText("●  " + (text or ""))
         self.btn_status.setStyleSheet(
-            f"QPushButton{{background:{color}; color:#ffffff;"
-            f"border:1px solid {color}; border-radius:6px;"
-            f"padding:2px 10px; font-weight:{weight}; font-size:12px;"
-            f"min-height:22px; max-height:22px;}}"
-            f"QPushButton:hover{{opacity:0.9;}}"
+            f"QPushButton#FastStatusLamp{{background:transparent; color:{color};"
+            f"border:none; border-radius:0; padding:0; margin:0;"
+            f"font-weight:{weight}; font-size:13px; text-align:left;}}"
+            f"QPushButton#FastStatusLamp:hover,"
+            f"QPushButton#FastStatusLamp:pressed,"
+            f"QPushButton#FastStatusLamp:focus{{"
+            f"background:transparent; border:none; color:{color};}}"
         )
 
     def _apply_plugin_ui(self, color: str, chrome_status: str, heartbeat: str, bold: bool):
@@ -2314,6 +2604,19 @@ class PageFastSave(QWidget):
         finally:
             self._hotkey_registered_key = None
 
+
+    def _paste_box_text(self) -> str:
+        """粘贴助手内容框。剪贴板纯文本没有汉字时，用这里正在显示的正文。"""
+        win = self.window()
+        page = getattr(win, "page_paste", None)
+        edit = getattr(page, "inp_content", None)
+        if edit is None:
+            return ""
+        try:
+            return (edit.toPlainText() or "").strip()
+        except Exception:
+            return ""
+
     def manual_fast_save(self):
         if not self.chk_manual.isChecked():
             self.list_widget.addItem("⚠️ 请先启用速存文本")
@@ -2322,82 +2625,96 @@ class PageFastSave(QWidget):
             self.list_widget.addItem("❌ 手动功能不可用：缺少 pywin32/pyperclip")
             return
         try:
-            # ── 第一步：只取"前台激活"的资源管理器窗口 ──────────────
             fg_hwnd = win32gui.GetForegroundWindow()
             if not fg_hwnd:
                 self.list_widget.addItem("⚠️ 无法获取前台窗口，请先点击资源管理器再按快捷键")
                 return
 
+            clip_text = _read_fast_clip_text()
+
             doc, n_tabs = self._resolve_active_view(fg_hwnd, prefer_selected=True)
+            selected_file = ""
+            dest_dir = ""
+            if doc is not None:
+                try:
+                    sel = doc.SelectedItems()
+                    count = int(sel.Count)
+                except Exception:
+                    self.list_widget.addItem("❌ 无法读取选中项")
+                    return
+                if count > 1:
+                    self.list_widget.addItem(
+                        f"⚠️ 选中了 {count} 个项目，每次只能对 1 个文件操作，请重新选择"
+                    )
+                    return
+                if count == 1:
+                    item = sel.Item(0)
+                    target_path = item.Path
+                    if os.path.isdir(target_path):
+                        self.list_widget.addItem(
+                            f"⚠️ 选中的是文件夹，不支持对文件夹操作：{os.path.basename(target_path)}"
+                        )
+                        return
+                    selected_file = target_path
+                else:
+                    dest_dir = self._view_path(doc)
+            if not selected_file and not dest_dir:
+                dest_dir = (self.save_path.text() or "").strip()
 
-            if doc is None and n_tabs == 0:
-                self.list_widget.addItem("⚠️ 前台窗口不是资源管理器，请先切换到资源管理器再按快捷键")
-                return
-            if doc is None:
+            if selected_file:
                 self.list_widget.addItem(
-                    f"⚠️ 未选中任何文件，请先选中一个文件再按快捷键（检测到 {n_tabs} 个标签）"
+                    f"📋 剪贴板{'有内容' if clip_text else '无内容（将写入空文件）'}"
                 )
+                txt_path = os.path.splitext(selected_file)[0] + ".txt"
+                self._write_fast_txt(txt_path, clip_text)
                 return
 
-            # ── 第二步：获取选中项，限制为"恰好 1 个文件" ────────────
-            try:
-                sel = doc.SelectedItems()
-                count = sel.Count
-            except Exception:
-                self.list_widget.addItem("❌ 无法读取选中项")
-                return
-
-            if count == 0:
-                self.list_widget.addItem("⚠️ 未选中任何文件，请先选中一个文件再按快捷键")
-                return
-            if count > 1:
-                self.list_widget.addItem(f"⚠️ 选中了 {count} 个项目，每次只能对 1 个文件操作，请重新选择")
-                return
-
-            item = sel.Item(0)
-            target_path = item.Path
-
-            # 排除文件夹
-            if os.path.isdir(target_path):
-                self.list_widget.addItem(f"⚠️ 选中的是文件夹，不支持对文件夹操作：{os.path.basename(target_path)}")
-                return
-
-            # ── 第三步：读取剪贴板 ───────────────────────────────────
-            clip_text = ""
-            try:
-                clip_text = pyperclip.paste().strip()
-            except Exception:
-                log.debug("读取剪贴板失败", exc_info=True)
-
-            self.list_widget.addItem(
-                f"📋 剪贴板{'有内容' if clip_text else '无内容（将写入空文件）'}"
-            )
-
-            # ── 第四步：写入同名 .txt ────────────────────────────────
-            txt_path = os.path.splitext(target_path)[0] + ".txt"
-            # 防重复：目标文件已存在且内容与剪贴板完全一致 → 视为误触发重复，直接忽略
-            if self._txt_already_saved(txt_path, clip_text):
-                self.list_widget.addItem(
-                    f"⏭️ 已忽略重复记录：{os.path.basename(txt_path)} 内容与已保存相同"
-                )
+            if not _hanzi_count(clip_text):
+                box = self._paste_box_text()
+                if _hanzi_count(box):
+                    clip_text = box
+            if not clip_text:
+                self.list_widget.addItem("⚠️ 剪贴板没有文本，无法创建文件")
                 self.list_widget.scrollToBottom()
                 return
-            try:
-                with open(txt_path, "w", encoding="utf-8") as fp:
-                    fp.write(clip_text)
-                self._push_record(
-                    f"✅ 速存文本成功：{os.path.basename(txt_path)}",
-                    select=True,
-                    filepath=txt_path,
-                )
-            except Exception as e:
-                log.exception("速存文本写入失败 path=%s", txt_path)
-                self.list_widget.addItem(f"❌ 写入失败：{txt_path}（{e}）")
-
-            self.list_widget.scrollToBottom()
+            ok_dir, dest_dir, err = self._ensure_writable_dir(dest_dir, create=True)
+            if not ok_dir:
+                where = "当前文件夹" if n_tabs else "保存目录"
+                self.list_widget.addItem(f"⚠️ {where}不可写：{dest_dir or '（空）'}（{err}）")
+                self.list_widget.scrollToBottom()
+                return
+            stem = _fast_txt_stem(clip_text)
+            txt_path = _unique_txt_path(dest_dir, stem, clip_text, self._txt_already_saved)
+            if txt_path is None:
+                base = stem + ".txt"
+                self.list_widget.addItem(f"⏭️ 已忽略重复记录：{base} 内容与已保存相同")
+                self.list_widget.scrollToBottom()
+                return
+            self.list_widget.addItem(f"📋 未选中文件，按程序名创建：{os.path.basename(txt_path)}")
+            self._write_fast_txt(txt_path, clip_text)
         except Exception as e:
             log.exception("速存文本失败")
             self.list_widget.addItem(f"❌ 速存文本错误：{e}")
+
+    def _write_fast_txt(self, txt_path: str, clip_text: str):
+        if self._txt_already_saved(txt_path, clip_text):
+            self.list_widget.addItem(
+                f"⏭️ 已忽略重复记录：{os.path.basename(txt_path)} 内容与已保存相同"
+            )
+            self.list_widget.scrollToBottom()
+            return
+        try:
+            with open(txt_path, "w", encoding="utf-8") as fp:
+                fp.write(clip_text)
+            self._push_record(
+                f"✅ 速存文本成功：{os.path.basename(txt_path)}",
+                select=True,
+                filepath=txt_path,
+            )
+        except Exception as e:
+            log.exception("速存文本写入失败 path=%s", txt_path)
+            self.list_widget.addItem(f"❌ 写入失败：{txt_path}（{e}）")
+        self.list_widget.scrollToBottom()
 
     def _txt_already_saved(self, txt_path: str, content: str) -> bool:
         """目标 .txt 已存在且内容与当前内容完全一致 → 视为重复记录。"""
@@ -2521,27 +2838,53 @@ class PageFastSave(QWidget):
         self.save_path.setText(path)
 
     def _resolve_default_dir(self) -> str:
+        """速存默认保存目录。
+
+        只考虑标准位置，绝不在用户主目录根部或当前工作目录下建文件夹：
+        早期版本把 ~/WebImageSaver 和 os.getcwd()/WebImageSaver 也当候选，
+        从家目录命令行启动时会把 C:\\Users\\<你> 当数据落点，
+        看起来像是程序往家目录里写东西。
+        """
         candidates = []
         pic = QStandardPaths.writableLocation(QStandardPaths.PicturesLocation)
-        if pic: candidates.append(os.path.join(pic, "WebImageSaver"))
-        home = os.path.expanduser("~") or ""
-        if home: candidates.append(os.path.join(home, "WebImageSaver"))
-        candidates.append(os.path.join(os.getcwd(), "WebImageSaver"))
+        if pic:
+            candidates.append(os.path.join(pic, "WebImageSaver"))
+        try:
+            from utils.app_paths import this_machine_downloads_dir
+            dl = (this_machine_downloads_dir() or "").strip()
+            if dl:
+                candidates.append(os.path.join(dl, "WebImageSaver"))
+        except Exception:
+            pass
         for p in candidates:
             ok, norm, _ = self._ensure_writable_dir(p, create=True)
-            if ok: return norm
+            if ok:
+                return norm
         folder = QFileDialog.getExistingDirectory(self, "选择保存文件夹")
         if folder:
             ok, norm, _ = self._ensure_writable_dir(folder, create=True)
-            if ok: return norm
-        fallback = os.path.join(home or os.getcwd(), "WebImageSaver")
+            if ok:
+                return norm
+        # 都不行：退到程序自己的 data/，不碰主目录和 CWD
+        try:
+            from utils.app_paths import data_dir
+            fallback = os.path.join(data_dir(), "WebImageSaver")
+        except Exception:
+            fallback = os.path.join(tempfile.gettempdir(), "DesktopAssistant_WebImageSaver")
         os.makedirs(fallback, exist_ok=True)
         return os.path.abspath(fallback)
 
     def _ensure_writable_dir(self, path, create=True):
         try:
             if not path: return False, "", "空路径"
-            if create: os.makedirs(path, exist_ok=True)
+            if create:
+                try:
+                    from utils.app_paths import is_other_user_profile_path
+                    if is_other_user_profile_path(path):
+                        return False, path, "其他用户目录"
+                except Exception:
+                    pass
+                os.makedirs(path, exist_ok=True)
             tf = os.path.join(path, "__w_test__.tmp")
             with open(tf, "w") as f: f.write("ok")
             os.remove(tf)
@@ -2670,7 +3013,7 @@ class PageFastSave(QWidget):
             n += 1
 
     def _current_mkdir_key(self) -> str:
-        """当前顺序新建所选热键（F5-F8），默认 F8。"""
+        """当前顺序新建所选热键（仅 F8）。"""
         for key, rb in self._mkdir_radio.items():
             if rb.isChecked():
                 return key
@@ -3419,7 +3762,7 @@ class PageFastSave(QWidget):
     def _resolve_record_path(self) -> str:
         """返回记录文件路径：每次调用都新建一个文件。
         勾选「新建随机记录名」→ 随机中文名；不勾选 → 当天顺序编号。
-        平铺在 data/ 根，文件带 card_ 前缀（如 card_记录文件_MMDD_NN.txt）。"""
+        平铺在 records/ 根，文件带 card_ 前缀（如 card_记录文件_MMDD_NN.txt）。"""
         try:
             from utils.app_paths import cards_dir
             rec_dir = cards_dir()
@@ -3464,6 +3807,120 @@ class PageFastSave(QWidget):
         """启动时刷新记录卡片网格。"""
         self._refresh_record_cards()
 
+    def _iter_record_card_paths(self, exclude: str = ""):
+        """列出 data/ 下全部记录卡路径（card_*.txt），可排除当前文件。"""
+        try:
+            from utils.app_paths import cards_dir
+            rec_dir = cards_dir()
+        except Exception:
+            rec_dir = os.path.normpath(
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
+            )
+        ex = os.path.normcase(os.path.abspath(exclude)) if exclude else ""
+        out = []
+        try:
+            names = sorted(
+                (f for f in os.listdir(rec_dir)
+                 if self._is_record_card_file(f, rec_dir)),
+                key=lambda f: os.path.getctime(os.path.join(rec_dir, f)),
+            )
+        except Exception:
+            return out
+        for fname in names:
+            fpath = os.path.join(rec_dir, fname)
+            if ex and os.path.normcase(os.path.abspath(fpath)) == ex:
+                continue
+            out.append(fpath)
+        return out
+
+    @staticmethod
+    def _record_card_display_name(fpath: str) -> str:
+        fname = os.path.basename(fpath or "")
+        plain = fname[len("card_"):] if fname.startswith("card_") else fname
+        return re.sub(r"\.txt$", "", plain, flags=re.I) or fname
+
+    def _merge_record_file_into(self, target_path: str, source_path: str) -> int:
+        """把源记录卡中的记录行移动到目标文件末尾；源记录为 0 则删除源文件。
+        返回移动条数。"""
+        target_path = (target_path or "").strip()
+        source_path = (source_path or "").strip()
+        if not target_path or not source_path:
+            return 0
+        if os.path.normcase(os.path.abspath(target_path)) == os.path.normcase(
+            os.path.abspath(source_path)
+        ):
+            return 0
+        if not os.path.isfile(source_path):
+            return 0
+
+        try:
+            with open(source_path, "r", encoding="utf-8-sig") as f:
+                raw_lines = f.readlines()
+        except Exception:
+            log.exception("并入：读取源文件失败 path=%s", source_path)
+            raise
+
+        move_lines = []
+        keep_lines = []
+        for raw in raw_lines:
+            line = self._normalize_record_line(raw)
+            if line and not line.startswith("#"):
+                # 保留原文行尾风格：去掉换行后写回统一 \n
+                move_lines.append(raw.rstrip("\r\n"))
+            else:
+                keep_lines.append(raw)
+
+        if not move_lines:
+            # 无可并入记录；若源已无记录行则按规则删掉空卡
+            if not any(
+                self._normalize_record_line(x) and not self._normalize_record_line(x).startswith("#")
+                for x in raw_lines
+            ):
+                try:
+                    os.remove(source_path)
+                except Exception:
+                    pass
+            return 0
+
+        # 追加到目标末尾
+        try:
+            need_nl = False
+            if os.path.isfile(target_path) and os.path.getsize(target_path) > 0:
+                with open(target_path, "rb") as bf:
+                    bf.seek(-1, os.SEEK_END)
+                    need_nl = bf.read(1) not in (b"\n", b"\r")
+            with open(target_path, "a", encoding="utf-8") as f:
+                if need_nl:
+                    f.write("\n")
+                for ln in move_lines:
+                    f.write(ln + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+        except Exception:
+            log.exception("并入：写入目标失败 path=%s", target_path)
+            raise
+
+        # 源文件：无剩余记录行则删除，否则写回非记录残留
+        still_records = [
+            x for x in keep_lines
+            if self._normalize_record_line(x) and not self._normalize_record_line(x).startswith("#")
+        ]
+        try:
+            if still_records:
+                tmp = source_path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    f.writelines(keep_lines)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, source_path)
+            else:
+                os.remove(source_path)
+        except Exception:
+            log.exception("并入：更新/删除源文件失败 path=%s", source_path)
+            raise
+
+        return len(move_lines)
+
     def _record_card_clicked(self, filepath: str):
         """点击记录卡片弹出弹窗：预览内容 + 继续记录 / 批处理 / 删除。"""
         if getattr(self, "_record_cards_frozen", False):
@@ -3472,7 +3929,7 @@ class PageFastSave(QWidget):
             return
         fname = os.path.basename(filepath)
         name_no_ext = re.sub(r'\.txt$', '', fname)
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QTextEdit
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QTextEdit, QMenu, QMessageBox
         dlg = QDialog(self)
         dlg.setWindowTitle("记录文件")
         dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowContextHelpButtonHint)
@@ -3551,6 +4008,87 @@ class PageFastSave(QWidget):
 
         btn_delete.clicked.connect(_delete_with_confirm)
         btn_row.addWidget(btn_delete)
+
+        btn_merge = _make_btn("并入")
+        btn_merge.setToolTip("把其它记录文件中的记录移动到本文件末尾")
+
+        def _do_merge_menu():
+            # 先把编辑区写回，避免未保存内容被覆盖
+            _do_save(filepath, preview.toPlainText())
+            candidates = []
+            for fp in self._iter_record_card_paths(exclude=filepath):
+                # 正在记录写入的源文件不参与并入
+                if getattr(self, "_recording", False) and getattr(self, "_record_file", None):
+                    try:
+                        if os.path.normcase(os.path.abspath(fp)) == os.path.normcase(
+                            os.path.abspath(self._record_file)
+                        ):
+                            continue
+                    except Exception:
+                        pass
+                n = len(self._load_record_seen(fp))
+                if n <= 0:
+                    continue
+                candidates.append((fp, n))
+            if not candidates:
+                message_box_info(dlg, "并入", "没有可并入的其它记录文件。")
+                return
+            menu = QMenu(dlg)
+            menu.setStyleSheet(
+                f"QMenu{{background:{tk('panel')};color:{tk('text')};"
+                f"border:1px solid {tk('border')};}}"
+                f"QMenu::item:selected{{background:{tk('sel_bg')};}}"
+            )
+            for fp, n in candidates:
+                label = f"{self._record_card_display_name(fp)}（{n}）"
+                act = menu.addAction(label)
+                act.setData(fp)
+            pos = btn_merge.mapToGlobal(btn_merge.rect().bottomLeft())
+            chosen = menu.exec_(pos)
+            if chosen is None:
+                return
+            src = chosen.data()
+            if not src:
+                return
+            src_name = self._record_card_display_name(src)
+            n = len(self._load_record_seen(src))
+            reply = QMessageBox.question(
+                dlg, "确认并入",
+                f"把「{src_name}」的 {n} 条记录移动到本文件末尾？\n"
+                f"并入后该文件若已无记录将被删除。",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+            try:
+                moved = self._merge_record_file_into(filepath, src)
+            except Exception as e:
+                message_box_warn(dlg, "并入失败", str(e))
+                return
+            # 刷新预览与卡片
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    preview.setPlainText(f.read())
+            except Exception:
+                pass
+            self._refresh_record_cards()
+            # 若正在往本文件记录，重建防重复集合
+            if getattr(self, "_recording", False) and getattr(self, "_record_file", None):
+                try:
+                    if os.path.normcase(os.path.abspath(self._record_file)) == os.path.normcase(
+                        os.path.abspath(filepath)
+                    ):
+                        self._record_seen = self._load_record_seen(filepath)
+                        self._record_base_count = len(self._record_seen)
+                except Exception:
+                    pass
+            self.list_widget.addItem(
+                f"已并入 {moved} 条 ← {src_name}"
+            )
+            self.list_widget.scrollToBottom()
+
+        btn_merge.clicked.connect(_do_merge_menu)
+        btn_row.addWidget(btn_merge)
 
         btn_row.addStretch(1)
 
@@ -3652,7 +4190,10 @@ class PageFastSave(QWidget):
             try:
                 idx = mw.stack.indexOf(pv)
                 if idx >= 0:
-                    mw._switch(idx, mw.btn_douyin)
+                    if hasattr(mw, "_auto_switch"):
+                        mw._auto_switch(idx, mw.btn_douyin)
+                    else:
+                        mw._switch(idx, mw.btn_douyin)
             except Exception:
                 pass
         if not pv.start_batch_from_file(filepath):
@@ -3736,9 +4277,9 @@ class PageFastSave(QWidget):
 
     @staticmethod
     def _is_record_card_file(fname: str, rec_dir: str) -> bool:
-        """平铺后 data/ 根是否应显示为记录卡：只认 card_*.txt。
+        """平铺后 records/ 根是否应显示为记录卡：只认 card_*.txt。
 
-        data/ 根里还有 user.txt、points_calc.txt 等无关 .txt，必须靠
+        records/ 根里还有 points_calc.txt 等非卡片 .txt，必须靠
         card_ 前缀过滤，不能像以前那样“目录里的任意 .txt 都算”。
         排除：隐藏文件、非普通文件、保存中的 .tmp 残留命名。
         """
@@ -3762,7 +4303,7 @@ class PageFastSave(QWidget):
             return False
 
     def _refresh_record_cards(self):
-        """扫描 data/ 根（card_*.txt），为每个记录文件生成方形卡片。
+        """扫描 records/ 根（card_*.txt），为每个记录文件生成方形卡片。
 
         兼容程序生成名（card_记录文件_MMDD_xx / card_随机中文名）。
         """
@@ -3949,6 +4490,22 @@ class PageFastSave(QWidget):
             stop_ws_server()
         except Exception:
             _ws_log.exception("停止 WS 服务失败")
+        try:
+            w = getattr(self, "_dup_worker", None)
+            if w is not None:
+                w.stop()
+            from utils.qthread_util import stop_qthread
+            stop_qthread(w, name="dup_clean_scan")
+        except Exception:
+            pass
+        dlg = getattr(self, "_dup_dialog", None)
+        if dlg is not None:
+            try:
+                dlg.shutdown()
+                dlg.close()
+            except Exception:
+                pass
+            self._dup_dialog = None
 
     def shutdown(self):
         """与 stop_background_checks 同义，供主窗口统一收口。"""
@@ -4006,12 +4563,116 @@ class PageFastSave(QWidget):
                 extra += f"<br><span style='color:#94a3b8;'>{d}</span>"
         try:
             cur = self.lbl_check_result.text() or ""
-            # 去掉旧的补全结果行，避免叠加
-            self.lbl_check_result.setText(cur + extra)
-            self.lbl_check_result.setTextFormat(Qt.RichText)
+            self._set_check_result(cur + extra, rich=True)
         except Exception:
             pass
         # 进度气泡已由 e-hentai 补全流程关闭；此处不再弹独立小气泡，避免叠两层
+
+    def _dup_ext_list(self) -> list:
+        bar = getattr(self, "dup_ext_bar", None)
+        if bar is None:
+            return []
+        try:
+            return list(bar.exts())
+        except Exception:
+            return []
+
+    def _dup_clean_tooltip(self) -> str:
+        exts = self._dup_ext_list()
+        base = (
+            "扫描指定目录下文件与文件夹。\n"
+            "文件名相同且字节大小相同的，只保留修改日期最新的一份，较早版本移入回收站。"
+        )
+        if not exts:
+            return "无扩展名卡片时处理全部类型。\n" + base
+        shown = "、".join("." + e for e in exts[:8])
+        if len(exts) > 8:
+            shown += f" 等 {len(exts)} 种"
+        return f"仅处理 {shown}。\n" + base
+
+    def _dup_idle_hint(self) -> str:
+        exts = self._dup_ext_list()
+        if not exts:
+            return "同名同大小，只留最新"
+        shown = "、".join("." + e for e in exts[:6])
+        if len(exts) > 6:
+            shown += f" 等{len(exts)}种"
+        return f"仅 {shown}"
+
+    def _dup_refresh_idle_hint(self):
+        if getattr(self, "lbl_dup_hint", None) is None:
+            return
+        self.lbl_dup_hint.setText(self._dup_idle_hint())
+        if getattr(self, "btn_dup_clean", None) is not None:
+            self.btn_dup_clean.setToolTip(self._dup_clean_tooltip())
+
+    def _dup_exts_changed(self):
+        self._dup_refresh_idle_hint()
+
+    def _dup_clean_click(self):
+        """序列检查区「去除同名」：统计目录并弹出可清除较早版本的报告。"""
+        w = getattr(self, "_dup_worker", None)
+        if w is not None and w.isRunning():
+            try:
+                w.stop()
+            except Exception:
+                pass
+            self.btn_dup_clean.setEnabled(False)
+            self.btn_dup_clean.setText("正在取消…")
+            return
+
+        path = QFileDialog.getExistingDirectory(self, "选择要统计的目录", "")
+        if not path:
+            return
+        self._dup_start_scan(os.path.normpath(path))
+
+    def _dup_start_scan(self, root: str):
+        from pages.page_dup_clean import _ScanWorker
+        from utils.qthread_util import stop_qthread
+
+        stop_qthread(getattr(self, "_dup_worker", None), name="dup_clean_scan")
+        self._dup_worker = _ScanWorker(root, self, ext_filter=self._dup_ext_list())
+        self._dup_worker.progress.connect(self._dup_on_progress)
+        self._dup_worker.done.connect(self._dup_on_done)
+        self.btn_dup_clean.setEnabled(True)
+        self.btn_dup_clean.setText("取消扫描")
+        if getattr(self, "btn_check_browse", None) is not None:
+            self.btn_check_browse.setEnabled(False)
+        self.lbl_dup_hint.setText(f"正在扫描：{root}")
+        self._dup_worker.start()
+
+    def _dup_on_progress(self, files: int, folders: int, current: str):
+        self.lbl_dup_hint.setText(
+            f"已扫描 {files} 个文件，{folders} 个文件夹"
+        )
+
+    def _dup_on_done(self, result):
+        from pages.page_dup_clean import _ReportDialog, _fmt_size
+
+        self.btn_dup_clean.setEnabled(True)
+        self.btn_dup_clean.setText("去除同名")
+        apply_btn_download(self.btn_dup_clean)
+        self.btn_dup_clean.setCursor(Qt.PointingHandCursor)
+        if getattr(self, "btn_check_browse", None) is not None:
+            self.btn_check_browse.setEnabled(True)
+        self._dup_refresh_idle_hint()
+        if result is None:
+            message_box_warn(self, "去除同名", "扫描失败。")
+            return
+        if getattr(result, "cancelled", False):
+            return
+        try:
+            self.lbl_dup_hint.setText(
+                f"文件夹 {result.folder_count} · 文件 {result.file_count} · "
+                f"总大小 {_fmt_size(result.total_size)}"
+            )
+        except Exception:
+            pass
+        dlg = _ReportDialog(self.window() or self, result)
+        self._dup_dialog = dlg
+        dlg.exec_()
+        self._dup_dialog = None
+        self._dup_refresh_idle_hint()
 
     def _check_browse_folder(self):
         path = QFileDialog.getExistingDirectory(self, "选择要检查的文件夹")
@@ -4133,23 +4794,33 @@ class PageFastSave(QWidget):
         timer.stop()
         return bool(ok)
 
+    def _set_check_result(self, text: str, rich: bool = False):
+        lab = getattr(self, "lbl_check_result", None)
+        if lab is None:
+            return
+        t = text or ""
+        lab.setText(t)
+        if rich:
+            lab.setTextFormat(Qt.RichText)
+        lab.setVisible(bool(t.strip()))
+
     def _check_scan(self):
         """扫描编号序列缺失。返回 dict 或 None（失败/无序列）。"""
         folder = getattr(self, "_check_folder", "") or ""
         if not folder or not os.path.isdir(folder):
-            self.lbl_check_result.setText("请先选择文件夹")
+            self._set_check_result("请先选择文件夹")
             return None
 
         try:
             all_files = os.listdir(folder)
         except Exception as e:
-            self.lbl_check_result.setText(f"读取失败: {e}")
+            self._set_check_result(f"读取失败: {e}")
             return None
 
         files = [f for f in all_files if os.path.isfile(os.path.join(folder, f))]
 
         if not files:
-            self.lbl_check_result.setText("文件夹内无文件")
+            self._set_check_result("文件夹内无文件")
             return None
 
         ignore_ext = self.chk_ignore_ext.isChecked()
@@ -4168,7 +4839,7 @@ class PageFastSave(QWidget):
                 unnumbered.append(f)
 
         if not groups:
-            self.lbl_check_result.setText("未检测到编号序列")
+            self._set_check_result("未检测到编号序列")
             return None
 
         # 清单「应下：N」→ 把序列范围扩到 1..N（否则尾部整段缺失扫不出来）
@@ -4241,8 +4912,7 @@ class PageFastSave(QWidget):
             else:
                 lines.append("<span style='color:#f59e0b;'>未找到清单</span>")
 
-        self.lbl_check_result.setText("<br>".join(lines))
-        self.lbl_check_result.setTextFormat(Qt.RichText)
+        self._set_check_result("<br>".join(lines), rich=True)
         return {
             "folder": folder,
             "total_missing": total_missing,
@@ -4354,9 +5024,10 @@ class PageFastSave(QWidget):
             user_in = self._check_ask_report_or_url(folder)
             if not user_in:
                 try:
-                    self.lbl_check_result.setText(
-                        self.lbl_check_result.text()
-                        + "<br><span style='color:#94a3b8;'>已取消补全</span>"
+                    self._set_check_result(
+                        (self.lbl_check_result.text() or "")
+                        + "<br><span style='color:#94a3b8;'>已取消补全</span>",
+                        rich=True,
                     )
                 except Exception:
                     pass
@@ -4416,8 +5087,11 @@ class PageFastSave(QWidget):
             message_box_warn(self, "补全失败", "未找到图集下载页")
             return
         try:
-            if hasattr(mw, "_switch") and hasattr(mw, "btn_gallery"):
-                mw._switch(mw.stack.indexOf(pg), mw.btn_gallery)
+            if hasattr(mw, "btn_gallery"):
+                if hasattr(mw, "_auto_switch"):
+                    mw._auto_switch(mw.stack.indexOf(pg), mw.btn_gallery)
+                elif hasattr(mw, "_switch"):
+                    mw._switch(mw.stack.indexOf(pg), mw.btn_gallery)
         except Exception:
             pass
 
@@ -4438,10 +5112,11 @@ class PageFastSave(QWidget):
         if ok:
             try:
                 cur = self.lbl_check_result.text() or ""
-                self.lbl_check_result.setText(
+                self._set_check_result(
                     cur
                     + f"<br><span style='color:#22c55e;'>"
-                    f"已转入 e-hentai · 补 {len(missing_names)} 项（见鼠标旁进度气泡）</span>"
+                    f"已转入 e-hentai · 补 {len(missing_names)} 项（见鼠标旁进度气泡）</span>",
+                    rich=True,
                 )
             except Exception:
                 pass

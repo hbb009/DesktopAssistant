@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v9.16 外置模型下载 → model/
+"""v9.17 外置模型下载 → model/
 
   python tools/download_models.py
   python tools/download_models.py --only paddleocr

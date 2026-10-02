@@ -342,24 +342,17 @@ def _spawn_ocr_daemon():
         frozen = bool(getattr(sys, "frozen", False)) or hasattr(sys, "_MEIPASS")
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+    if frozen:
+        cmd = [sys.executable, "--ocr-server"]
+    else:
+        cmd = [sys.executable, "-m", "utils.ocr_job", "--server"]
+
     env = os.environ.copy()
     env.setdefault("OMP_NUM_THREADS", "1")
     env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
     env["DESKASSIST_OCR_JOB"] = "1"
     env.pop("QT_PLUGIN_PATH", None)
     env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
-
-    if frozen:
-        from utils.deskassist_runtime import find_python, meipass
-        _py = find_python()
-        _worker = meipass() / "ocr_worker" / "run.py"
-        if _py and _worker.is_file():
-            cmd = [_py, str(_worker), "--server"]
-            env["OCR_MEIPASS"] = str(meipass())
-        else:
-            cmd = [sys.executable, "--ocr-server"]
-    else:
-        cmd = [sys.executable, "-m", "utils.ocr_job", "--server"]
 
     run_kw: Dict[str, Any] = dict(
         cwd=root,
@@ -462,24 +455,17 @@ def _run_ocr_job_oneshot(meta: Dict[str, Any], *, timeout: int = 600) -> Dict[st
             frozen = bool(getattr(sys, "frozen", False)) or hasattr(sys, "_MEIPASS")
             root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+        if frozen:
+            cmd = [sys.executable, "--ocr-job", meta_path]
+        else:
+            cmd = [sys.executable, "-m", "utils.ocr_job", meta_path]
+
         env = os.environ.copy()
         env.setdefault("OMP_NUM_THREADS", "1")
         env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
         env["DESKASSIST_OCR_JOB"] = "1"
         env.pop("QT_PLUGIN_PATH", None)
         env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
-
-        if frozen:
-            from utils.deskassist_runtime import find_python, meipass
-            _py = find_python()
-            _worker = meipass() / "ocr_worker" / "run.py"
-            if _py and _worker.is_file():
-                cmd = [_py, str(_worker), meta_path]
-                env["OCR_MEIPASS"] = str(meipass())
-            else:
-                cmd = [sys.executable, "--ocr-job", meta_path]
-        else:
-            cmd = [sys.executable, "-m", "utils.ocr_job", meta_path]
 
         run_kw: Dict[str, Any] = dict(
             cwd=root,

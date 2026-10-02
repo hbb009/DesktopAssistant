@@ -1,6 +1,13 @@
-﻿# 桌面助手 v9.16 · 程序依赖
-# pip install -r requirements.txt
-# python mainv916.py
+# Desktop Assistant v9.17 - core app dependencies
+# Python 3.10 / 3.11 only, Windows 10+
+# Install: pip install -r requirements.txt
+# Run:     python mainv917.py
+#
+# System tools (not pip packages):
+#   winget install Gyan.FFmpeg
+#   winget install DenoLand.Deno
+#   winget install Git.Git
+# (step 1 installer bat installs these automatically when missing)
 
 PyQt5>=5.15.0
 psutil>=5.9.0
@@ -10,11 +17,10 @@ requests>=2.28.0
 urllib3>=1.26.0
 brotli>=1.1.0
 Pillow>=9.0.0
-numpy>=1.24.0
 yt-dlp>=2024.1.0
 yt-dlp-ejs>=0.1.0
 zhconv>=1.4.2
+# numpy < 2: CosyVoice pins onnxruntime 1.18.0, which is built against the NumPy 1.x ABI
+numpy>=1.24,<2
 pywin32>=306; sys_platform == "win32"
 tzdata>=2024.1; sys_platform == "win32"
-
-# 系统级：ffmpeg、Deno/Node（winget install Gyan.FFmpeg / DenoLand.Deno）

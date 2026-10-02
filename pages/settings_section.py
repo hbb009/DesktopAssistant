@@ -7,11 +7,12 @@ from __future__ import annotations
 import os
 from typing import Dict, List
 
-from PyQt5.QtCore import Qt, QTimer, QEvent, QRectF, pyqtSignal
+from PyQt5.QtCore import Qt, QTimer, QEvent, QRectF, pyqtSignal, QSize
 from PyQt5.QtGui import QPixmap, QPainter, QPen, QBrush, QColor
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
     QFileDialog, QRadioButton, QButtonGroup, QSizePolicy, QAbstractButton,
+    QDialog, QScrollArea, QFrame,
 )
 
 from styles.style_all import (
@@ -20,7 +21,11 @@ from styles.style_all import (
     CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP,
     apply_mini_button,
 )
-from utils.app_paths import user_downloads_dir, user_documents_dir
+from utils.app_paths import (
+    user_downloads_dir, user_documents_dir,
+    is_usable_public_save_dir, is_other_user_profile_path,
+    apply_public_save_base, this_machine_downloads_dir,
+)
 from utils.flow_layout import FlowLayout
 from utils.logger import get_logger
 
@@ -31,6 +36,7 @@ _COOKIE_ITEMS = (
     ("抖音", "video", "douyin", "douyin.com"),
     ("B站", "video", "bilibili", "bilibili.com"),
     ("YouTube", "video", "youtube", "youtube.com"),
+    ("汽水音乐", "audio", "qishui", "qishui.douyin.com"),
     ("e-hentai.org", "gallery", None, "e-hentai.org"),
     ("pixiv", "gallery_pixiv", None, "pixiv.net"),
 )
@@ -38,14 +44,17 @@ _COOKIE_ITEMS = (
 # 两行布局：分组标题 + 该行按钮显示名（与 _COOKIE_ITEMS 一致）
 _COOKIE_ROWS = (
     ("视频下载", ("抖音", "B站", "YouTube")),
+    ("音频下载", ("汽水音乐",)),
     ("图集下载", ("e-hentai.org", "pixiv")),
 )
 
 _CK_BTN_H = 22
 
-# 功能说明图：guides 下最多 12 张，底部 12 点切换；15 秒自动轮播
+# 功能说明图：扫描 guides；底部圆点数=真实图片数；≥2 张时 15 秒轮播
 _GUIDE_SLOTS = 12
 _GUIDE_CAROUSEL_MS = 15_000
+# 功能与说明卡固定高度（px）：避免跟右侧五卡对高后图区过矮、上下被裁
+_GUIDE_CARD_H = 590  # 展示图区：600-10
 _GUIDE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp")
 
 # 圆点配色：与粘贴助手仓库七色同源，12 点循环取色
@@ -64,12 +73,12 @@ class GuidePageDot(QAbstractButton):
     """功能说明翻页圆点。
 
     · 槽位固定不抖布局
-    · 未选中直径 8px；选中直径 12px
+    · 未选中直径 7px；选中直径 12px
     · 自绘抗锯齿圆 + 主题描边
     """
 
-    D_ON = 12   # 选中直径（px）
-    D_OFF = 8   # 未选中直径（px）
+    D_ON = 12   # 选中直径（px）——大点不减
+    D_OFF = 7   # 未选中直径（px）——小点减 1px
     # 槽位略大于选中圆，保证可点区域；相对旧 33px 收约 30% → 中心距更紧
     SLOT = max(D_ON + 4, int(round(33 * 0.70)))  # 23
 
@@ -176,7 +185,7 @@ def _guides_scan_dirs() -> List[str]:
 
 
 def _list_guide_image_paths() -> List[str]:
-    """扫描功能图，按文件名排序取最多 _GUIDE_SLOTS 张。
+    """扫描功能图，按文件名排序（最多 32 张）。
 
     · 用户图放 data/ 根、以 guide_ 开头（如 guide_0810.jpg）
     · 内置图在 assets/guides/（0801.jpg 之类）
@@ -208,7 +217,7 @@ def _list_guide_image_paths() -> List[str]:
                 continue  # 用户图已占同名
             by_key[key] = os.path.join(d, f)
     files = sorted(by_key.values(), key=lambda p: os.path.basename(p).lower())
-    return files[:_GUIDE_SLOTS]
+    return files[:32]
 
 
 class SettingsSection(QWidget):
@@ -221,6 +230,24 @@ class SettingsSection(QWidget):
 
     cookies_configured = pyqtSignal()
 
+    # ===== 窗口高度 BUG 防护（与截图/速存/时区汇率页同一套路）=====
+    # FlowLayout / wordWrap 会让整页 hasHeightForWidth()=True，Qt 拖窗口时抬高推荐高度。
+    # 切断整页 HFW；内部滚动/换行照常。
+    def hasHeightForWidth(self):
+        return False
+
+    def minimumSizeHint(self):
+        return QSize(0, 0)
+
+    def sizeHint(self):
+        sh = super().sizeHint()
+        if not sh.isValid() or sh.height() <= 0:
+            return QSize(0, 0)
+        cap = 700
+        if int(sh.height()) > cap:
+            return QSize(sh.width(), cap)
+        return sh
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._mw = None
@@ -232,7 +259,7 @@ class SettingsSection(QWidget):
         self._save_path_autofilled = False
         self._loading = False
         self._guide_paths: List[str] = []
-        self._guide_pixmaps: List[QPixmap] = []
+        self._guide_pixmaps: Dict[int, QPixmap] = {}
         self._guide_index = 0
         self._guide_pix_full = None  # type: QPixmap | None  # 当前显示的原图
         self._guide_dots: List[GuidePageDot] = []
@@ -258,6 +285,7 @@ class SettingsSection(QWidget):
         left_col = QVBoxLayout(self.left_panel)
         left_col.setContentsMargins(0, 0, 0, 0)
         left_col.setSpacing(8)
+        left_col.setAlignment(Qt.AlignTop)
         # 顺序：界面缩放 → Cookie设置 → 公共保存 → 预下载开关 → 数据管理
         self._settings_cards = [
             self._build_scale_card(),
@@ -276,7 +304,8 @@ class SettingsSection(QWidget):
         right_col = QVBoxLayout(self.right_panel)
         right_col.setContentsMargins(0, 0, 0, 0)
         right_col.setSpacing(8)
-        right_col.addWidget(self._build_guide_card(), 1)
+        right_col.setAlignment(Qt.AlignTop)
+        right_col.addWidget(self._build_guide_card(), 0, Qt.AlignTop)
         self.right_panel.installEventFilter(self)
         self.left_panel.installEventFilter(self)
 
@@ -295,8 +324,8 @@ class SettingsSection(QWidget):
         if lay is not None:
             lay.removeWidget(self.left_panel)
             lay.removeWidget(self.right_panel)
-        left_layout.addWidget(self.right_panel)
-        right_layout.addWidget(self.left_panel)
+        left_layout.addWidget(self.right_panel, 0, Qt.AlignTop)
+        right_layout.addWidget(self.left_panel, 0, Qt.AlignTop)
         self._installed_split = True
         # 壳控件不再占位（面板已重挂到外部列）
         self.hide()
@@ -400,7 +429,7 @@ class SettingsSection(QWidget):
         title_row.addWidget(self.sw_pre_dl_auto, 0, Qt.AlignVCenter)
         self.btn_pre_dl_file = apply_mini_button(QPushButton("预处理文件"))
         self.btn_pre_dl_file.setMinimumWidth(0)
-        self.btn_pre_dl_file.setToolTip("查看并编辑预下载队列（data/pre_download.json）")
+        self.btn_pre_dl_file.setToolTip("查看并编辑预下载队列（records/pre_download.json）")
         self.btn_pre_dl_file.clicked.connect(self._on_pre_dl_file)
         title_row.addWidget(self.btn_pre_dl_file, 0, Qt.AlignVCenter)
         box.addLayout(title_row)
@@ -481,12 +510,23 @@ class SettingsSection(QWidget):
         card = self._shrinkable_card(make_card("CardAboutInfo"))
         box = QVBoxLayout(card)
         box.setContentsMargins(CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
-        self._theme_titles.append(install_card_title(card, box, "数据管理"))
-
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
-        btn_row.setContentsMargins(0, 0, 0, 0)
-        btn_row.addStretch(1)
+        box.setSpacing(0)
+        # 标题与三按钮同一行
+        if hasattr(card, "setTitle"):
+            try:
+                card.setTitle("")
+            except Exception:
+                pass
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        lbl = QLabel("数据管理")
+        lbl.setProperty("role", "card-title")
+        restyle_card_title(lbl)
+        lbl.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        self._theme_titles.append(lbl)
+        row.addWidget(lbl, 0, Qt.AlignVCenter)
+        row.addStretch(1)
         for text, slot in (
             ("导出", self._on_export),
             ("导入", self._on_import),
@@ -496,10 +536,8 @@ class SettingsSection(QWidget):
             b.setMinimumWidth(0)
             b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(slot)
-            btn_row.addWidget(b)
-        btn_row.addStretch(1)
-        box.addLayout(btn_row)
-
+            row.addWidget(b, 0, Qt.AlignVCenter)
+        box.addLayout(row)
         return card
 
     # ── 卡片：功能与说明（右侧）──────────────────────────────
@@ -507,40 +545,35 @@ class SettingsSection(QWidget):
         card = self._shrinkable_card(make_card("CardFeatureGuide"))
         self.guide_card = card
         box = QVBoxLayout(card)
-        box.setContentsMargins(CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
-        box.setSpacing(0)
-        self._theme_titles.append(install_card_title(card, box, "功能与说明", gap=2))
+        # 展示图上下各留 6px；无标题，整卡留给说明图 + 圆点
+        box.setContentsMargins(CARD_LEFT_GAP, 6, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
+        box.setSpacing(6)
+        # 无卡片标题：整卡留给说明图 + 圆点
 
         self.lbl_guide_img = QLabel()
         self.lbl_guide_img.setObjectName("FeatureGuideImage")
+        # 竖图等比缩放后高度常小于控件：垂直居中
         self.lbl_guide_img.setAlignment(Qt.AlignCenter)
         # 高度由右边 5 张设置卡决定，图区跟着卡片收；不要让原图像素 sizeHint 把卡撑高
-        self.lbl_guide_img.setMinimumHeight(0)
-        self.lbl_guide_img.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.lbl_guide_img.setMinimumHeight(300)
+        self.lbl_guide_img.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.lbl_guide_img.setScaledContents(False)
         box.addWidget(self.lbl_guide_img, 1)
 
-        # 底部 12 点：选中 12px / 未选中 8px；间距较旧值再收 30%
-        dot_row = QHBoxLayout()
-        dot_row.setContentsMargins(0, 2, 0, 0)
-        # 旧 spacing=2 → ×0.7 ≈ 1
-        dot_row.setSpacing(max(1, int(round(2 * 0.70))))
-        dot_row.addStretch(1)
+        # 底部圆点：数量=真实图片数；固定一行水平排列
+        self._guide_dot_host = QWidget()
+        self._guide_dot_host.setObjectName("FeatureGuideDots")
+        self._guide_dot_row = QHBoxLayout(self._guide_dot_host)
+        self._guide_dot_row.setContentsMargins(0, 0, 0, 0)
+        self._guide_dot_row.setSpacing(max(1, int(round(2 * 0.70))))
+        self._guide_dot_row.addStretch(1)
         self._guide_dots = []
         self._guide_dot_group = QButtonGroup(self)
         self._guide_dot_group.setExclusive(True)
-        for i in range(_GUIDE_SLOTS):
-            color = _GUIDE_DOT_COLORS[i % len(_GUIDE_DOT_COLORS)]
-            d = GuidePageDot(color)
-            d.setObjectName("FeatureGuideDot")
-            self._guide_dot_group.addButton(d, i)
-            d.clicked.connect(lambda checked=False, idx=i: self._set_guide_index(idx))
-            self._guide_dots.append(d)
-            dot_row.addWidget(d)
-        dot_row.addStretch(1)
-        box.addLayout(dot_row)
+        box.addWidget(self._guide_dot_host)
 
         self._load_guide_images()
+        self._rebuild_guide_dots()
         self._apply_guide_index(0)
         self._style_guide_placeholder()
         self._style_guide_dots()
@@ -549,24 +582,81 @@ class SettingsSection(QWidget):
         return card
 
     def _load_guide_images(self):
-        """加载 guides 图片列表（最多 _GUIDE_SLOTS 张）。"""
+        """只记路径。原图大约一百多 MB，轮到哪张再读哪张。"""
         self._guide_paths = _list_guide_image_paths()
-        self._guide_pixmaps = []
-        for p in self._guide_paths:
-            pix = QPixmap(p)
-            self._guide_pixmaps.append(pix if not pix.isNull() else QPixmap())
+        self._guide_pixmaps = {}
+
+    def _guide_count(self) -> int:
+        return len(getattr(self, "_guide_paths", []) or [])
+
+    def _guide_pixmap(self, idx: int) -> QPixmap:
+        paths = getattr(self, "_guide_paths", []) or []
+        cache = getattr(self, "_guide_pixmaps", None)
+        if cache is None:
+            cache = {}
+            self._guide_pixmaps = cache
+        if idx < 0 or idx >= len(paths):
+            return QPixmap()
+        pix = cache.get(idx)
+        if pix is not None:
+            return pix
+        loaded = QPixmap(paths[idx])
+        if loaded.isNull():
+            loaded = QPixmap()
+        cache[idx] = loaded
+        return loaded
+
+    def _rebuild_guide_dots(self):
+        """按当前图片数重建底部轮播点（有几张图就几个点，单行居中）。"""
+        row = getattr(self, "_guide_dot_row", None)
+        group = getattr(self, "_guide_dot_group", None)
+        if row is None:
+            return
+        while row.count():
+            item = row.takeAt(0)
+            w = item.widget() if item is not None else None
+            if w is not None:
+                if group is not None:
+                    try:
+                        group.removeButton(w)
+                    except Exception:
+                        pass
+                w.setParent(None)
+                w.deleteLater()
+        self._guide_dots = []
+        if group is None:
+            group = QButtonGroup(self)
+            group.setExclusive(True)
+            self._guide_dot_group = group
+
+        row.addStretch(1)
+        n = self._guide_count()
+        for i in range(n):
+            color = _GUIDE_DOT_COLORS[i % len(_GUIDE_DOT_COLORS)]
+            d = GuidePageDot(color)
+            d.setObjectName("FeatureGuideDot")
+            group.addButton(d, i)
+            d.clicked.connect(lambda checked=False, idx=i: self._set_guide_index(idx))
+            self._guide_dots.append(d)
+            row.addWidget(d)
+        row.addStretch(1)
+        self._style_guide_dots()
 
     def _guide_carousel_tick(self):
-        """15 秒轮播：在有图的槽位间循环（跳过空槽）。"""
-        n = len(getattr(self, "_guide_pixmaps", []) or [])
+        """15 秒轮播：在有效图片间循环（跳过加载失败的空图）。"""
+        n = self._guide_count()
         if n <= 1:
             self._guide_carousel.stop()
             return
         cur = int(getattr(self, "_guide_index", 0) or 0)
-        if cur < 0 or cur >= n:
-            nxt = 0
+        nxt = cur
+        for _ in range(n):
+            nxt = (nxt + 1) % n
+            pix = self._guide_pixmap(nxt)
+            if pix is not None and not pix.isNull():
+                break
         else:
-            nxt = (cur + 1) % n
+            return
         self._apply_guide_index(nxt)
 
     def _restart_guide_carousel(self):
@@ -574,14 +664,18 @@ class SettingsSection(QWidget):
         t = getattr(self, "_guide_carousel", None)
         if t is None:
             return
-        n = len(getattr(self, "_guide_pixmaps", []) or [])
+        n = self._guide_count()
         if n <= 1:
             t.stop()
             return
         t.start()
 
     def _set_guide_index(self, idx: int):
-        idx = max(0, min(_GUIDE_SLOTS - 1, int(idx)))
+        n = max(0, self._guide_count())
+        if n <= 0:
+            idx = 0
+        else:
+            idx = max(0, min(n - 1, int(idx)))
         if idx == self._guide_index and self._guide_pix_full is not None:
             # 仍刷新点样式，避免主题切换后状态不一致
             self._style_guide_dots()
@@ -591,8 +685,11 @@ class SettingsSection(QWidget):
         self._restart_guide_carousel()
 
     def _apply_guide_index(self, idx: int):
-        self._guide_index = max(0, min(_GUIDE_SLOTS - 1, int(idx)))
-        n = len(self._guide_pixmaps)
+        n = self._guide_count()
+        if n <= 0:
+            self._guide_index = 0
+        else:
+            self._guide_index = max(0, min(n - 1, int(idx)))
         lbl = getattr(self, "lbl_guide_img", None)
         if lbl is None:
             return
@@ -600,16 +697,15 @@ class SettingsSection(QWidget):
         if n == 0:
             self._guide_pix_full = None
             lbl.clear()
-            # 显示绝对路径，打包后用户能直接对照 exe 旁目录
             guide_abs = _guides_dir()
             lbl.setText(
-                "（未找到功能图）\n请将图片放入：\n"
-                f"{guide_abs}\n"
-                "（文件名以 guide_ 开头，如 guide_001.jpg · "
-                f"支持 jpg/png 等 · 最多 {_GUIDE_SLOTS} 张 · 底部圆点 · 15 秒轮播）"
+                "（未找到功能图）" + chr(10) + "请将图片放入：" + chr(10)
+                + f"{guide_abs}" + chr(10)
+                + "（文件名以 guide_ 开头，如 guide_001.jpg · "
+                + "支持 jpg/png 等 · 有几张图底部就几个圆点 · ≥2 张 15 秒轮播）"
             )
-        elif self._guide_index < n:
-            pix = self._guide_pixmaps[self._guide_index]
+        else:
+            pix = self._guide_pixmap(self._guide_index)
             if pix is not None and not pix.isNull():
                 self._guide_pix_full = pix
                 lbl.setText("")
@@ -617,29 +713,20 @@ class SettingsSection(QWidget):
                 self._guide_pix_full = None
                 lbl.clear()
                 lbl.setText(f"（第 {self._guide_index + 1} 张加载失败）")
-        else:
-            # 圆点位超过已有图片：提示可补充
-            self._guide_pix_full = None
-            lbl.clear()
-            lbl.setText(
-                f"（第 {self._guide_index + 1} 张暂无）\n"
-                f"当前共 {n} 张 · 可再放入：\n{_guides_dir()}"
-            )
 
         self._style_guide_placeholder()
         self._style_guide_dots()
         self._fit_guide_image()
 
     def _style_guide_dots(self):
-        """同步圆点选中态 / 淡化空槽（自绘，主题切换时重绘即可）。"""
+        """同步圆点选中态（点数=真实图片数，无空槽）。"""
         for i, d in enumerate(getattr(self, "_guide_dots", []) or []):
-            has_img = i < len(getattr(self, "_guide_pixmaps", []) or [])
             active = i == getattr(self, "_guide_index", 0)
             d.blockSignals(True)
             d.setChecked(active)
             d.blockSignals(False)
             if hasattr(d, "set_dim"):
-                d.set_dim(not has_img)
+                d.set_dim(False)
             d.update()
 
     def _style_guide_placeholder(self):
@@ -661,7 +748,7 @@ class SettingsSection(QWidget):
             )
 
     def _fit_guide_image(self):
-        """功能图铺满标题与圆点之间的区域（等比裁切，不留上下空档）。"""
+        """功能图完整显示在卡内（等比缩放，高度方向居中，不裁切）。"""
         lbl = getattr(self, "lbl_guide_img", None)
         pix = getattr(self, "_guide_pix_full", None)
         if lbl is None:
@@ -670,11 +757,7 @@ class SettingsSection(QWidget):
             return
         w = max(40, lbl.width())
         h = max(40, lbl.height())
-        scaled = pix.scaled(w, h, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-        if scaled.width() > w or scaled.height() > h:
-            x = max(0, (scaled.width() - w) // 2)
-            y = max(0, (scaled.height() - h) // 2)
-            scaled = scaled.copy(x, y, w, h)
+        scaled = pix.scaled(w, h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         lbl.setPixmap(scaled)
 
     def resizeEvent(self, event):
@@ -737,13 +820,11 @@ class SettingsSection(QWidget):
         return total
 
     def _sync_guide_to_settings_height(self):
-        """功能与说明 = 右边 5 张设置卡的同等高度。"""
+        """功能与说明用固定高度，保证图不被上下裁切。"""
         card = getattr(self, "guide_card", None)
         if card is None:
             return
-        h = self._settings_stack_height()
-        if h < 80:
-            return
+        h = int(_GUIDE_CARD_H)
         if card.minimumHeight() == h and card.maximumHeight() == h:
             return
         card.setFixedHeight(h)
@@ -894,7 +975,7 @@ class SettingsSection(QWidget):
 
         save_row = QHBoxLayout()
         save_row.setSpacing(6)
-        self.btn_browse = QPushButton("浏览")
+        self.btn_browse = QPushButton("指定")
         self.btn_browse.setCursor(Qt.PointingHandCursor)
         self.btn_browse.setMinimumWidth(0)
         self.btn_browse.clicked.connect(self._browse_save_dir)
@@ -907,6 +988,12 @@ class SettingsSection(QWidget):
         self.save_edit.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.save_edit.textChanged.connect(self._schedule_persist)
         save_row.addWidget(self.save_edit, 1)
+
+        self.btn_subdir = QPushButton("浏览")
+        self.btn_subdir.setCursor(Qt.PointingHandCursor)
+        self.btn_subdir.setMinimumWidth(0)
+        self.btn_subdir.clicked.connect(self._open_subdir_dialog)
+        save_row.addWidget(self.btn_subdir)
         box.addLayout(save_row)
 
         self._style_path_buttons()
@@ -940,45 +1027,19 @@ class SettingsSection(QWidget):
 
     def _style_path_buttons(self):
         qss = self._default_muted_btn_qss()
-        btn_browse = getattr(self, "btn_browse", None)
-        if btn_browse is not None:
-            btn_browse.setStyleSheet(qss)
+        for attr in ("btn_browse", "btn_subdir"):
+            btn = getattr(self, attr, None)
+            if btn is not None:
+                btn.setStyleSheet(qss)
         self._refresh_all_cookie_btns()
         self._refresh_cookie_action_btn()
 
     def _guess_base_path(self, prefs: dict) -> str:
-        for src_sec, subd in (
-            ("fast_save", "WebImageSaver"),
-            ("screenshot", "ScreenshotImageSaver"),
-            ("region_record", "RegionRecord"),
-            ("image_proc", "ImageProc"),
-        ):
-            p = ((prefs.get(src_sec) or {}).get("save_path") or "").replace("\\", "/")
-            if p.endswith("/" + subd):
-                return p[: -len(subd) - 1]
-        for sub_key, subd in (
-            ("douyin", "douyin"),
-            ("bilibili", "bilibili"),
-            ("youtube", "YouTube"),
-        ):
-            v = (prefs.get("video") or {}).get(sub_key)
-            p = ((v or {}).get("save_path") or "").replace("\\", "/") if isinstance(v, dict) else ""
-            if p.endswith("/" + subd):
-                return p[: -len(subd) - 1]
-        for section, subd in (
-            ("gallery", "e-hentai.org"),
-            ("gallery_pixiv", "pixiv"),
-        ):
-            p = ((prefs.get(section) or {}).get("save_path") or "").replace("\\", "/")
-            if p.endswith("/" + subd):
-                return p[: -len(subd) - 1]
-        gal = prefs.get("gallery") or {}
-        if isinstance(gal, dict):
-            hm = gal.get("hitomi") if isinstance(gal.get("hitomi"), dict) else {}
-            p = ((hm or {}).get("save_path") or "").replace("\\", "/")
-            if p.endswith("/hitomi.la"):
-                return p[: -len("/hitomi.la")]
-        return (prefs.get("save_path_base") or "").strip()
+        try:
+            from utils.app_paths import guess_public_save_base
+            return guess_public_save_base(prefs)
+        except Exception:
+            return (prefs.get("save_path_base") or "").strip()
 
     def _is_existing_dir(self, path: str) -> bool:
         p = (path or "").strip()
@@ -989,26 +1050,34 @@ class SettingsSection(QWidget):
         except Exception:
             return False
 
+    def _is_usable_save_dir(self, path: str) -> bool:
+        """本机已有、且不是其他 Windows 用户主目录下的路径。"""
+        try:
+            return is_usable_public_save_dir(path)
+        except Exception:
+            return self._is_existing_dir(path)
+
     def _load_save_path(self, prefs: dict):
         stored = (prefs.get("save_path_base") or "").strip()
         detected = ""
         try:
-            detected = (user_downloads_dir() or "").strip()
+            detected = (this_machine_downloads_dir() or "").strip()
         except Exception:
             detected = ""
         guessed = self._guess_base_path(prefs)
 
         self._save_path_autofilled = False
-        if self._is_existing_dir(stored):
+        # 旧电脑路径即便已被误建成目录，也不能继续用
+        if self._is_usable_save_dir(stored):
             base = stored
-        elif self._is_existing_dir(detected):
+        elif self._is_usable_save_dir(detected):
             base = detected
             self._save_path_autofilled = True
-        elif self._is_existing_dir(guessed):
+        elif self._is_usable_save_dir(guessed):
             base = guessed
             self._save_path_autofilled = True
         else:
-            base = detected or guessed or os.path.expanduser("~/Downloads")
+            base = detected or os.path.expanduser("~/Downloads")
             self._save_path_autofilled = True
 
         self.save_edit.blockSignals(True)
@@ -1016,18 +1085,18 @@ class SettingsSection(QWidget):
         self.save_edit.blockSignals(False)
 
     def _auto_fill_downloads_if_needed(self):
-        """空路径或无效路径时，写入系统「下载」目录并落盘。"""
+        """空路径或无效/外机路径时，写入本机「下载」目录并落盘。"""
         cur = (self.save_edit.text() or "").strip()
-        if self._is_existing_dir(cur) and not self._save_path_autofilled:
+        if self._is_usable_save_dir(cur) and not self._save_path_autofilled:
             return
-        if self._is_existing_dir(cur):
-            # 已显示有效目录（含刚识别出的下载目录）——仅在自动填入时落盘
+        if self._is_usable_save_dir(cur):
+            # 已显示本机有效目录（含刚识别出的下载目录）——仅在自动填入时落盘
             if self._save_path_autofilled:
                 self._persist_now()
             return
         detected = ""
         try:
-            detected = (user_downloads_dir() or "").strip()
+            detected = (this_machine_downloads_dir() or "").strip()
         except Exception:
             detected = ""
         if not detected:
@@ -1095,9 +1164,11 @@ class SettingsSection(QWidget):
         return bool(path and os.path.isfile(path))
 
     def _cookies_all_loaded(self) -> bool:
-        if not _COOKIE_ITEMS:
+        # 汽水 Cookie 可选，缺了不挡住「加载成功」
+        names = [name for name, *_rest in _COOKIE_ITEMS if name != "汽水音乐"]
+        if not names:
             return False
-        return all(self._cookie_path_loaded(name) for name, *_rest in _COOKIE_ITEMS)
+        return all(self._cookie_path_loaded(name) for name in names)
 
     def _refresh_cookie_action_btn(self):
         btn = getattr(self, "btn_cookie_dir", None)
@@ -1147,6 +1218,190 @@ class SettingsSection(QWidget):
             self._save_path_autofilled = False
             self.save_edit.setText(p.replace("\\", "/"))
 
+    def _open_subdir_dialog(self):
+        """列出公共保存下每个子目录名，可单独改，保存后按新名字重派路径。"""
+        from utils.app_paths import (
+            PUBLIC_SAVE_SUBDIRS, clean_subdir_name, resolved_subdir_name,
+            subdir_storage_key,
+        )
+
+        prefs = getattr(self._mw, "_user_prefs", None) if self._mw is not None else {}
+        if not isinstance(prefs, dict):
+            prefs = {}
+
+        dlg = QDialog(self.window() or self)
+        dlg.setWindowTitle("子目录")
+        try:
+            dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+        except Exception:
+            pass
+        dlg.setMinimumWidth(420)
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(14, 14, 14, 12)
+        lay.setSpacing(8)
+
+        hint = QLabel("这些文件夹都建在上面的公共保存目录下。只改名字。")
+        hint.setWordWrap(True)
+        try:
+            mut = tk("text_mut")
+        except Exception:
+            mut = "#94a3b8"
+        hint.setStyleSheet(
+            f"QLabel{{color:{mut};font-size:12px;background:transparent;border:none;}}"
+        )
+        lay.addWidget(hint)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.verticalScrollBar().setStyleSheet(
+            "QScrollBar:vertical{width:0px;margin:0;background:transparent;}"
+        )
+        host = QWidget()
+        form = QVBoxLayout(host)
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(6)
+        edits = []
+        for row in PUBLIC_SAVE_SUBDIRS:
+            section, sub_key, default, label = row[0], row[1], row[2], row[3]
+            line = QHBoxLayout()
+            line.setSpacing(8)
+            lab = QLabel(label)
+            lab.setMinimumWidth(72)
+            try:
+                lab_c = tk("text")
+            except Exception:
+                lab_c = "#e2e8f0"
+            lab.setStyleSheet(
+                f"QLabel{{color:{lab_c};font-size:12px;"
+                f"background:transparent;border:none;}}"
+            )
+            edit = QLineEdit(resolved_subdir_name(prefs, section, sub_key, default))
+            edit.setPlaceholderText(default)
+            line.addWidget(lab, 0)
+            line.addWidget(edit, 1)
+            form.addLayout(line)
+            edits.append((section, sub_key, default, label, edit))
+        scroll.setWidget(host)
+        scroll.setMinimumHeight(min(420, 28 * len(edits) + 8))
+        lay.addWidget(scroll, 1)
+
+        err = QLabel("")
+        err.setWordWrap(True)
+        err.setVisible(False)
+        try:
+            err_c = tk("err")
+        except Exception:
+            err_c = "#ef4444"
+        err.setStyleSheet(
+            f"QLabel{{color:{err_c};font-size:12px;background:transparent;border:none;}}"
+        )
+        lay.addWidget(err)
+
+        btns = QHBoxLayout()
+        btns.setSpacing(8)
+        btns.addStretch(1)
+        btn_save = QPushButton("保存并关闭")
+        btn_close = QPushButton("关闭")
+        btn_save.setCursor(Qt.PointingHandCursor)
+        btn_close.setCursor(Qt.PointingHandCursor)
+        qss = self._default_muted_btn_qss()
+        btn_save.setStyleSheet(qss)
+        btn_close.setStyleSheet(qss)
+        btns.addWidget(btn_save)
+        btns.addWidget(btn_close)
+        lay.addLayout(btns)
+
+        def _show_err(text):
+            err.setText(text)
+            err.setVisible(True)
+
+        def _commit():
+            names = {}
+            seen = {}
+            for section, sub_key, default, label, edit in edits:
+                raw = edit.text()
+                cleaned = clean_subdir_name(raw)
+                if not cleaned:
+                    _show_err(f"「{label}」的目录名不能为空，也不能包含 \\ / : * ? \" < > |")
+                    edit.setFocus()
+                    return
+                fold = cleaned.casefold()
+                if fold in seen:
+                    _show_err(f"「{label}」和「{seen[fold]}」不能用同一个目录名")
+                    edit.setFocus()
+                    return
+                seen[fold] = label
+                names[subdir_storage_key(section, sub_key)] = cleaned
+            base = (self.save_edit.text() or "").strip()
+            if self._mw is None:
+                _show_err("设置还没接上主窗口")
+                return
+            cur = getattr(self._mw, "_user_prefs", None)
+            if not isinstance(cur, dict):
+                _show_err("读不到当前配置")
+                return
+            old_names = cur.get("save_subdir_names") if isinstance(cur.get("save_subdir_names"), dict) else {}
+            if base and os.path.isdir(base):
+                moves = []
+                leaving = set()
+                planned = []
+                for section, sub_key, default, label, _edit in edits:
+                    key = subdir_storage_key(section, sub_key)
+                    old = resolved_subdir_name(
+                        {"save_subdir_names": old_names}, section, sub_key, default
+                    )
+                    new = names[key]
+                    if old == new:
+                        continue
+                    old_dir = os.path.join(base, old)
+                    new_dir = os.path.join(base, new)
+                    planned.append((old_dir, new_dir, label, old))
+                    if os.path.isdir(old_dir):
+                        leaving.add(os.path.normcase(os.path.abspath(old_dir)))
+                for old_dir, new_dir, label, _old in planned:
+                    if not os.path.isdir(old_dir):
+                        continue
+                    if os.path.normcase(os.path.abspath(old_dir)) == os.path.normcase(os.path.abspath(new_dir)):
+                        continue
+                    if os.path.exists(new_dir) and os.path.normcase(os.path.abspath(new_dir)) not in leaving:
+                        _show_err(f"「{label}」要改成的 {os.path.basename(new_dir)} 已经存在，没有改名")
+                        return
+                    moves.append((old_dir, new_dir))
+                temps = []
+                try:
+                    for old_dir, new_dir in moves:
+                        tmp = old_dir + ".__renaming"
+                        n = 1
+                        while os.path.exists(tmp):
+                            tmp = old_dir + ".__renaming%d" % n
+                            n += 1
+                        os.rename(old_dir, tmp)
+                        temps.append((tmp, new_dir, old_dir))
+                    for tmp, new_dir, _old_dir in temps:
+                        os.rename(tmp, new_dir)
+                except Exception as exc:
+                    for tmp, new_dir, old_dir in reversed(temps):
+                        try:
+                            if os.path.isdir(new_dir) and not os.path.exists(old_dir):
+                                os.rename(new_dir, old_dir)
+                            elif os.path.isdir(tmp) and not os.path.exists(old_dir):
+                                os.rename(tmp, old_dir)
+                        except Exception:
+                            log.exception("回滚子目录改名失败")
+                    log.exception("重命名子目录失败")
+                    _show_err("改名没有完成：%s" % exc)
+                    return
+            cur["save_subdir_names"] = names
+            self._persist_now()
+            dlg.accept()
+
+        btn_save.clicked.connect(_commit)
+        btn_close.clicked.connect(dlg.reject)
+        dlg.exec_()
+
     def _browse_cookie(self, name: str):
         start = (self._cookie_paths.get(name) or "").strip() or os.path.expanduser("~")
         p, _ = QFileDialog.getOpenFileName(
@@ -1180,6 +1435,7 @@ class SettingsSection(QWidget):
         low = (fname or "").lower()
         tokens = {
             "douyin.com": ("douyin",),
+            "qishui.douyin.com": ("qishui", "汽水"),
             "bilibili.com": ("bilibili", "bili"),
             "youtube.com": ("youtube",),
             "e-hentai.org": ("e-hentai", "exhentai", "e_hentai"),
@@ -1367,40 +1623,16 @@ class SettingsSection(QWidget):
             # 就地更新，避免 _load_user_prefs 里仍握着旧 dict 的引用
             new_prefs = copy.deepcopy(cur)
 
-            base = self.save_edit.text().strip() or user_downloads_dir() or os.path.expanduser("~/Downloads")
-            new_prefs["save_path_base"] = base.replace("\\", "/")
-
-            path_map = {
-                ("fast_save", None): "WebImageSaver",
-                ("screenshot", None): "ScreenshotImageSaver",
-                ("region_record", None): "RegionRecord",
-                ("image_proc", None): "ImageProc",
-                ("voice_clone", None): "VoiceClone",
-                ("video", "douyin"): "douyin",
-                ("video", "bilibili"): "bilibili",
-                ("video", "youtube"): "YouTube",
-                ("gallery", None): "e-hentai.org",
-                ("gallery", "hitomi"): "hitomi.la",
-                ("gallery_pixiv", None): "pixiv",
-            }
-            for (section, sub_key), subd in path_map.items():
-                p = os.path.join(base, subd).replace("\\", "/")
-                if sub_key:
-                    sec = new_prefs.get(section)
-                    if not isinstance(sec, dict):
-                        sec = {}
-                        new_prefs[section] = sec
-                    s = sec.get(sub_key)
-                    if not isinstance(s, dict):
-                        s = {}
-                        sec[sub_key] = s
-                    s["save_path"] = p
-                else:
-                    sec = new_prefs.get(section)
-                    if not isinstance(sec, dict):
-                        sec = {}
-                        new_prefs[section] = sec
-                    sec["save_path"] = p
+            base = self.save_edit.text().strip()
+            # 换电脑留下的 Users\\旧用户 路径：即使框里还有，也改回本机下载目录，绝不 mkdir 去造
+            if not base or is_other_user_profile_path(base):
+                base = this_machine_downloads_dir() or os.path.expanduser("~/Downloads")
+                shown = base.replace("\\", "/")
+                if (self.save_edit.text() or "").strip().replace("\\", "/") != shown:
+                    self.save_edit.blockSignals(True)
+                    self.save_edit.setText(shown)
+                    self.save_edit.blockSignals(False)
+            apply_public_save_base(new_prefs, base, mkdir=True)
 
             for name, section, sub_key, _domain in _COOKIE_ITEMS:
                 ck = (self._cookie_paths.get(name) or "").strip()
@@ -1429,6 +1661,12 @@ class SettingsSection(QWidget):
             # 同步到各业务页
             try:
                 self._mw.page_douyin.apply_settings(new_prefs.get("video") or {})
+            except Exception:
+                pass
+            try:
+                pa = getattr(self._mw, "page_audio", None)
+                if pa is not None and hasattr(pa, "apply_settings"):
+                    pa.apply_settings(new_prefs.get("audio") or {})
             except Exception:
                 pass
             try:
@@ -1461,7 +1699,9 @@ class SettingsSection(QWidget):
             except Exception:
                 pass
             try:
-                page_vc = getattr(self._mw, "page_voice_clone", None)
+                # 语音克隆 = 「音频处理」页的 CosVoice3 页签
+                page_a = getattr(self._mw, "page_auk", None)
+                page_vc = getattr(page_a, "page_cosvoice3", None) if page_a is not None else None
                 if page_vc is not None and hasattr(page_vc, "apply_settings"):
                     page_vc.apply_settings(new_prefs.get("voice_clone") or {})
             except Exception:

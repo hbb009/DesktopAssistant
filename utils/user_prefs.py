@@ -26,6 +26,16 @@ log = get_logger(__name__)
 
 _PREFS_VERSION = 1
 
+# 侧栏主菜单出厂顺序（含分区槽位 @hdr:xxx）；ui_main._default_side_order 同源引用。
+# 只决定「画在哪」：页面分类（电子钟空闲 / 按住不切）仍按 ui_main._SIDE_SECTION_MAP。
+DEFAULT_SIDE_ORDER = (
+    "video", "audio", "gallery", "fast", "shot", "region_rec",
+    "@hdr:assistant",
+    "paste", "img_proc", "voice", "auk", "points", "ratio", "prompt", "text_edit", "tz_fx", "dir_link",
+    "@hdr:tool",
+    "gameassist", "gamebrain", "gamemeet",
+)
+
 # 本程序 user.txt 必须具备的顶层段（至少命中这些才算「像本程序配置」）
 _APP_SECTIONS = ("fast_save", "screenshot", "ui")
 
@@ -41,26 +51,208 @@ def records_dir() -> str:
 
 
 def user_file_path() -> str:
-    """data/user.txt（用户说的「user 文本文件」）。"""
-    from utils.app_paths import records_file
-    return records_file("user.txt")
+    """data/user.txt（程序偏好，不属于用户创造的 records/）。"""
+    from utils.app_paths import data_dir
+    return os.path.join(data_dir(), "user.txt")
+
+
+def normalize_whitelist_pattern(raw: str) -> str:
+    """白名单条目：去协议、去查询串，保留 host 或 host/path。"""
+    s = (raw or "").strip().lower()
+    if not s:
+        return ""
+    for prefix in ("https://", "http://"):
+        if s.startswith(prefix):
+            s = s[len(prefix):]
+            break
+    s = s.split("?")[0].split("#")[0].strip()
+    if s.startswith("www."):
+        s = s[4:]
+    s = s.strip(".")
+    s = s.rstrip("/")
+    return s
+
+
+def url_hits_whitelist_patterns(url: str, patterns) -> bool:
+    """判断一条 https URL 是否命中白名单（主机名或 host/path 前缀）。"""
+    from urllib.parse import urlparse
+
+    u = (url or "").strip()
+    if not u:
+        return False
+    try:
+        p = urlparse(u)
+    except Exception:
+        return False
+    host = (p.hostname or "").lower().strip(".")
+    path = (p.path or "").lower() or "/"
+    if not path.startswith("/"):
+        path = "/" + path
+    if not host:
+        return False
+    for raw in patterns or []:
+        pat = normalize_whitelist_pattern(str(raw or ""))
+        if not pat:
+            continue
+        if "/" in pat:
+            ph, _, rest = pat.partition("/")
+            want = "/" + rest.strip("/")
+            if not (host == ph or host.endswith("." + ph)):
+                continue
+            if path == want or path.startswith(want + "/"):
+                return True
+        elif host == pat or host.endswith("." + pat):
+            return True
+    return False
+
+
+# 旧版把「其它视频」拆成三条；读档时并回 other。
+_OTHER_LEGACY_KEYS = ("qishui", "jimeng", "liblib")
+
+
+def _clean_whitelist_patterns(raw) -> list:
+    out = []
+    seen = set()
+    if not isinstance(raw, list):
+        return out
+    for x in raw:
+        s = str(x or "").strip().lower()
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
+def other_whitelist_patterns(wl: Optional[dict] = None) -> list:
+    """其它视频子页的域名。新键 other；旧档仍是 qishui / jimeng / liblib。"""
+    wl = wl if isinstance(wl, dict) else {}
+    if isinstance(wl.get("other"), list):
+        return _clean_whitelist_patterns(wl.get("other"))
+    merged = []
+    seen = set()
+    found = False
+    for key in _OTHER_LEGACY_KEYS:
+        raw = wl.get(key)
+        if isinstance(raw, list):
+            found = True
+            for s in _clean_whitelist_patterns(raw):
+                if s not in seen:
+                    seen.add(s)
+                    merged.append(s)
+    if found:
+        return merged
+    return list(default_clipboard_whitelist().get("other") or [])
 
 
 def default_clipboard_whitelist() -> Dict[str, list]:
     """预下载域名白名单默认值（关于页可编辑，按下载子页分组）。
 
-    匹配规则：只认剪贴板里 https 链接的主机名（www.douyin.com 可命中 douyin.com）。
-    正文里提到域名、或 AV1 这类字样，不算进白名单。
+    视频 4 条（抖音 / B站 / YouTube / 其它视频）+ 音频 1 条（汽水音乐）+ 图集 3 条。
+    其它视频含即梦、LibTV、XVideos、Pornhub。汽水单独成键，检测时必须早于 douyin.com。
+    匹配规则：只认剪贴板里 https 链接。条目可以是主机名（www.douyin.com 可命中 douyin.com），
+    也可以带路径前缀（music.douyin.com/qishui）。正文里提到域名不算。
     """
     return {
         # 子串匹配（小写）；v.douyin.com 含 douyin.com 即可命中
         "douyin": ["douyin.com", "tiktok.com", "iesdouyin.com"],
         "bilibili": ["bilibili.com", "b23.tv", "bili2233.cn"],
         "youtube": ["youtube.com", "youtu.be"],
+        # 汽水路径必须比 douyin.com 更具体，检测时先看本条
+        "qishui": list(_QISHUI_WHITELIST),
+        "other": [
+            "jimeng.jianying.com",
+            "jianying.com",
+            "jimeng.com",
+            "liblib.tv",
+            "xvideos.com",
+            "pornhub.com",
+        ],
         "gallery_eh": ["e-hentai.org", "exhentai.org"],
         "gallery_pixiv": ["pixiv.net"],
         "gallery_hitomi": ["hitomi.la"],
     }
+
+
+# 白名单迁移版本：clipboard_auto.whitelist_rev。
+# 2 = 其它视频追加 xvideos.com（只补一次；之后用户删掉不再加回）。
+# 3 = 汽水音乐从「其它视频」拆到独立键 qishui（只搬走已有条目，不把删掉的加回）。
+# 4 = 其它视频追加 pornhub.com（只补一次；之后用户删掉不再加回）。
+# 不放进 default_prefs：否则旧档合并默认值后会被误认为已迁移。
+_WHITELIST_REV = 4
+_QISHUI_WHITELIST = (
+    "music.douyin.com/qishui",
+    "qishui.douyin.com",
+)
+# rev 2 / rev 4 都是「往 other 补一个域名」，只补一次
+_OTHER_NEW_DOMAINS = {
+    2: ("xvideos.com",),
+    4: ("pornhub.com",),
+}
+
+
+def migrate_clipboard_whitelist(prefs: Dict[str, Any]) -> bool:
+    """按 whitelist_rev 逐级升级旧档白名单；改动了返回 True。"""
+    if not isinstance(prefs, dict):
+        return False
+    ca = prefs.get("clipboard_auto")
+    if not isinstance(ca, dict):
+        return False
+    try:
+        rev = int(ca.get("whitelist_rev") or 0)
+    except (TypeError, ValueError):
+        rev = 0
+    if rev >= _WHITELIST_REV:
+        return False
+    changed = False
+    wl = ca.get("whitelist")
+    if not isinstance(wl, dict):
+        wl = {}
+        ca["whitelist"] = wl
+        changed = True
+    if rev < 2:
+        other = wl.get("other")
+        if not isinstance(other, list):
+            other = other_whitelist_patterns(wl)
+        other = list(other)
+        if "xvideos.com" not in [str(x or "").strip().lower() for x in other]:
+            other.append("xvideos.com")
+        wl["other"] = other
+        changed = True
+    if rev < 3:
+        other = wl.get("other")
+        if not isinstance(other, list):
+            other = other_whitelist_patterns(wl)
+        other = _clean_whitelist_patterns(other)
+        moved = [p for p in other if p in _QISHUI_WHITELIST or "qishui" in p]
+        wl["other"] = [p for p in other if p not in moved]
+        # 合并进默认表时会先塞入出厂汽水域名；这里以用户「其它视频」里实际有的为准
+        wl["qishui"] = moved
+        changed = True
+    if rev < 4:
+        other = wl.get("other")
+        if not isinstance(other, list):
+            other = other_whitelist_patterns(wl)
+        other = _clean_whitelist_patterns(other)
+        have = {str(x or "").strip().lower() for x in other}
+        for dom in _OTHER_NEW_DOMAINS[4]:
+            if dom not in have:
+                other.append(dom)
+        wl["other"] = other
+        changed = True
+    ca["whitelist_rev"] = _WHITELIST_REV
+    return True
+
+
+def _stamp_whitelist_rev(prefs: Dict[str, Any]) -> None:
+    """写盘时标记已是当前白名单版本（新建 / 重置出的档不再触发迁移）。"""
+    ca = prefs.get("clipboard_auto") if isinstance(prefs, dict) else None
+    if not isinstance(ca, dict):
+        return
+    try:
+        rev = int(ca.get("whitelist_rev") or 0)
+    except (TypeError, ValueError):
+        rev = 0
+    ca["whitelist_rev"] = max(rev, _WHITELIST_REV)
 
 
 def default_prefs() -> Dict[str, Any]:
@@ -75,6 +267,7 @@ def default_prefs() -> Dict[str, Any]:
             "mkdir_name_f10": "Qwen",
             "check_ignore_ext": True,
             "check_fill": False,
+            "dup_exts": [],
         },
         "screenshot": {
             "enabled": False,
@@ -103,22 +296,24 @@ def default_prefs() -> Dict[str, Any]:
             "window_w": 960,
             "window_h": 776,
             # 侧栏主菜单顺序（含分区槽位 @hdr:xxx；可拖拽改写，落盘到 user.txt）
-            "side_order": [
-                "overview", "fast", "video", "gallery",
-                "shot", "region_rec",
-                "@hdr:assistant",
-                "paste", "img_proc", "points", "voice", "voice_clone", "game_assist", "prompt",
-                "@hdr:tool",
-                "ratio", "tz_fx", "dir_link",
-            ],
+            "side_order": list(DEFAULT_SIDE_ORDER),
             # 侧栏分区标题自定义（assistant / tool 等）；空则用出厂名
             "section_names": {},
         },
         # 公共下载根目录（系统总览「公共保存」；各业务子目录由此派生）
         "save_path_base": "",
+        "save_subdir_names": {},
+        # 上次写入公共保存路径时的本机身份（换电脑后用来丢弃旧绝对路径）
+        "save_path_host": {"computer": "", "user": "", "home": ""},
         # 语音录入：录音方式等
         "voice_input": {
             "record_mode": "click",  # hold=A 按住松手 | click=B 点击切换
+            "model": "",             # 空=页面按本机模型挑默认
+            "language": "zh",
+        },
+        # 文本编辑：前缀符号历史（原属于语音录入，v9.17 拆分后独立成页）
+        "text_editor": {
+            "symbol_history": [],
         },
         "voice_clone": {
             "prompt_wav": "",
@@ -130,12 +325,19 @@ def default_prefs() -> Dict[str, Any]:
             "save_path": "",
             "model_dir": "",
         },
-        "game_assist": {
+        "gameassist": {
             "sources": [],
             "groups": [],   # 知识库用户分类：[{gid,title,active}]；「未分类」为内置，不存
             "base_url": "https://api.deepseek.com/v1",
             "api_key": "",
             "model": "",
+        },
+        "gamebrain": {
+            "sources": [],
+            "groups": [],
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "",  # 留空：在页面填写，或用环境变量 OPENROUTER_API_KEY
+            "model": "typesafe/jev-1.13",
         },
         "digital_human": {
             "image": "",
@@ -167,13 +369,24 @@ def default_prefs() -> Dict[str, Any]:
             "video": False,
             "gallery": False,
             "auto_process": False,
+            # 侧栏剪贴板归属："" | paste | gamebrain | gamemeet（互斥，默认无）
+            "clipboard_owner": "",
+            # 静默复制（全局 F7，把前台选中文字推入归属页）总开关；关=注销 F7
+            "silent_copy": True,
             "whitelist": default_clipboard_whitelist(),
         },
-        # 视频下载页（抖音/B站/YouTube）：各子页保存路径 + Cookie路径
+        # 视频下载页（抖音/B站/YouTube/其它视频）：各子页保存路径 + Cookie路径
+        # 其它视频（即梦 / LibTV / XVideos）共用 other，统一落到公共保存根下 Video
         "video": {
             "douyin": {"save_path": "", "cookie_path": ""},
             "bilibili": {"save_path": "", "cookie_path": ""},
             "youtube": {"save_path": "", "cookie_path": ""},
+            "other": {"save_path": "", "cookie_path": ""},
+        },
+        # 音频下载 · 汽水音乐（公共保存根下 Audio）
+        # save_subdir_names：公共保存各子目录的文件夹名，空则用出厂名
+        "audio": {
+            "qishui": {"save_path": "", "cookie_path": ""},
         },
         # 积分计算：常用汇率等
         "points_calc": {
@@ -185,11 +398,15 @@ def default_prefs() -> Dict[str, Any]:
         "clock": {
             "digit_color": "#eab308",
         },
-        # 提示词：左右两栏 10 项正文（重开软件继续改）
+        # 目录映射：是否用管理员权限执行 mklink
+        "dir_link": {
+            "run_as_admin": True,
+        },
+        # 提示词：分页各自一份正文和预设。pages 为空时，页面会把旧的
+        # 顶层 orig / custom_presets 收进标题「默认」的第一页。
         "prompt_editor": {
-            "orig": {},
-            "new": {},
-            "custom_presets": {},
+            "active": "",
+            "pages": [],
         },
         # 旧角色模板残留，仅给提示词页一次性回读装备/场景细节/色彩
         "female_char": {
@@ -202,14 +419,40 @@ def default_prefs() -> Dict[str, Any]:
         "image_proc": {
             "save_path": "",
             "scale_pct": 50,          # 25 / 50 / 75
-            "save_format": "jpg",     # jpg | png（四区共用）
+            "save_format": "jpg",     # jpg | png（功能区共用；抠图强制 png）
             "split_format": "jpg",    # 兼容旧键，与 save_format 同步
             "convert_format": "jpg",
             "upscale_model": "realesrgan-x4plus",
             "upscale_scale": 4,       # 2 … 6
-            "active_op": "scale",     # scale | upscale | split | more
+            "active_op": "scale",     # scale | upscale | split | matting | more
+        },
+        "timezone_fx": {
+            "cities": [
+                "洛杉矶", "纽约", "伦敦", "巴黎",
+                "迪拜", "加尔各答", "上海", "东京",
+            ],
+            "hero_city": "上海",
         },
     }
+
+
+def _migrate_gameassist_prefs(data: Dict[str, Any]) -> Dict[str, Any]:
+    """旧键 game_assist → 合体名 gameassist（含侧栏顺序）。"""
+    if not isinstance(data, dict):
+        return data
+    if "game_assist" in data:
+        if "gameassist" not in data:
+            data["gameassist"] = data.pop("game_assist")
+        else:
+            data.pop("game_assist", None)
+    ui = data.get("ui")
+    if isinstance(ui, dict):
+        order = ui.get("side_order")
+        if isinstance(order, list):
+            ui["side_order"] = [
+                "gameassist" if x == "game_assist" else x for x in order
+            ]
+    return data
 
 
 def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
@@ -350,7 +593,55 @@ def load_user_prefs() -> Tuple[Dict[str, Any], bool]:
             log.warning("user.txt 二次校验失败，已隔离 bak=%s", bak)
             return default_prefs(), True
         log.debug("user.txt 读取成功 path=%s", path)
+        data = _migrate_gameassist_prefs(data)
         merged = _deep_merge(default_prefs(), data)
+        try:
+            from utils.app_paths import rebase_public_save_prefs
+            if rebase_public_save_prefs(merged):
+                log.info("已按本机重定向公共保存目录 → %s", merged.get("save_path_base") or "")
+        except Exception:
+            log.exception("重定向公共保存目录失败")
+        try:
+            from utils.app_paths import migrate_video_other_subdir
+            if migrate_video_other_subdir(merged):
+                log.info("其它视频保存目录已统一为公共保存根下 Video")
+        except Exception:
+            log.exception("迁移其它视频保存目录失败")
+        try:
+            if migrate_clipboard_whitelist(merged):
+                log.info("预下载白名单已升级 rev=%s", _WHITELIST_REV)
+        except Exception:
+            log.exception("迁移预下载白名单失败")
+        try:
+            base = (merged.get("save_path_base") or "").strip().replace("\\", "/").rstrip("/")
+            audio = merged.get("audio")
+            if not isinstance(audio, dict):
+                audio = {}
+                merged["audio"] = audio
+            sub = audio.get("qishui")
+            if not isinstance(sub, dict):
+                sub = {}
+                audio["qishui"] = sub
+            path = (sub.get("save_path") or "").replace("\\", "/").rstrip("/")
+            target = (base + "/Audio") if base else ""
+            was_qishui = bool(base) and path == base + "/Qishui"
+            if base and (not path or was_qishui):
+                if was_qishui:
+                    old_dir = os.path.join(base, "Qishui")
+                    new_dir = os.path.join(base, "Audio")
+                    if os.path.isdir(old_dir) and not os.path.exists(new_dir):
+                        try:
+                            os.rename(old_dir, new_dir)
+                            log.info("音频目录已从 Qishui 改名为 Audio")
+                        except Exception:
+                            log.exception("音频目录改名为 Audio 失败")
+                if path != target:
+                    sub["save_path"] = target
+            names = merged.get("save_subdir_names")
+            if isinstance(names, dict) and names.get("audio.qishui") == "Qishui":
+                names.pop("audio.qishui", None)
+        except Exception:
+            log.exception("补音频保存目录失败")
         return merged, False
     except Exception:
         bak = _quarantine_bad_user_file(path, reason="read_error")
@@ -364,17 +655,23 @@ def save_user_prefs(prefs: Dict[str, Any]) -> bool:
     try:
         payload = _deep_merge(default_prefs(), prefs or {})
         payload["version"] = _PREFS_VERSION
+        _stamp_whitelist_rev(payload)
         # 确保核心段齐全
         base = default_prefs()
         for key in (
             *_APP_SECTIONS,
             "gallery", "gallery_pixiv", "points_calc", "clipboard_auto",
-            "video", "region_record", "voice_input", "voice_clone", "game_assist", "digital_human",
+            "video", "region_record", "voice_input", "voice_clone", "gameassist", "gamebrain", "digital_human",
         ):
             if not isinstance(payload.get(key), dict):
                 payload[key] = deepcopy(base[key])
         if "save_path_base" not in payload:
             payload["save_path_base"] = base.get("save_path_base", "")
+        try:
+            from utils.app_paths import current_save_host
+            payload["save_path_host"] = current_save_host()
+        except Exception:
+            pass
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, indent=2)

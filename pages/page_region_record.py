@@ -1239,11 +1239,10 @@ class PageRegionRecord(QWidget):
         if self._save_path:
             return self._save_path
         try:
+            from utils.app_paths import public_save_base
             from utils.user_prefs import load_user_prefs
             prefs, _ = load_user_prefs()
-            base = (prefs.get("save_path_base") or "").strip()
-            if not base:
-                base = os.path.expanduser("~/Downloads")
+            base = public_save_base(prefs)
             return os.path.join(base, REGION_RECORD_SUBDIR)
         except Exception:
             log.debug("读取区域录屏保存目录偏好失败，已回退默认路径", exc_info=True)

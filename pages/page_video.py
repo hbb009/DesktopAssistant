@@ -1,8 +1,6 @@
 # pages/page_video.py
-# 视频下载：QTabWidget 分页（抖音 / B站 / YouTube）
-# v9.10：原「抖音下载」升级为多平台「视频下载」
-# v9.13：新增「B站」分页（yt-dlp 引擎，布局对齐抖音）
-# v9.13.1：新增统一跨平台批量下载
+# 视频下载：QTabWidget 分页（抖音 / B站 / YouTube / 其它视频）
+# 其它视频：即梦、LibTV、XVideos。汽水音乐在独立的「音频下载」页。
 
 import os
 import re
@@ -29,6 +27,7 @@ from styles.style_all import (
 from pages.page_douyin import PageDouyin
 from pages.page_bilibili import PageBilibili
 from pages.page_youtube import PageYoutube
+from pages.page_other_video import PageOtherVideo
 from utils.logger import get_logger
 from utils.cursor_toast import (
     show_cursor_toast,
@@ -317,8 +316,84 @@ def _paint_youtube_icon(size: int = 22, selected: bool = True, dark: bool = True
     return QIcon(pm)
 
 
+
+def _paint_jimeng_icon(size: int = 22, selected: bool = True, dark: bool = True) -> QIcon:
+    """即梦徽章：青绿圆角底 +「即」字，未选中时降饱和。"""
+    from PyQt5.QtGui import QFont
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setRenderHint(QPainter.TextAntialiasing, True)
+    s = float(size)
+    m = s * 0.06
+    body = QRectF(m, m, s - 2 * m, s - 2 * m)
+    if selected:
+        base = QColor("#0d9488") if dark else QColor("#14b8a6")
+        rim = QColor("#5eead4"); rim.setAlpha(220)
+        fg = QColor("#ecfdf5")
+    else:
+        base = QColor("#3a3f4a") if dark else QColor("#c5ccd6")
+        base.setAlpha(120 if dark else 140)
+        rim = QColor("#6b7280"); rim.setAlpha(90)
+        fg = QColor("#9ca3af"); fg.setAlpha(180)
+    p.setPen(QPen(rim, max(1.0, s * 0.06)))
+    p.setBrush(QBrush(base))
+    p.drawRoundedRect(body, s * 0.22, s * 0.22)
+    font = QFont(); font.setFamily("Microsoft YaHei UI"); font.setBold(True)
+    font.setPixelSize(max(9, int(s * 0.52)))
+    p.setFont(font); p.setPen(QPen(fg))
+    p.drawText(body, int(Qt.AlignCenter), "即")
+    if selected:
+        hi = QLinearGradient(0, m, 0, m + s * 0.35)
+        hi.setColorAt(0, QColor(255, 255, 255, 45 if dark else 60))
+        hi.setColorAt(1, QColor(255, 255, 255, 0))
+        p.setPen(Qt.NoPen); p.setBrush(QBrush(hi))
+        p.drawRoundedRect(QRectF(m + 1, m + 1, s - 2 * m - 2, s * 0.38), s * 0.18, s * 0.18)
+    p.end()
+    return QIcon(pm)
+
+
+
+def _paint_liblib_icon(size: int = 22, selected: bool = True, dark: bool = True) -> QIcon:
+    """LibTV 徽章：靛蓝圆角底 +「L」字，未选中时降饱和。"""
+    from PyQt5.QtGui import QFont
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setRenderHint(QPainter.TextAntialiasing, True)
+    s = float(size)
+    m = s * 0.06
+    body = QRectF(m, m, s - 2 * m, s - 2 * m)
+    if selected:
+        base = QColor("#4f46e5") if dark else QColor("#6366f1")
+        rim = QColor("#a5b4fc"); rim.setAlpha(220)
+        fg = QColor("#eef2ff")
+    else:
+        base = QColor("#3a3f4a") if dark else QColor("#c5ccd6")
+        base.setAlpha(120 if dark else 140)
+        rim = QColor("#6b7280"); rim.setAlpha(90)
+        fg = QColor("#9ca3af"); fg.setAlpha(180)
+    p.setPen(QPen(rim, max(1.0, s * 0.06)))
+    p.setBrush(QBrush(base))
+    p.drawRoundedRect(body, s * 0.22, s * 0.22)
+    font = QFont(); font.setFamily("Microsoft YaHei UI"); font.setBold(True)
+    font.setPixelSize(max(9, int(s * 0.52)))
+    p.setFont(font); p.setPen(QPen(fg))
+    p.drawText(body, int(Qt.AlignCenter), "L")
+    if selected:
+        hi = QLinearGradient(0, m, 0, m + s * 0.35)
+        hi.setColorAt(0, QColor(255, 255, 255, 45 if dark else 60))
+        hi.setColorAt(1, QColor(255, 255, 255, 0))
+        p.setPen(Qt.NoPen); p.setBrush(QBrush(hi))
+        p.drawRoundedRect(QRectF(m + 1, m + 1, s - 2 * m - 2, s * 0.38), s * 0.18, s * 0.18)
+    p.end()
+    return QIcon(pm)
+
+
 class PageVideo(QWidget):
-    """视频下载：抖音 / B站 / YouTube 三个页面卡。"""
+    """视频下载：抖音 / B站 / YouTube / 即梦 / LibTV 页面卡。"""
 
     # 侧栏「视频下载」底边进度线（汇总三个子页）
     nav_progress = pyqtSignal(bool, int, str)
@@ -335,6 +410,11 @@ class PageVideo(QWidget):
             "douyin": (False, 0, ""),
             "bilibili": (False, 0, ""),
             "youtube": (False, 0, ""),
+            "jimeng": (False, 0, ""),
+            "liblib": (False, 0, ""),
+            "qishui": (False, 0, ""),
+            "xvideos": (False, 0, ""),
+            "other": (False, 0, ""),
         }
 
         root = QVBoxLayout(self)
@@ -381,20 +461,27 @@ class PageVideo(QWidget):
         self.page_douyin = PageDouyin()
         self.page_bilibili = PageBilibili()
         self.page_youtube = PageYoutube()
+        self.page_other = PageOtherVideo()
+        # 兼容旧引用：即梦 / LibTV / 汽水都走其它视频页
+        self.page_jimeng = self.page_other
+        self.page_liblib = self.page_other
         _apply_tab_page_bg(self.page_douyin, "TabDouyin")
         _apply_tab_page_bg(self.page_bilibili, "TabBilibili")
         _apply_tab_page_bg(self.page_youtube, "TabYoutube")
+        _apply_tab_page_bg(self.page_other, "TabOtherVideo")
 
-        # 顺序：抖音 → B站 → YouTube
+        # 顺序：抖音 → B站 → YouTube → 其它视频
         self._pre_dl_tab_specs = (
             ("douyin", "douyin"),
             ("bilibili", "bilibili.com"),
             ("youtube", "YouTube"),
+            ("other", "其它视频"),
         )
         self._pre_dl_counts = {k: 0 for k, _ in self._pre_dl_tab_specs}
         self.tabs.addTab(self.page_douyin, "douyin")
         self.tabs.addTab(self.page_bilibili, "bilibili.com")
         self.tabs.addTab(self.page_youtube, "YouTube")
+        self.tabs.addTab(self.page_other, "其它视频")
         self._pre_dl_badge_host = self._install_pre_dl_tab_badges()
         self._refresh_platform_tabs()
         self.tabs.currentChanged.connect(lambda _i: self._refresh_platform_tabs())
@@ -410,10 +497,17 @@ class PageVideo(QWidget):
             self.page_youtube.nav_progress.connect(
                 lambda a, p, c: self._on_child_nav_progress("youtube", a, p, c)
             )
+            self.page_other.nav_progress.connect(self._on_other_nav_progress)
         except Exception:
             log.exception("连接视频子页侧栏进度线失败")
 
         theme.changed.connect(self.refresh_theme)
+
+    def _on_other_nav_progress(self, active: bool, pct: int, color: str):
+        plat = (getattr(self.page_other, "_current_platform", None) or "other").strip()
+        if plat not in self._nav_sources:
+            plat = "other"
+        self._on_child_nav_progress(plat, active, pct, color)
 
     def notify_batch_item_done(self, ok: bool, note: str = "", source: str = ""):
         """子页显式上报本条结果：校验通过才删记录行，再续跑下一条。
@@ -471,14 +565,17 @@ class PageVideo(QWidget):
     def _on_child_nav_progress(self, source: str, active: bool, pct: int, color: str):
         """汇总抖音/B站/YouTube（图集信号仅用于批量完成续跑，不更新视频侧栏进度线）。"""
         # 图集信号：只走批量完成逻辑，不碰视频侧栏进度线（图集有自己的侧栏线）
-        if source in ("ehentai", "pixiv", "hitomi"):
+        if source in ("ehentai", "pixiv", "hitomi", "qishui"):
             if not active and self._batch_mode and self._batch_active and source == self._batch_current_platform:
-                eh, pixiv, hitomi, _pg = self._get_gallery_pages()
-                p = {
-                    "ehentai": eh,
-                    "pixiv": pixiv,
-                    "hitomi": hitomi,
-                }.get(source)
+                if source == "qishui":
+                    p = self._qishui_page()
+                else:
+                    eh, pixiv, hitomi, _pg = self._get_gallery_pages()
+                    p = {
+                        "ehentai": eh,
+                        "pixiv": pixiv,
+                        "hitomi": hitomi,
+                    }.get(source)
                 ok = bool(p is not None and getattr(p, "_last_download_ok", False))
                 note = ""
                 if p is not None:
@@ -524,6 +621,10 @@ class PageVideo(QWidget):
                 "douyin": getattr(self, "page_douyin", None),
                 "bilibili": getattr(self, "page_bilibili", None),
                 "youtube": getattr(self, "page_youtube", None),
+                "jimeng": getattr(self, "page_other", None),
+                "liblib": getattr(self, "page_other", None),
+                "xvideos": getattr(self, "page_other", None),
+                "other": getattr(self, "page_other", None),
             }.get(source)
             ok = bool(p is not None and getattr(p, "_last_download_ok", False))
             note = ""
@@ -536,7 +637,7 @@ class PageVideo(QWidget):
             self.notify_batch_item_done(ok, note=note, source=source)
 
     def _install_pre_dl_tab_badges(self):
-        """页签右侧内边距叠数字角标（不占按钮位，宽度不随条数变）。"""
+        """页签右侧内边距叠数字角标（不占按钮位）。超过两位时该页签加数字宽。"""
         from ui_main import TabPreDlBadgeHost
 
         return TabPreDlBadgeHost(
@@ -544,7 +645,7 @@ class PageVideo(QWidget):
         )
 
     def set_pre_dl_counts(self, counts: dict):
-        """子页页签右侧显示预下载条数；0 条隐藏角标，页签宽度不变。"""
+        """子页页签右侧显示预下载条数；0 条隐藏。到三位数起该页签加一格数字宽。"""
         counts = counts or {}
         for key, _base in getattr(self, "_pre_dl_tab_specs", ()):
             try:
@@ -631,6 +732,8 @@ class PageVideo(QWidget):
         self.tabs.setTabIcon(0, _paint_douyin_icon(22, selected=(idx == 0), dark=dark))
         self.tabs.setTabIcon(1, _paint_bilibili_icon(22, selected=(idx == 1), dark=dark))
         self.tabs.setTabIcon(2, _paint_youtube_icon(22, selected=(idx == 2), dark=dark))
+        self.tabs.setTabIcon(3, _paint_jimeng_icon(22, selected=(idx == 3), dark=dark))
+        self.tabs.setTabIcon(4, _paint_liblib_icon(22, selected=(idx == 4), dark=dark))
 
         # firstSelected → VIDEO_TAB_QSS 控制 pane 左上是否圆角
         # 选中第一张：左上直角（页卡左边承接）；否则顶边线左端圆角
@@ -794,25 +897,49 @@ class PageVideo(QWidget):
                 break
         return False
 
+    def _abort_active_download_pages(self):
+        """给当前各下载子页打取消标记，尽快停掉正在进行的任务。"""
+        pages = [
+            getattr(self, "page_douyin", None),
+            getattr(self, "page_bilibili", None),
+            getattr(self, "page_youtube", None),
+            getattr(self, "page_other", None),
+            self._qishui_page(),
+        ]
+        eh, pixiv, hitomi, _pg = self._get_gallery_pages()
+        pages.extend([eh, pixiv, hitomi])
+        for p in pages:
+            if p is None:
+                continue
+            for attr in ("_cancel_flag", "_cancel"):
+                flag = getattr(p, attr, None)
+                try:
+                    if isinstance(flag, list) and len(flag) > 0:
+                        flag[0] = True
+                except Exception:
+                    pass
+
     def request_batch_stop(self) -> bool:
-        """F6：预约中止。当前记录处理完后再停；若已在条间空闲则立刻收口。"""
+        """F6：用户中止。立刻取消当前下载并收口回待机。"""
         if not getattr(self, "_batch_mode", False):
             return False
         if getattr(self, "_batch_stop_requested", False):
-            # 不另弹 CursorToast，状态挂在常驻气泡第一行
-            set_batch_progress_note("已预约中止")
+            set_batch_progress_note("用户中止")
             return True
         self._batch_stop_requested = True
-        if not getattr(self, "_batch_active", False):
-            try:
-                self._batch_timer.stop()
-            except Exception:
-                pass
-            # 条间空闲：立刻收口（完成提示由 _batch_finish 统一弹出）
-            QTimer.singleShot(0, self._batch_finish)
-        else:
-            set_batch_progress_note("当前条后中止")
-            self._log_to_current("已预约中止：当前条完成后停止批处理", "warn")
+        set_batch_progress_note("用户中止")
+        try:
+            self._log_to_current("用户中止：已停止批处理", "warn")
+        except Exception:
+            pass
+        try:
+            self._batch_timer.stop()
+        except Exception:
+            pass
+        self._abort_active_download_pages()
+        # 先落锁，避免取消收尾时再结算下一条
+        self._batch_active = False
+        QTimer.singleShot(0, self._batch_finish)
         return True
 
     def _batch_check_next(self):
@@ -822,10 +949,18 @@ class PageVideo(QWidget):
     def _batch_platform_for(url: str) -> str:
         """识别 URL 所属平台。"""
         low = (url or "").lower()
+        if "qishui.douyin.com" in low or "music.douyin.com/qishui" in low:
+            return "qishui"
         if "douyin.com" in low or "tiktok.com" in low or "v.douyin.com" in low:
             return "douyin"
         if "youtube.com" in low or "youtu.be" in low:
             return "youtube"
+        if "jimeng.jianying.com" in low or "jimeng.com" in low:
+            return "jimeng"
+        if "liblib.tv" in low:
+            return "liblib"
+        if re.search(r"xvideos\d*\.com/video", low):
+            return "xvideos"
         if ("bilibili.com" in low or "b23.tv" in low or "bili2233.cn" in low
                 or bool(re.search(r"\bBV[0-9A-Za-z]{10}\b|\bav\d+\b", url or "", re.I))):
             return "bilibili"
@@ -836,6 +971,55 @@ class PageVideo(QWidget):
         if "hitomi.la" in low:
             return "hitomi"
         return ""
+
+    def _qishui_page(self):
+        """汽水子页在「音频下载」上，不在本视频容器里。"""
+        w = self.window()
+        page = getattr(w, "page_audio", None)
+        if page is None and hasattr(w, "_ensure_page"):
+            try:
+                page = w._ensure_page("audio")
+            except Exception:
+                log.exception("批处理创建音频下载页失败")
+                page = None
+        return getattr(page, "page_qishui", None) if page is not None else None
+
+    def _start_qishui_batch(self, url: str):
+        """混链批处理里的汽水链接：切到音频下载页再解析。"""
+        sub = self._qishui_page()
+        if sub is None:
+            self._batch_err += 1
+            self._batch_err_urls.append(url)
+            self._batch_active = False
+            self._notify_batch_badges()
+            self._batch_timer.start(500)
+            return
+        if not getattr(self, "_qishui_batch_wired", False):
+            self._qishui_batch_wired = True
+            try:
+                sub.nav_progress.connect(
+                    lambda a, p, c: self._on_child_nav_progress("qishui", a, p, c)
+                )
+            except Exception:
+                log.exception("接入汽水批处理进度失败")
+        win = self.window()
+        page = getattr(win, "page_audio", None)
+        btn = getattr(win, "btn_audio", None)
+        if page is not None and btn is not None and hasattr(win, "stack"):
+            try:
+                idx = win.stack.indexOf(page)
+                if idx >= 0:
+                    if hasattr(win, "_auto_switch"):
+                        win._auto_switch(idx, btn)
+                    else:
+                        win._switch(idx, btn)
+            except Exception:
+                log.exception("批处理切换到音频下载失败")
+        try:
+            sub.url_edit.setText(url)
+        except Exception:
+            pass
+        QTimer.singleShot(100, lambda s=sub: s._start_flow(False))
 
     def _get_gallery_pages(self):
         """延迟获取图集子页引用（通过主窗口）。返回 (eh, pixiv, hitomi, page_gallery)。"""
@@ -895,12 +1079,16 @@ class PageVideo(QWidget):
         # 开跑前清目标页成功标志，避免混链时读到上一次的成功结果
         self._batch_reset_ok_flag(platform)
         # 视频三平台：清其它源残留 active，避免侧栏逻辑干扰（批处理续跑已不依赖此）
-        if platform in ("douyin", "bilibili", "youtube"):
+        if platform in ("douyin", "bilibili", "youtube", "jimeng", "liblib", "xvideos"):
             for k in list(self._nav_sources.keys()):
                 if k != platform:
                     self._nav_sources[k] = (False, 0, "")
         if platform == "douyin":
             self.handoff_to_douyin(url, auto_start=True)
+        elif platform == "qishui":
+            self._start_qishui_batch(url)
+        elif platform in ("jimeng", "liblib", "xvideos", "other"):
+            self.handoff_to_other(url, auto_start=True)
         elif platform == "bilibili":
             self.handoff_to_bilibili(url, auto_start=True)
         elif platform == "youtube":
@@ -948,7 +1136,10 @@ class PageVideo(QWidget):
                 try:
                     idx = mw.stack.indexOf(pg)
                     if idx >= 0:
-                        mw._switch(idx, mw.btn_gallery)
+                        if hasattr(mw, "_auto_switch"):
+                            mw._auto_switch(idx, mw.btn_gallery)
+                        else:
+                            mw._switch(idx, mw.btn_gallery)
                 except Exception:
                     pass
             pg.tabs.setCurrentWidget(sub)
@@ -961,6 +1152,10 @@ class PageVideo(QWidget):
         page = None
         if platform == "douyin":
             page = getattr(self, "page_douyin", None)
+        elif platform == "qishui":
+            page = self._qishui_page()
+        elif platform in ("jimeng", "liblib", "xvideos", "other"):
+            page = getattr(self, "page_other", None)
         elif platform == "bilibili":
             page = getattr(self, "page_bilibili", None)
         elif platform == "youtube":
@@ -1102,6 +1297,7 @@ class PageVideo(QWidget):
             getattr(self, "page_douyin", None),
             getattr(self, "page_bilibili", None),
             getattr(self, "page_youtube", None),
+            getattr(self, "page_other", None),
         ):
             if page is not None and hasattr(page, "_emit_nav_progress"):
                 try:
@@ -1149,7 +1345,7 @@ class PageVideo(QWidget):
         if cnt > 0:
             show_cursor_toast(
                 "自动下载",
-                "已中止" if stopped else "完成",
+                "用户中止" if stopped else "完成",
                 current=cnt, total=cnt,
                 ok=ok, skip=skip, err=err,
                 accent="info" if stopped else "ok",
@@ -1224,7 +1420,10 @@ class PageVideo(QWidget):
                         _err=err,
                     ):
                         try:
-                            _mw._switch(_mw.stack.indexOf(_mw.page_fast), _mw.btn_fast)
+                            if hasattr(_mw, "_auto_switch"):
+                                _mw._auto_switch(_mw.stack.indexOf(_mw.page_fast), _mw.btn_fast)
+                            else:
+                                _mw._switch(_mw.stack.indexOf(_mw.page_fast), _mw.btn_fast)
                         except Exception:
                             pass
                         # 回到速存图文：刷新记录卡片（处理完的文件可能已被删除），
@@ -1262,7 +1461,15 @@ class PageVideo(QWidget):
                     pass
 
     def _log_to_current(self, msg: str, level: str = "ok"):
-        """日志写到当前可见子页的运行日志区。"""
+        """日志写到当前可见子页的运行日志区。汽水写到音频页。"""
+        if (getattr(self, "_batch_current_platform", "") or "") == "qishui":
+            page = self._qishui_page()
+            if page is not None and hasattr(page, "_log"):
+                try:
+                    page._log(msg, level)
+                except Exception:
+                    pass
+                return
         cur = self.tabs.currentWidget()
         if cur is not None and hasattr(cur, "_log"):
             try:
@@ -1280,6 +1487,10 @@ class PageVideo(QWidget):
             page = getattr(self, "page_bilibili", None)
         elif plat == "youtube":
             page = getattr(self, "page_youtube", None)
+        elif plat == "qishui":
+            page = self._qishui_page()
+        elif plat in ("jimeng", "liblib", "xvideos", "other"):
+            page = getattr(self, "page_other", None)
         elif plat in ("ehentai", "pixiv", "hitomi"):
             eh, pixiv, hitomi, _pg = self._get_gallery_pages()
             page = {
@@ -1365,6 +1576,21 @@ class PageVideo(QWidget):
         if auto_start and text:
             QTimer.singleShot(0, lambda: self.page_bilibili._start_flow(False))
 
+    def handoff_to_other(self, link_text: str, auto_start: bool = True):
+        """把链接交给「其它视频」页（即梦 / LibTV / 汽水音乐 / XVideos）。"""
+        self.tabs.setCurrentWidget(self.page_other)
+        text = (link_text or "").strip()
+        if text:
+            self.page_other.url_edit.setText(text)
+        if auto_start and text:
+            QTimer.singleShot(0, lambda: self.page_other._start_flow(False))
+
+    def handoff_to_jimeng(self, link_text: str, auto_start: bool = True):
+        self.handoff_to_other(link_text, auto_start=auto_start)
+
+    def handoff_to_liblib(self, link_text: str, auto_start: bool = True):
+        self.handoff_to_other(link_text, auto_start=auto_start)
+
     def refresh_theme(self, *_):
         self.setStyleSheet(
             fmt(TAB_QSS + VIDEO_TAB_QSS)
@@ -1377,9 +1603,12 @@ class PageVideo(QWidget):
             self.page_bilibili.refresh_theme()
         if hasattr(self.page_youtube, "refresh_theme"):
             self.page_youtube.refresh_theme()
+        if hasattr(self.page_other, "refresh_theme"):
+            self.page_other.refresh_theme()
         _apply_tab_page_bg(self.page_douyin, "TabDouyin")
         _apply_tab_page_bg(self.page_bilibili, "TabBilibili")
         _apply_tab_page_bg(self.page_youtube, "TabYoutube")
+        _apply_tab_page_bg(self.page_other, "TabOtherVideo")
         self._refresh_platform_tabs()
         host = getattr(self, "_pre_dl_badge_host", None)
         if host is not None:
@@ -1393,6 +1622,7 @@ class PageVideo(QWidget):
             ("douyin", getattr(self, "page_douyin", None)),
             ("bilibili", getattr(self, "page_bilibili", None)),
             ("youtube", getattr(self, "page_youtube", None)),
+            ("other", getattr(self, "page_other", None)),
         ):
             if page is not None and hasattr(page, "export_settings"):
                 try:
@@ -1409,9 +1639,22 @@ class PageVideo(QWidget):
             ("douyin", getattr(self, "page_douyin", None)),
             ("bilibili", getattr(self, "page_bilibili", None)),
             ("youtube", getattr(self, "page_youtube", None)),
+            ("other", getattr(self, "page_other", None)),
         ):
             if page is not None and hasattr(page, "apply_settings"):
                 try:
                     page.apply_settings(d.get(key) or {})
+                except Exception:
+                    pass
+        other = getattr(self, "page_other", None)
+        if other is not None and hasattr(other, "apply_settings"):
+            merged = {}
+            for k in ("jimeng", "liblib", "other"):
+                sub = d.get(k)
+                if isinstance(sub, dict):
+                    merged.update(sub)
+            if merged:
+                try:
+                    other.apply_settings(merged)
                 except Exception:
                     pass

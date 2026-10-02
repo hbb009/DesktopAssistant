@@ -7,7 +7,7 @@ import os
 import sys
 from typing import Dict, List
 
-from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal, QRectF, QPointF, QSize
+from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal, QRectF, QPointF, QSize, QEvent
 from PyQt5.QtGui import (
     QPainter, QPen, QBrush, QColor, QPainterPath, QIcon, QPixmap, QFont,
 )
@@ -23,7 +23,10 @@ from styles.style_all import (
     message_box_info, message_box_warn, set_label_selectable,
 )
 from utils.flow_layout import FlowLayout
-from utils.user_prefs import default_clipboard_whitelist, default_prefs
+from utils.user_prefs import (
+    default_clipboard_whitelist, default_prefs, normalize_whitelist_pattern,
+    other_whitelist_patterns,
+)
 from utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -49,6 +52,60 @@ def _lbl_qss(color: str, role: str = "body", *, weight: int = None, extra: str =
     )
 
 
+
+def _make_category_sep(object_name: str = "AboutCategorySep", thickness: int = 1) -> QFrame:
+    """分类之间横线（颜色随主题 border；默认 1px，白名单可用 3px）。"""
+    th = max(1, int(thickness or 1))
+    sep = QFrame()
+    sep.setObjectName(object_name)
+    sep.setProperty("sepThickness", th)
+    sep.setFixedHeight(th)
+    sep.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+    try:
+        c = tk("border")
+    except Exception:
+        c = "#25345c"
+    sep.setStyleSheet(
+        f"QFrame#{object_name}{{background:{c};border:none;min-height:{th}px;max-height:{th}px;}}"
+    )
+    return sep
+
+
+def _reset_default_icon(size: int = 14, color: str = "#9fb0d7") -> "QIcon":
+    """恢复默认：圆形箭头。"""
+    from PyQt5.QtGui import QIcon, QPixmap, QPainter, QPen, QColor
+    from PyQt5.QtCore import Qt, QRectF
+    size = max(12, int(size))
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    s = float(size)
+    c = QColor(color)
+    pen = QPen(c, max(1.4, s * 0.10))
+    pen.setCapStyle(Qt.RoundCap)
+    pen.setJoinStyle(Qt.RoundJoin)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+    # 3/4 圆弧
+    rect = QRectF(s * 0.18, s * 0.18, s * 0.64, s * 0.64)
+    p.drawArc(rect, int(45 * 16), int(270 * 16))
+    # 箭头三角
+    from PyQt5.QtGui import QPolygonF, QBrush
+    from PyQt5.QtCore import QPointF
+    tip = QPointF(s * 0.72, s * 0.22)
+    tri = QPolygonF([
+        tip,
+        QPointF(s * 0.52, s * 0.18),
+        QPointF(s * 0.62, s * 0.38),
+    ])
+    p.setPen(Qt.NoPen)
+    p.setBrush(QBrush(c))
+    p.drawPolygon(tri)
+    p.end()
+    return QIcon(pm)
+
+
 def _restyle_about_title(lbl: QLabel) -> None:
     """卡片标题走全站色，字号用配置页 +2。"""
     restyle_card_title(lbl)
@@ -59,11 +116,13 @@ def _restyle_about_title(lbl: QLabel) -> None:
         lbl.setStyleSheet(ss.replace(old, new, 1))
 
 
-# 白名单分组：key → (分区, 显示名)
+# 白名单按下载子页：视频 4 + 音频 1 + 图集 3。汽水音乐单独一条。
 _WHITELIST_GROUPS = (
     ("douyin", "视频下载", "抖音"),
     ("bilibili", "视频下载", "B站"),
     ("youtube", "视频下载", "YouTube"),
+    ("other", "视频下载", "其它视频"),
+    ("qishui", "音频下载", "汽水音乐"),
     ("gallery_eh", "图集下载", "e-hentai"),
     ("gallery_pixiv", "图集下载", "Pixiv"),
     ("gallery_hitomi", "图集下载", "hitomi.la"),
@@ -71,19 +130,8 @@ _WHITELIST_GROUPS = (
 
 
 def _normalize_domain(raw: str) -> str:
-    s = (raw or "").strip().lower()
-    if not s:
-        return ""
-    # 允许用户粘贴完整 URL，只取 host
-    for prefix in ("https://", "http://"):
-        if s.startswith(prefix):
-            s = s[len(prefix):]
-    s = s.split("/")[0].split("?")[0].strip()
-    if s.startswith("www."):
-        s = s[4:]
-    # 去掉首尾点
-    s = s.strip(".")
-    return s
+    """允许 host 或 host/path（如 music.douyin.com/qishui）。"""
+    return normalize_whitelist_pattern(raw)
 
 
 class _DomainChip(QFrame):
@@ -133,55 +181,157 @@ class _DomainChip(QFrame):
         )
 
 
-class _WhitelistRow(QWidget):
-    """单一下载子页的白名单行：标题 + 域名胶囊 + 添加。"""
+
+class _WhitelistFlowHost(QWidget):
+    """FlowLayout 宿主：把 heightForWidth 暴露给外层，避免名单换行后高度被裁。"""
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        lay = self.layout()
+        if lay is not None and hasattr(lay, "heightForWidth"):
+            try:
+                return int(lay.heightForWidth(max(1, int(width))))
+            except Exception:
+                pass
+        return super().heightForWidth(width)
+
+    def sizeHint(self):
+        lay = self.layout()
+        w = max(1, int(self.width() or 0))
+        if lay is not None and w > 1 and hasattr(lay, "heightForWidth"):
+            try:
+                return QSize(w, int(lay.heightForWidth(w)))
+            except Exception:
+                pass
+        if lay is not None:
+            try:
+                return lay.sizeHint()
+            except Exception:
+                pass
+        return super().sizeHint()
+
+    def minimumSizeHint(self):
+        return self.sizeHint()
+
+
+class _WhitelistRow(QFrame):
+    """单个来源白名单：矩形外框；标题+刷新；域名胶囊。可点击选中。"""
 
     changed = pyqtSignal()
+    selected = pyqtSignal(str)  # key
 
     def __init__(self, key: str, title: str, parent=None):
         super().__init__(parent)
         self.key = key
+        self._title = title
         self._domains: List[str] = []
         self._chips: Dict[str, _DomainChip] = {}
+        self._selected = False
+
+        self.setObjectName("WhitelistCatFrame")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setCursor(Qt.PointingHandCursor)
+        # Preferred：按内容增高，避免 Maximum + 低估 sizeHint 把名单卡裁掉
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        root.setSpacing(6)
+        root.setContentsMargins(8, 6, 8, 6)
+        root.setSpacing(0)
+        root.setAlignment(Qt.AlignTop)
 
-        head = QHBoxLayout()
-        head.setContentsMargins(0, 0, 0, 0)
-        head.setSpacing(8)
-        self.lbl = QLabel(title)
-        self.lbl.setStyleSheet(_lbl_qss(tk("text"), "row", weight=600))
-        head.addWidget(self.lbl)
-        head.addStretch(1)
-        self.btn_reset = QPushButton("恢复默认")
-        apply_mini_button(self.btn_reset)
-        self.btn_reset.setCursor(Qt.PointingHandCursor)
-        self.btn_reset.clicked.connect(self._reset_default)
-        head.addWidget(self.btn_reset)
-        root.addLayout(head)
-
-        self.chip_host = QWidget()
+        # 流式宿主：必须拉满行宽，否则 AlignLeft 只给 sizeHint 宽，
+        # 父布局又不按 heightForWidth 增高 → 只露出一行，域名像「消失」
+        self.chip_host = _WhitelistFlowHost()
         self.chip_host.setObjectName("AboutWhitelistChips")
-        self.chip_lay = FlowLayout(self.chip_host, h_spacing=6, v_spacing=6)
+        self.chip_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self.chip_lay = FlowLayout(self.chip_host, h_spacing=6, v_spacing=4)
         self.chip_lay.setContentsMargins(0, 0, 0, 0)
         root.addWidget(self.chip_host)
 
-        add_row = QHBoxLayout()
-        add_row.setContentsMargins(0, 0, 0, 0)
-        add_row.setSpacing(6)
-        self.edit = QLineEdit()
-        self.edit.setPlaceholderText("添加域名，如 example.com")
-        self.edit.setClearButtonEnabled(True)
-        self.edit.returnPressed.connect(self._add_from_edit)
-        add_row.addWidget(self.edit, 1)
-        self.btn_add = QPushButton("添加")
-        apply_mini_button(self.btn_add)
-        self.btn_add.setCursor(Qt.PointingHandCursor)
-        self.btn_add.clicked.connect(self._add_from_edit)
-        add_row.addWidget(self.btn_add)
-        root.addLayout(add_row)
+        self.lbl = QLabel(title)
+        self.lbl.setStyleSheet(_lbl_qss(tk("text"), "row", weight=600))
+        self.lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+
+        # 刷新：正方形（边长跟名单卡行高对齐）
+        self.btn_reset = QPushButton()
+        self.btn_reset.setObjectName("WhitelistResetBtn")
+        apply_mini_button(self.btn_reset)
+        side = 24
+        icon_sz = 14
+        try:
+            ink = tk("text_mut")
+        except Exception:
+            ink = "#9fb0d7"
+        self.btn_reset.setIcon(_reset_default_icon(icon_sz, ink))
+        self.btn_reset.setIconSize(QSize(icon_sz, icon_sz))
+        self.btn_reset.setToolTip("恢复默认")
+        self.btn_reset.setCursor(Qt.PointingHandCursor)
+        self.btn_reset.setFocusPolicy(Qt.NoFocus)
+        self.btn_reset.clicked.connect(self._on_reset_clicked)
+        # 强制正方形，覆盖 mini / 全局 QSS 的宽高限制
+        self.btn_reset.setFixedSize(side, side)
+        self.btn_reset.setStyleSheet(
+            f"QPushButton#WhitelistResetBtn{{"
+            f"min-width:{side}px;max-width:{side}px;"
+            f"min-height:{side}px;max-height:{side}px;"
+            f"padding:0;margin:0;}}"
+        )
+
+        self.chip_lay.addWidget(self.lbl)
+        self.chip_lay.addWidget(self.btn_reset)
+
+        self.installEventFilter(self)
+        self.lbl.installEventFilter(self)
+        self.chip_host.installEventFilter(self)
+        self.btn_reset.installEventFilter(self)
+
+        self._apply_frame_style()
+
+    def eventFilter(self, obj, event):
+        try:
+            if event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+                self.selected.emit(self.key)
+        except Exception:
+            pass
+        return super().eventFilter(obj, event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.selected.emit(self.key)
+        super().mousePressEvent(event)
+
+    def _on_reset_clicked(self):
+        self.selected.emit(self.key)
+        self._reset_default()
+
+    def set_selected(self, on: bool):
+        on = bool(on)
+        if self._selected == on:
+            self._apply_frame_style()
+            return
+        self._selected = on
+        self._apply_frame_style()
+
+    def is_selected(self) -> bool:
+        return bool(self._selected)
+
+    def _apply_frame_style(self):
+        try:
+            border = tk("accent") if self._selected else tk("border")
+        except Exception:
+            border = "#3b82f6" if self._selected else "#25345c"
+        bg = "rgba(59,130,246,0.10)" if self._selected else "transparent"
+        # 选中/未选中同为 2px 边框，避免切换时布局抖动
+        w = 2
+        self.setStyleSheet(
+            f"QFrame#WhitelistCatFrame{{"
+            f"background:{bg};border:{w}px solid {border};border-radius:8px;}}"
+            f"QFrame#WhitelistCatFrame QLabel{{background:transparent;}}"
+            f"QFrame#WhitelistCatFrame QWidget#AboutWhitelistChips{{"
+            f"background:transparent;border:none;}}"
+        )
 
     def set_domains(self, domains: List[str]):
         cleaned: List[str] = []
@@ -197,34 +347,54 @@ class _WhitelistRow(QWidget):
     def domains(self) -> List[str]:
         return list(self._domains)
 
+    def add_domain(self, raw: str) -> bool:
+        """添加一个域名；成功返回 True。"""
+        n = _normalize_domain(raw)
+        if not n or n in self._domains:
+            return False
+        self._domains.append(n)
+        self._rebuild_chips()
+        self.changed.emit()
+        return True
+
     def _rebuild_chips(self):
+        # 清空后按序重加：分类名、刷新、名单卡（同流左对齐少占行）
         while self.chip_lay.count():
             item = self.chip_lay.takeAt(0)
             w = item.widget() if item else None
-            if w is not None:
-                w.setParent(None)
-                w.deleteLater()
+            if w is None:
+                continue
+            if w is self.lbl or w is self.btn_reset:
+                continue
+            w.setParent(None)
+            w.deleteLater()
+        while self.chip_lay.count():
+            self.chip_lay.takeAt(0)
+        self.chip_lay.addWidget(self.lbl)
+        self.chip_lay.addWidget(self.btn_reset)
         self._chips.clear()
         for d in self._domains:
             chip = _DomainChip(d, self.chip_host)
             chip.removed.connect(self._remove_domain)
+            try:
+                chip.installEventFilter(self)
+            except Exception:
+                pass
             self._chips[d] = chip
             self.chip_lay.addWidget(chip)
         if not self._domains:
-            empty = QLabel("（空 · 该来源不会写入预下载记录）")
-            empty.setStyleSheet(_lbl_qss(tk("text_faint"), "body"))
+            empty = QLabel("（空）")
+            empty.setStyleSheet(_lbl_qss(tk("text_faint"), "hint"))
+            try:
+                empty.installEventFilter(self)
+            except Exception:
+                pass
             self.chip_lay.addWidget(empty)
-
-    def _add_from_edit(self):
-        n = _normalize_domain(self.edit.text())
-        self.edit.clear()
-        if not n:
-            return
-        if n in self._domains:
-            return
-        self._domains.append(n)
-        self._rebuild_chips()
-        self.changed.emit()
+        try:
+            self.chip_host.updateGeometry()
+            self.updateGeometry()
+        except Exception:
+            pass
 
     def _remove_domain(self, domain: str):
         d = _normalize_domain(domain)
@@ -243,18 +413,32 @@ class _WhitelistRow(QWidget):
             self.lbl.setStyleSheet(_lbl_qss(tk("text"), "row", weight=600))
         except Exception:
             pass
+        self._apply_frame_style()
+        try:
+            ink = tk("text_mut")
+        except Exception:
+            ink = "#9fb0d7"
+        try:
+            side = 24
+            icon_sz = 14
+            self.btn_reset.setIcon(_reset_default_icon(icon_sz, ink))
+            self.btn_reset.setIconSize(QSize(icon_sz, icon_sz))
+            self.btn_reset.setFixedSize(side, side)
+            self.btn_reset.setStyleSheet(
+                f"QPushButton#WhitelistResetBtn{{"
+                f"min-width:{side}px;max-width:{side}px;"
+                f"min-height:{side}px;max-height:{side}px;"
+                f"padding:0;margin:0;}}"
+            )
+        except Exception:
+            pass
         for chip in self._chips.values():
             try:
                 chip._apply_style()
             except Exception:
                 pass
-        # 空提示在 rebuild 时写样式；主题切换后若有芯片则只刷胶囊
         if not self._domains:
             self._rebuild_chips()
-
-
-# 三个组件卡共用提示
-_COMP_HINT = "检测是否可用；未就绪时看安装教程"
 
 
 def _guide_python() -> str:
@@ -575,6 +759,7 @@ class PageAbout(QWidget):
         self._theme_titles: List[QLabel] = []
         self._comp_text_labels: List[tuple] = []  # (QLabel, "intro"|"hint")
         self._whitelist_rows: Dict[str, _WhitelistRow] = {}
+        self._category_seps: List[QFrame] = []  # 白名单/组件分类分隔线
         self._comp_busy = set()   # 正在检测：按钮冻结
         self._comp_ready = set()  # 状态为「可用」：检测/安装教程都冻结
         self._loading = False
@@ -622,47 +807,80 @@ class PageAbout(QWidget):
             scroll.setWidget(host)
             root = QVBoxLayout(host)
 
-        root.setContentsMargins(0, 0, 0, 8)
-        root.setSpacing(10)
+        root.setContentsMargins(0, 0, 0, 6)
+        root.setSpacing(6)
         root.setAlignment(Qt.AlignTop)
         self._content_root = root
 
-        # 热键占用 | 右侧四组件：按内容高度排布，避免左列被纵向撑出大片空白
-        split = QHBoxLayout()
-        split.setSpacing(8)
-        split.setContentsMargins(0, 0, 0, 0)
-        split.setAlignment(Qt.AlignTop)
-
-        left = QWidget()
-        left.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-        left_lay = QVBoxLayout(left)
+        # 左右栏面板（嵌入总览时由 install_into 挂到整页两列）
+        self.left_panel = QWidget()
+        self.left_panel.setObjectName("AboutLeftPanel")
+        self.left_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        left_lay = QVBoxLayout(self.left_panel)
         left_lay.setContentsMargins(0, 0, 0, 0)
-        left_lay.setSpacing(0)
+        left_lay.setSpacing(6)
         left_lay.setAlignment(Qt.AlignTop)
-        left_lay.addWidget(self._build_hotkey_card(), 0, Qt.AlignTop)
+        left_lay.addWidget(self._build_auto_dl_card(), 0, Qt.AlignTop)
 
-        right = QWidget()
-        right.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
-        right_lay = QVBoxLayout(right)
+        self.right_panel = QWidget()
+        self.right_panel.setObjectName("AboutRightPanel")
+        self.right_panel.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        right_lay = QVBoxLayout(self.right_panel)
         right_lay.setContentsMargins(0, 0, 0, 0)
-        right_lay.setSpacing(8)
+        right_lay.setSpacing(6)
         right_lay.setAlignment(Qt.AlignTop)
-        right_lay.addWidget(self._build_ocr_card(), 0)
-        right_lay.addWidget(self._build_record_card(), 0)
-        right_lay.addWidget(self._build_voice_card(), 0)
-        right_lay.addWidget(self._build_clone_card(), 0)
+        right_lay.addWidget(self._build_components_card(), 0, Qt.AlignTop)
+        right_lay.addWidget(self._build_hotkey_card(), 0, Qt.AlignTop)
 
-        split.addWidget(left, 1, Qt.AlignTop)
-        split.addWidget(right, 1, Qt.AlignTop)
-        root.addLayout(split)
-
-
-        # 自动下载白名单
-        root.addWidget(self._build_auto_dl_card())
-
-        # 独立页底部留白；嵌入总览时不要 stretch，否则在有限高度里会把卡片压扁裁字
-        if not self._embedded:
+        self._installed_split = False
+        if self._embedded:
+            # 暂挂在本控件，install_into 再挪到系统总览左右列
+            shell = QHBoxLayout()
+            shell.setContentsMargins(0, 0, 0, 0)
+            shell.setSpacing(6)
+            shell.addWidget(self.left_panel, 1)
+            shell.addWidget(self.right_panel, 1)
+            root.addLayout(shell)
+        else:
+            split = QHBoxLayout()
+            split.setSpacing(6)
+            split.setContentsMargins(0, 0, 0, 0)
+            split.setAlignment(Qt.AlignTop)
+            split.addWidget(self.left_panel, 1, Qt.AlignTop)
+            split.addWidget(self.right_panel, 1, Qt.AlignTop)
+            root.addLayout(split)
             root.addStretch(1)
+
+    def install_into(self, left_layout, right_layout):
+        """把左右栏嵌进系统总览整页两列（与设置区同列对齐）。"""
+        if self._installed_split:
+            return
+
+        def _detach(layout, w):
+            if layout is None:
+                return False
+            for i in range(layout.count()):
+                item = layout.itemAt(i)
+                if item is None:
+                    continue
+                if item.widget() is w:
+                    layout.removeWidget(w)
+                    return True
+                if item.layout() is not None and _detach(item.layout(), w):
+                    return True
+            return False
+
+        for panel in (self.left_panel, self.right_panel):
+            parent = panel.parentWidget()
+            if parent is not None:
+                _detach(parent.layout(), panel)
+            panel.setParent(None)
+
+        left_layout.addWidget(self.left_panel, 0, Qt.AlignTop)
+        right_layout.addWidget(self.right_panel, 0, Qt.AlignTop)
+        self._installed_split = True
+        self.hide()
+        self.setFixedSize(0, 0)
 
     # ── 对外 API ─────────────────────────────────────────────
     def set_main_window(self, mw):
@@ -673,6 +891,7 @@ class PageAbout(QWidget):
         del cookie_alert
         self.reload_from_prefs()
         QTimer.singleShot(0, self._refresh_all_component_status)
+        self._refresh_hotkey_card()
         QTimer.singleShot(0, self._refresh_hotkey_card)
 
     def restyle_theme(self):
@@ -683,6 +902,7 @@ class PageAbout(QWidget):
             except Exception:
                 pass
         self._style_auto_dl_chrome()
+        self._restyle_category_seps()
         for lbl, kind in self._comp_text_labels:
             try:
                 lbl.setStyleSheet(self._comp_text_qss(kind))
@@ -732,6 +952,8 @@ class PageAbout(QWidget):
     # ── 组件卡共用骨架 ──────────────────────────────────────
     @staticmethod
     def _comp_text_qss(kind: str) -> str:
+        if kind == "section":
+            return _lbl_qss(tk("accent"), "group", weight=700)
         if kind == "intro":
             return _lbl_qss(tk("text_mut"), "body")
         if kind == "hint":
@@ -784,6 +1006,79 @@ class PageAbout(QWidget):
         self._theme_titles.append(lbl)
         return lbl
 
+    def _build_comp_block(
+        self,
+        obj_name: str,
+        title: str,
+        intro: str,
+        prefix: str,
+        on_check,
+        on_install,
+    ) -> QFrame:
+        """「组件」区内单段：小标题 / 介绍 / 状态 / 检测+安装教程 / 提示（无独立外卡）。"""
+        block = QFrame()
+        block.setObjectName(obj_name)
+        block.setAttribute(Qt.WA_StyledBackground, True)
+        block.setStyleSheet(
+            f"QFrame#{obj_name}{{background:transparent;border:none;}}"
+        )
+        block.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        box = QVBoxLayout(block)
+        box.setContentsMargins(0, 0, 0, 0)
+        box.setSpacing(4)
+        box.setAlignment(Qt.AlignTop)
+
+        # 两行：① 标题左 + 简介右；② 状态左 + 检测/安装教程右
+        title_lbl = QLabel(title)
+        title_lbl.setObjectName(f"{obj_name}Title")
+        title_lbl.setStyleSheet(self._comp_text_qss("section"))
+        self._comp_text_labels.append((title_lbl, "section"))
+
+        lbl_intro = QLabel(intro)
+        lbl_intro.setWordWrap(False)
+        lbl_intro.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        lbl_intro.setStyleSheet(self._comp_text_qss("intro"))
+        self._comp_text_labels.append((lbl_intro, "intro"))
+
+        row1 = QHBoxLayout()
+        row1.setContentsMargins(0, 0, 0, 0)
+        row1.setSpacing(8)
+        row1.addWidget(title_lbl, 0, Qt.AlignVCenter)
+        row1.addStretch(1)
+        row1.addWidget(lbl_intro, 0, Qt.AlignVCenter)
+        box.addLayout(row1)
+
+        glyph = _StatusGlyph()
+        lbl_status = QLabel("…")
+        lbl_status.setWordWrap(False)
+        lbl_status.setStyleSheet(self._comp_text_qss("status"))
+        lbl_status._status_glyph = glyph
+        lbl_status._comp_prefix = prefix
+
+        btn_check = apply_medium_button(QPushButton("检测"))
+        btn_install = apply_medium_button(QPushButton("安装教程"))
+        btn_check.setMinimumWidth(56)
+        btn_install.setMinimumWidth(80)
+
+        row2 = QHBoxLayout()
+        row2.setContentsMargins(0, 0, 0, 0)
+        row2.setSpacing(6)
+        row2.addWidget(glyph, 0, Qt.AlignVCenter)
+        row2.addWidget(lbl_status, 0, Qt.AlignVCenter)
+        row2.addStretch(1)
+        row2.addWidget(btn_check, 0, Qt.AlignVCenter)
+        row2.addWidget(btn_install, 0, Qt.AlignVCenter)
+        box.addLayout(row2)
+
+        btn_check.clicked.connect(on_check)
+        btn_install.clicked.connect(on_install)
+
+        setattr(self, f"lbl_{prefix}_intro", lbl_intro)
+        setattr(self, f"lbl_{prefix}_status", lbl_status)
+        setattr(self, f"btn_{prefix}_check", btn_check)
+        setattr(self, f"btn_{prefix}_install", btn_install)
+        return block
+
     def _build_comp_card(
         self,
         obj_name: str,
@@ -793,59 +1088,29 @@ class PageAbout(QWidget):
         on_check,
         on_install,
     ) -> QFrame:
-        """组件卡同一套：标题 / 介绍 / 状态 / 检测+安装教程 / 提示。"""
-        card = make_card(obj_name)
+        """兼容旧调用：返回组件区内单段（不再各自套外卡）。"""
+        return self._build_comp_block(
+            obj_name, title, intro, prefix, on_check, on_install
+        )
+
+    def _build_components_card(self) -> QFrame:
+        """四个组件并入同一「模型与组件」区域。"""
+        card = make_card("CardAboutComponents")
         card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         box = QVBoxLayout(card)
         box.setContentsMargins(CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
+        box.setSpacing(4)  # 分类间有 1px 线，间距收一点
         box.setAlignment(Qt.AlignTop)
-        self._add_title(card, box, title)
-
-        lbl_intro = QLabel(intro)
-        lbl_intro.setWordWrap(True)
-        lbl_intro.setStyleSheet(self._comp_text_qss("intro"))
-        box.addWidget(lbl_intro)
-        self._comp_text_labels.append((lbl_intro, "intro"))
-
-        status_row = QHBoxLayout()
-        status_row.setContentsMargins(0, 0, 0, 0)
-        status_row.setSpacing(6)
-        glyph = _StatusGlyph()
-        lbl_status = QLabel("…")
-        lbl_status.setWordWrap(True)
-        lbl_status.setStyleSheet(self._comp_text_qss("status"))
-        lbl_status._status_glyph = glyph
-        lbl_status._comp_prefix = prefix
-        status_row.addWidget(glyph, 0, Qt.AlignVCenter)
-        status_row.addWidget(lbl_status, 1)
-        box.addLayout(status_row)
-
-        btn_row = QHBoxLayout()
-        btn_row.setSpacing(8)
-        btn_check = apply_medium_button(QPushButton("检测"))
-        btn_install = apply_medium_button(QPushButton("安装教程"))
-        btn_check.setMinimumWidth(56)
-        btn_install.setMinimumWidth(80)
-        btn_row.addWidget(btn_check)
-        btn_row.addWidget(btn_install)
-        btn_row.addStretch(1)
-        box.addLayout(btn_row)
-
-        lbl_hint = QLabel(_COMP_HINT)
-        lbl_hint.setWordWrap(True)
-        lbl_hint.setStyleSheet(self._comp_text_qss("hint"))
-        box.addWidget(lbl_hint)
-        self._comp_text_labels.append((lbl_hint, "hint"))
-
-        btn_check.clicked.connect(on_check)
-        btn_install.clicked.connect(on_install)
-        box.addStretch(1)
-
-        setattr(self, f"lbl_{prefix}_intro", lbl_intro)
-        setattr(self, f"lbl_{prefix}_status", lbl_status)
-        setattr(self, f"btn_{prefix}_check", btn_check)
-        setattr(self, f"btn_{prefix}_install", btn_install)
-        setattr(self, f"lbl_{prefix}_hint", lbl_hint)
+        self._add_title(card, box, "模型与组件")
+        for i, builder in enumerate((
+            self._build_ocr_card,
+            self._build_record_card,
+            self._build_voice_card,
+            self._build_clone_card,
+        )):
+            if i:
+                self._add_category_sep(box, "AboutCompSep")
+            box.addWidget(builder())
         return card
 
     def _set_comp_btns(self, prefix: str, enabled: bool):
@@ -859,7 +1124,7 @@ class PageAbout(QWidget):
     # ── 卡片：截图 OCR ───────────────────────────────────────
     def _build_ocr_card(self) -> QFrame:
         return self._build_comp_card(
-            "CardAboutOcr", "截图 OCR", "截图后用 PaddleOCR-VL-1.6 识字",
+            "CardAboutOcr", "截图 OCR", "PaddleOCR-VL-1.6 识字",
             "ocr", self._on_ocr_check, self._on_ocr_install,
         )
 
@@ -942,7 +1207,7 @@ class PageAbout(QWidget):
     # ── 卡片：录屏组件（ffmpeg）──────────────────────────
     def _build_record_card(self) -> QFrame:
         return self._build_comp_card(
-            "CardAboutRecord", "录屏组件", "区域录屏需要 ffmpeg",
+            "CardAboutRecord", "录屏组件", "需要 ffmpeg",
             "record", self._on_record_check, self._on_record_install,
         )
 
@@ -983,7 +1248,7 @@ class PageAbout(QWidget):
     # ── 卡片：语音组件 ────
     def _build_voice_card(self) -> QFrame:
         return self._build_comp_card(
-            "CardAboutVoice", "语音组件", "录音后转成文字",
+            "CardAboutVoice", "语音组件", "录音转文字",
             "voice", self._on_voice_check, self._on_voice_install,
         )
 
@@ -1035,7 +1300,7 @@ class PageAbout(QWidget):
     # ── 卡片：语音克隆（CosyVoice）──────────────────────────
     def _build_clone_card(self) -> QFrame:
         return self._build_comp_card(
-            "CardAboutClone", "语音克隆", "本地 CosyVoice3 克隆音色",
+            "CardAboutClone", "语音克隆", "CosyVoice3 克隆音色",
             "clone", self._on_clone_check, self._on_clone_install,
         )
 
@@ -1153,59 +1418,185 @@ class PageAbout(QWidget):
     # ── 卡片：预下载域名白名单 ───────────────────────────────
     def _build_auto_dl_card(self) -> QFrame:
         card = make_card("CardAboutAutoDl")
-        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        # 只占左列宽；高度随内容（Preferred，避免底部分类被裁）
+        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         box = QVBoxLayout(card)
         box.setContentsMargins(CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
         box.setAlignment(Qt.AlignTop)
-        self._add_title(card, box, "预下载 · 域名白名单")
+        box.setSpacing(8)
+
+        # 标题左｜输入 + 添加 右对齐（全卡共用一套）
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(6)
+        title_lbl = QLabel("白名单")
+        title_lbl.setObjectName("CardAboutAutoDlTitle")
+        _restyle_about_title(title_lbl)
+        self._theme_titles.append(title_lbl)
+        title_row.addWidget(title_lbl, 0, Qt.AlignVCenter)
+        title_row.addStretch(1)
+
+        # 输入框与添加同高；给汉字留足上下内边距，避免底边被切
+        add_h = 30
+        self.wl_edit = QLineEdit()
+        self.wl_edit.setObjectName("WhitelistDomainEdit")
+        self.wl_edit.setPlaceholderText("先选分类，再填域名或链接")
+        self.wl_edit.setClearButtonEnabled(True)
+        self.wl_edit.setFixedHeight(add_h)
+        self.wl_edit.setMinimumHeight(add_h)
+        self.wl_edit.setMaximumHeight(add_h)
+        self.wl_edit.setMinimumWidth(160)
+        self.wl_edit.setMaximumWidth(320)
+        self.wl_edit.setStyleSheet(
+            f"QLineEdit#WhitelistDomainEdit{{"
+            f"min-height:{add_h}px;max-height:{add_h}px;"
+            f"padding:2px 8px;font-size:13px;"
+            f"line-height:{add_h - 4}px;}}"
+        )
+        self.wl_edit.returnPressed.connect(self._wl_add_from_edit)
+        self.wl_btn_add = QPushButton("添加")
+        self.wl_btn_add.setObjectName("WhitelistAddBtn")
+        apply_mini_button(self.wl_btn_add)
+        self.wl_btn_add.setCursor(Qt.PointingHandCursor)
+        self.wl_btn_add.setFixedSize(self.wl_btn_add.sizeHint().width() + 8, add_h)
+        self.wl_btn_add.setFixedHeight(add_h)
+        self.wl_btn_add.setMinimumHeight(add_h)
+        self.wl_btn_add.setMaximumHeight(add_h)
+        self.wl_btn_add.setStyleSheet(
+            f"QPushButton#WhitelistAddBtn{{"
+            f"min-height:{add_h}px;max-height:{add_h}px;"
+            f"padding:0 12px;font-size:13px;}}"
+        )
+        self.wl_btn_add.clicked.connect(self._wl_add_from_edit)
+        title_row.addWidget(self.wl_edit, 0, Qt.AlignVCenter)
+        title_row.addWidget(self.wl_btn_add, 0, Qt.AlignVCenter)
+        box.addLayout(title_row)
 
         tip = QLabel(
-            "复制内容须包含 https:// 链接才会触发预下载；按链接主机名对照白名单入队"
-            "（不立刻下载）。空名单 = 该来源永不入队。"
-            "自动处理开关在「系统总览 → 预下载」。"
+            "先点选分类，再添加域名或路径（如 music.douyin.com/qishui）。复制含 https 链接时入队预下载（不立刻下）。空名单=该来源不入队。"
         )
         tip.setWordWrap(True)
         self.lbl_auto_dl_tip = tip
+        self._wl_tip_base = tip.text()
+        self._wl_tip_warn = False
         box.addWidget(tip)
 
-        cols = QHBoxLayout()
-        cols.setSpacing(16)
-        video_col = QVBoxLayout()
-        video_col.setSpacing(10)
-        gallery_col = QVBoxLayout()
-        gallery_col.setSpacing(10)
+        # 单列：视频段 → 图集段；分类矩形框，无分隔线
+        col = QVBoxLayout()
+        col.setSpacing(8)
+        col.setAlignment(Qt.AlignTop)
 
-        self.lbl_wl_sec_video = QLabel("视频下载")
-        video_col.addWidget(self.lbl_wl_sec_video)
-        self.lbl_wl_sec_gallery = QLabel("图集下载")
-        gallery_col.addWidget(self.lbl_wl_sec_gallery)
+        self.lbl_wl_sec_video = None  # 分段标题已去掉
+        self.lbl_wl_sec_gallery = None
         self._style_auto_dl_chrome()
 
+        self._wl_selected_key = None
         for key, section, title in _WHITELIST_GROUPS:
             row = _WhitelistRow(key, title, self)
             row.changed.connect(self._schedule_persist)
+            row.selected.connect(self._wl_select_key)
             self._whitelist_rows[key] = row
-            if section == "视频下载":
-                video_col.addWidget(row)
-            else:
-                gallery_col.addWidget(row)
+            col.addWidget(row)
 
-        # 不要 addStretch：父级一给高，空隙会堆在「全部恢复默认白名单」按钮上方
-        video_col.setAlignment(Qt.AlignTop)
-        gallery_col.setAlignment(Qt.AlignTop)
-        cols.addLayout(video_col, 1)
-        cols.addLayout(gallery_col, 1)
-        box.addLayout(cols, 0)
+        box.addLayout(col, 0)
 
-        foot = QHBoxLayout()
-        foot.addStretch(1)
-        btn_all_default = QPushButton("全部恢复默认白名单")
-        apply_mini_button(btn_all_default)
-        btn_all_default.setCursor(Qt.PointingHandCursor)
-        btn_all_default.clicked.connect(self._reset_all_whitelist)
-        foot.addWidget(btn_all_default)
-        box.addLayout(foot)
+        # 无默认选中：添加前需先点分类
+        self._wl_selected_key = None
         return card
+
+    def _wl_select_key(self, key: str):
+        key = str(key or "")
+        self._wl_selected_key = key if key in self._whitelist_rows else None
+        for k, row in self._whitelist_rows.items():
+            try:
+                row.set_selected(k == self._wl_selected_key)
+            except Exception:
+                pass
+        if self._wl_selected_key and self._wl_tip_warn:
+            self._wl_tip_warn = False
+            self._refresh_wl_tip()
+
+    def _wl_add_from_edit(self):
+        raw = ""
+        try:
+            raw = self.wl_edit.text()
+        except Exception:
+            raw = ""
+        n = _normalize_domain(raw)
+        if not n:
+            return
+        key = getattr(self, "_wl_selected_key", None)
+        row = self._whitelist_rows.get(key) if key else None
+        if row is None:
+            self._wl_tip_warn = True
+            self._refresh_wl_tip()
+            return
+        try:
+            self.wl_edit.clear()
+        except Exception:
+            pass
+        row.add_domain(n)
+
+    def _refresh_wl_tip(self):
+        tip = getattr(self, "lbl_auto_dl_tip", None)
+        if tip is None:
+            return
+        base = getattr(self, "_wl_tip_base", tip.text())
+        if getattr(self, "_wl_tip_warn", False):
+            tip.setTextFormat(Qt.RichText)
+            tip.setText(
+                f'{base} <span style="color:#3b82f6;">没有选中分类</span>'
+            )
+        else:
+            tip.setTextFormat(Qt.PlainText)
+            tip.setText(base)
+        self._style_auto_dl_chrome()
+
+
+    def _restyle_category_seps(self):
+        try:
+            c = tk("border")
+        except Exception:
+            c = "#25345c"
+        for sep in getattr(self, "_category_seps", []) or []:
+            try:
+                name = sep.objectName() or "AboutCategorySep"
+                th = 1
+                try:
+                    th = int(sep.property("sepThickness") or 1)
+                except Exception:
+                    th = 1
+                th = max(1, th)
+                sep.setFixedHeight(th)
+                sep.setStyleSheet(
+                    f"QFrame#{name}{{background:{c};border:none;"
+                    f"min-height:{th}px;max-height:{th}px;}}"
+                )
+            except Exception:
+                pass
+
+    def _add_category_sep(
+        self,
+        layout,
+        object_name: str = "AboutCategorySep",
+        *,
+        pad_v: int = 0,
+        thickness: int = 1,
+    ) -> QFrame:
+        """分类分隔线。pad_v>0 时线上下各加 pad_v px；thickness 控制线粗。"""
+        # 白名单分隔线默认更粗
+        th = int(thickness or 1)
+        if object_name == "AboutWhitelistSep" and th <= 1:
+            th = 3
+        sep = _make_category_sep(object_name, thickness=th)
+        self._category_seps.append(sep)
+        pad = max(0, int(pad_v or 0))
+        if pad:
+            layout.addSpacing(pad)
+        layout.addWidget(sep)
+        if pad:
+            layout.addSpacing(pad)
+        return sep
 
     def _style_auto_dl_chrome(self):
         tip = getattr(self, "lbl_auto_dl_tip", None)
@@ -1228,9 +1619,12 @@ class PageAbout(QWidget):
             wl = {}
         defaults = default_clipboard_whitelist()
         for key, row in self._whitelist_rows.items():
-            domains = wl.get(key)
-            if not isinstance(domains, list):
-                domains = list(defaults.get(key) or [])
+            if key == "other":
+                domains = other_whitelist_patterns(wl)
+            else:
+                domains = wl.get(key)
+                if not isinstance(domains, list):
+                    domains = list(defaults.get(key) or [])
             row.set_domains([str(x) for x in domains])
 
     def _reset_all_whitelist(self):
@@ -1249,29 +1643,36 @@ class PageAbout(QWidget):
 
     def _build_hotkey_card(self) -> QFrame:
         card = make_card("CardAboutHotkeys")
-        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        # Minimum：列高不够时不把清单压扁裁字
+        card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         box = QVBoxLayout(card)
         box.setContentsMargins(CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
-        box.setSpacing(6)
+        box.setSpacing(4)
         box.setAlignment(Qt.AlignTop)
 
-        self._add_title(card, box, "热键占用")
-
-        head = QHBoxLayout()
-        head.setContentsMargins(0, 0, 0, 0)
-        head.setSpacing(8)
+        # 标题左｜状态 + 清除占用 右对齐（同行）
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(8)
+        title_lbl = QLabel("热键占用")
+        title_lbl.setObjectName("CardAboutHotkeysTitle")
+        _restyle_about_title(title_lbl)
+        self._theme_titles.append(title_lbl)
+        title_row.addWidget(title_lbl, 0, Qt.AlignVCenter)
+        title_row.addStretch(1)
+        self.lbl_hk_summary = QLabel("")
+        self.lbl_hk_summary.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        title_row.addWidget(self.lbl_hk_summary, 0, Qt.AlignVCenter)
         self.btn_hk_clear = apply_live_button(QPushButton("清除占用"))
         self.btn_hk_clear.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.btn_hk_clear.setEnabled(False)
         self.btn_hk_clear.clicked.connect(self._on_clear_hotkeys)
-        head.addWidget(self.btn_hk_clear, 0, Qt.AlignVCenter)
-        self.lbl_hk_summary = QLabel("")
-        head.addWidget(self.lbl_hk_summary, 1, Qt.AlignVCenter)
-        box.addLayout(head)
+        title_row.addWidget(self.btn_hk_clear, 0, Qt.AlignVCenter)
+        box.addLayout(title_row)
 
         self._hk_list_host = QWidget()
         self._hk_list_host.setObjectName("AboutHotkeyList")
-        self._hk_list_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        self._hk_list_host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self._hk_list_lay = QVBoxLayout(self._hk_list_host)
         self._hk_list_lay.setContentsMargins(0, 0, 0, 0)
         self._hk_list_lay.setSpacing(0)
@@ -1301,43 +1702,85 @@ class PageAbout(QWidget):
                 w.setParent(None)
                 w.deleteLater()
 
+    def _hk_text_h(self, lbl: QLabel) -> int:
+        """QSS 字号生效后的一行高度；未抛光时退回配置页正文字号。"""
+        try:
+            lbl.ensurePolished()
+            h = int(lbl.fontMetrics().height())
+        except Exception:
+            h = 0
+        return max(h, int(_FS.get("body") or 14) + 4)
+
     def _hk_make_row(self, spec: dict, name_qss: str, key_qss: str) -> QWidget:
         state = str(spec.get("state") or "off")
         faint = _lbl_qss(tk("text_faint"), "body")
         line = QWidget()
-        line.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+        line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         hl = QHBoxLayout(line)
-        hl.setContentsMargins(0, 1, 0, 1)
+        hl.setContentsMargins(0, 2, 0, 2)
         hl.setSpacing(8)
         key = QLabel(str(spec.get("key") or ""))
         key.setFixedWidth(60)
+        key.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         key.setStyleSheet(faint if state == "off" else key_qss)
         name = QLabel(str(spec.get("name") or ""))
+        name.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         name.setStyleSheet(faint if state == "off" else name_qss)
         hl.addWidget(key)
         hl.addWidget(name, 1)
+        row_h = max(self._hk_text_h(key), self._hk_text_h(name)) + 4
         # 就绪不标，只标占用 / 未启用 / 扩展
         if state != "ok":
             st = QLabel(self._HK_STATE_TEXT.get(state, state))
             st.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
             st.setStyleSheet(self._hk_state_qss(state))
             hl.addWidget(st)
+            row_h = max(row_h, self._hk_text_h(st) + 4)
+        # 静默复制（F7）：本行最右侧开关
+        if spec.get("toggle") == "silent_copy":
+            # 懒导入：避免 page_about ← page_overview ← ui_main 循环依赖
+            from ui_main import SideToggleSwitch
+
+            sw = SideToggleSwitch(on_color="#22C55E", parent=line)
+            sw.setChecked(bool(spec.get("checked")))
+            sw.clicked.connect(
+                lambda _=False, s=sw: self._on_silent_copy_toggled(s.isChecked())
+            )
+            hl.addWidget(sw, 0, Qt.AlignVCenter)
+            row_h = max(row_h, int(SideToggleSwitch.H) + 4)
+        line.setMinimumHeight(row_h)
+        line.setFixedHeight(row_h)
         return line
+
+    def _on_silent_copy_toggled(self, on: bool):
+        mw = getattr(self, "_mw", None)
+        if mw is not None and hasattr(mw, "set_silent_copy_enabled"):
+            try:
+                mw.set_silent_copy_enabled(bool(on))
+            except Exception:
+                log.exception("切换静默复制失败")
+        # 清单重建会删掉当前开关：推迟到本次点击处理结束后
+        QTimer.singleShot(0, self._refresh_hotkey_card)
 
     def _hk_make_col(self, groups, name_qss: str, key_qss: str, grp_qss: str) -> QWidget:
         col_w = QWidget()
-        col_w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        col_w.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         col = QVBoxLayout(col_w)
         col.setContentsMargins(0, 0, 0, 0)
         col.setSpacing(2)
         col.setAlignment(Qt.AlignTop)
         first = True
         for group, specs in groups:
+            if not first:
+                # 分组间距放在布局里。QSS padding-top 不撑高 QLabel，字会被上下裁掉。
+                col.addSpacing(8)
             hdr = QLabel(group)
-            qss = grp_qss if first else _lbl_qss(
-                tk("accent"), "group", weight=700, extra="padding-top:8px;"
-            )
-            hdr.setStyleSheet(qss)
+            hdr.setStyleSheet(grp_qss)
+            hdr.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            hdr.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+            hdr_h = self._hk_text_h(hdr) + 2
+            hdr.setMinimumHeight(hdr_h)
+            hdr.setFixedHeight(hdr_h)
             first = False
             col.addWidget(hdr)
             for spec in specs:
@@ -1381,11 +1824,13 @@ class PageAbout(QWidget):
 
         name_qss = _lbl_qss(tk("text"), "body")
         key_qss = _lbl_qss(tk("text_mut"), "body")
-        grp_qss = _lbl_qss(tk("accent"), "group", weight=700, extra="padding-top:0px;")
+        grp_qss = _lbl_qss(tk("accent"), "group", weight=700)
 
         if not grouped:
-            empty = QLabel("打开本页后显示热键清单")
+            empty = QLabel("热键页加载后显示清单")
             empty.setStyleSheet(_lbl_qss(tk("text_faint"), "body"))
+            empty.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            empty.setMinimumHeight(self._hk_text_h(empty) + 4)
             self._hk_list_lay.addWidget(empty, 0, Qt.AlignTop)
         else:
             self._hk_list_lay.addWidget(
@@ -1397,12 +1842,39 @@ class PageAbout(QWidget):
             parts.append(f"{n_busy} 占用")
         if n_off:
             parts.append(f"{n_off} 未启用")
-        summary = " · ".join(parts)
+        summary = " · ".join(parts) if rows else ""
         color = tk("err") if n_busy else tk("text_mut")
         if getattr(self, "lbl_hk_summary", None) is not None:
             self.lbl_hk_summary.setText(summary)
             self.lbl_hk_summary.setStyleSheet(_lbl_qss(color, "body"))
         self._sync_hk_clear_btn(n_busy)
+        self._hk_relayout()
+
+    def _hk_relayout(self):
+        """清单高度变了：通知总览两列按新 sizeHint 重切，避免仍按空卡高度裁字。"""
+        host = getattr(self, "_hk_list_host", None)
+        w = host
+        while w is not None:
+            try:
+                w.updateGeometry()
+            except Exception:
+                pass
+            fn = getattr(w, "relayout_columns", None)
+            if callable(fn):
+                try:
+                    fn()
+                except Exception:
+                    pass
+                return
+            w = w.parentWidget()
+        # 未嵌入总览时，至少让本卡自己撑开
+        if host is not None:
+            try:
+                card = host.parentWidget()
+                if card is not None:
+                    card.adjustSize()
+            except Exception:
+                pass
 
     def _sync_hk_clear_btn(self, n_busy: int = 0):
         """有占用时可点（蓝色）；无占用则灰化冻结。"""
@@ -1444,7 +1916,7 @@ class PageAbout(QWidget):
 
     # ── 持久化 ───────────────────────────────────────────────
     def _schedule_persist(self, *_args):
-        if self._loading:
+        if self._loading or not getattr(self, "_prefs_loaded", False):
             return
         self._save_timer.start()
 

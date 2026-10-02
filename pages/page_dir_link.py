@@ -376,3 +376,15 @@ class PageDirLink(QWidget):
                 self.list.addItem("   可能原因：权限不足，请以管理员身份运行程序")
 
         self.list.scrollToBottom()
+
+    def export_settings(self) -> dict:
+        return {
+            "run_as_admin": bool(self.cb_admin.isChecked()),
+        }
+
+    def apply_settings(self, d: dict):
+        if not isinstance(d, dict) or "run_as_admin" not in d:
+            return
+        self.cb_admin.blockSignals(True)
+        self.cb_admin.setChecked(bool(d.get("run_as_admin")))
+        self.cb_admin.blockSignals(False)

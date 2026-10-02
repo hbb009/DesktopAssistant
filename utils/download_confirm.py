@@ -232,7 +232,7 @@ def dedupe_by_size_after_rename(
 
 
 def same_name_dir_siblings(canonical_dir: str) -> List[str]:
-    """枚举同名作品目录：leaf / leaf_1 / leaf_2 …"""
+    """枚举同名作品目录：leaf / leaf_1 / leaf_2 … / leaf01 … leaf99。"""
     canonical_dir = (canonical_dir or "").rstrip("\\/")
     if not canonical_dir:
         return []
@@ -251,6 +251,10 @@ def same_name_dir_siblings(canonical_dir: str) -> List[str]:
             elif name.startswith(stem + "_"):
                 suffix = name[len(stem) + 1 :]
                 if suffix.isdigit():
+                    out.append(full)
+            elif name.startswith(stem):
+                suffix = name[len(stem):]
+                if len(suffix) == 2 and suffix.isdigit():
                     out.append(full)
     except Exception:
         pass

@@ -9,6 +9,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PY = sys.executable
+# CosyVoice / paddlepaddle 等锁版本的依赖只在这两个版本上验证过
+SUPPORTED_PY = ((3, 10), (3, 11))
 
 
 def _fix_stdio():
@@ -59,11 +61,11 @@ def ask_yes(prompt: str, default_yes: bool = True) -> bool:
 def main() -> int:
     _fix_stdio()
     os.chdir(ROOT)
-    hr("1/3 安装组件 - 桌面助手 v9.16")
+    hr("1/3 安装组件 - 桌面助手 v9.17")
     print("本步只负责【安装】运行库，不做 PaddleOCR-VL 真测（真测很慢）。")
     print("检测请用：软件内「检测」或  python tools/setup_components.py --check-deep")
     print()
-    print("会装：requirements / ffmpeg / models-pip / torch / paddle / paddleocr / CosyVoice 源码与依赖")
+    print("会装：requirements / ffmpeg / Deno / Git / models-pip / torch / paddle / paddleocr / CosyVoice 源码与依赖")
     print("不会下载大权重（在 2安装-模型.bat）")
     print("-" * 60)
     pause("按回车开始安装...")
@@ -72,9 +74,16 @@ def main() -> int:
     print("[1/5] 检查 Python ...")
     print("Python:", PY)
     if run([PY, "--version"]) != 0:
-        print("[失败] 找不到可用 Python。请安装 3.10+ 并勾选 Add python.exe to PATH。")
+        print("[失败] 找不到可用 Python。请安装 3.10 或 3.11 并勾选 Add python.exe to PATH。")
         return 1
-    print("[成功] Python 可用")
+    ver = sys.version_info[:2]
+    if ver not in SUPPORTED_PY:
+        print(f"[失败] 当前 Python 是 {ver[0]}.{ver[1]}，桌面助手只支持 Python 3.10 或 3.11。")
+        print("       CosyVoice、PaddlePaddle 等依赖锁定了版本，在其它版本上会装不上或运行出错。")
+        print("       请安装 Python 3.10 / 3.11（勾选 Add python.exe to PATH），新开命令行窗口后再运行本 bat。")
+        print("       已装多个版本时，可让 PATH 里的 python 指向 3.10 / 3.11。")
+        return 1
+    print(f"[成功] Python {ver[0]}.{ver[1]} 可用")
 
     print()
     print("[2/5] 升级 pip ...")
@@ -90,13 +99,16 @@ def main() -> int:
     print("[成功] requirements.txt 完成")
 
     print()
-    print("[4/5] 安装运行组件（ffmpeg / deps / torch / paddle / paddleocr / CosyVoice）...")
+    print("[4/5] 安装运行组件（ffmpeg / Deno / Git / deps / torch / paddle / paddleocr / CosyVoice）...")
+    print("Deno、Git 已在 PATH 中会自动跳过；装不上只警告（附手动命令），不影响其它组件。")
     print("可能较久，请耐心等待，不要关闭窗口。")
     print()
     sc = run([
         PY, str(ROOT / "tools" / "setup_components.py"),
         "--yes",
         "--only", "ffmpeg",
+        "--only", "deno",
+        "--only", "git",
         "--only", "deps",
         "--only", "torch",
         "--only", "paddle",

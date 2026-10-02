@@ -491,6 +491,24 @@ class _AddModuleDialog(QDialog):
 class PageFemaleChar(QWidget):
     """女性职业角色模块化母模板。"""
 
+    # ===== 窗口高度 BUG 防护（与截图/速存/时区汇率页同一套路）=====
+    # FlowLayout / wordWrap 会让整页 hasHeightForWidth()=True，Qt 拖窗口时抬高推荐高度。
+    # 切断整页 HFW；内部滚动/换行照常。
+    def hasHeightForWidth(self):
+        return False
+
+    def minimumSizeHint(self):
+        return QSize(0, 0)
+
+    def sizeHint(self):
+        sh = super().sizeHint()
+        if not sh.isValid() or sh.height() <= 0:
+            return QSize(0, 0)
+        cap = 700
+        if int(sh.height()) > cap:
+            return QSize(sh.width(), cap)
+        return sh
+
     def __init__(self):
         super().__init__()
         self.setObjectName("PageRoot")

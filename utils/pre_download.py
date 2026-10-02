@@ -15,11 +15,16 @@ from utils.logger import get_logger
 
 log = get_logger(__name__)
 
-# 六种下载平台（与关于页白名单 key 对应关系见 PLAT_WHITELIST_KEY）
+# 下载平台（与关于页白名单 key 对应关系见 PLAT_WHITELIST_KEY）
 PLATFORMS = (
     "douyin",
+    "qishui",
     "bilibili",
     "youtube",
+    "jimeng",
+    "liblib",
+    "xvideos",
+    "pornhub",
     "ehentai",
     "pixiv",
     "hitomi",
@@ -31,8 +36,13 @@ FAILED_LABEL = "无法处理"
 
 PLAT_LABEL = {
     "douyin": "抖音",
+    "qishui": "汽水音乐",
     "bilibili": "B站",
     "youtube": "YouTube",
+    "jimeng": "即梦",
+    "liblib": "LibTV",
+    "xvideos": "XVideos",
+    "pornhub": "Pornhub",
     "ehentai": "e-hentai",
     "pixiv": "Pixiv",
     "hitomi": "hitomi.la",
@@ -45,8 +55,13 @@ SECTION_KEYS = PLATFORMS + (FAILED_PLAT,)
 # 平台 → 关于页 clipboard_auto.whitelist 键
 PLAT_WHITELIST_KEY = {
     "douyin": "douyin",
+    "qishui": "qishui",
     "bilibili": "bilibili",
     "youtube": "youtube",
+    "jimeng": "other",
+    "liblib": "other",
+    "xvideos": "other",
+    "pornhub": "other",
     "ehentai": "gallery_eh",
     "pixiv": "gallery_pixiv",
     "hitomi": "gallery_hitomi",
@@ -62,7 +77,7 @@ def _store_path() -> str:
         return records_file("pre_download.json")
     except Exception:
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        d = os.path.join(root, "data")
+        d = os.path.join(root, "records")
         try:
             os.makedirs(d, exist_ok=True)
         except Exception:

@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v9.16 组件一键安装 —— ffmpeg / torch / paddle / CosyVoice / 权重
+"""v9.17 组件一键安装 —— ffmpeg / torch / paddle / CosyVoice / 权重
 
 requirements.txt 与 requirements-models.txt 只管纯 pip 包。
 录屏要的 ffmpeg 是系统二进制，torch / paddlepaddle 要按本机 CUDA 选轮子，
@@ -12,7 +12,7 @@ CosyVoice 还要 git clone 源码 + 9GB 权重 —— 这些都塞不进 require
   python tools/setup_components.py --only ffmpeg --only torch
   python tools/setup_components.py --all --mirror modelscope   # 国内走魔搭
 
-可选 key：ffmpeg / deps / torch / paddle / cosyvoice-code / cosyvoice-deps
+可选 key：ffmpeg / deno / git / deps / torch / paddle / paddleocr / cosyvoice-code / cosyvoice-deps
           / weights-ocr / weights-whisper / weights-cosyvoice
           / paddle-cpu（GPU 版 paddle 反复导入失败时，手动强制切 CPU）
 """
@@ -27,13 +27,13 @@ import sys
 from pathlib import Path
 
 def _find_root() -> Path:
-    """定位项目根：从本文件往上找，认 mainv916.py。
+    """定位项目根：从本文件往上找，认 mainv917.py（或任意 mainv9*.py）。
 
     这样脚本放在 tools/ 或直接放项目根都不会算错。
     """
     here = Path(__file__).resolve()
     for cand in (here.parent, *here.parents):
-        if (cand / "mainv916.py").is_file():
+        if (cand / "mainv917.py").is_file() or any(cand.glob("mainv9*.py")):
             return cand
     return here.parents[1] if len(here.parents) > 1 else here.parent
 
@@ -193,6 +193,85 @@ def do_ffmpeg() -> bool:
     print("    winget install Gyan.FFmpeg")
     print("    scoop install ffmpeg")
     print("    或从 https://www.gyan.dev/ffmpeg/builds/ 下载后把 bin 目录加进 PATH")
+    return False
+
+
+def find_deno() -> str:
+    """Deno：PATH → winget 链接目录 → 官方安装脚本目录 → Program Files（与 YouTube 页同一套候选）。"""
+    p = shutil.which("deno")
+    if p:
+        return p
+    if IS_WIN:
+        local = os.environ.get("LOCALAPPDATA", "")
+        for cand in (
+            os.path.join(local, "Microsoft", "WinGet", "Links", "deno.exe") if local else "",
+            os.path.join(os.path.expanduser("~"), ".deno", "bin", "deno.exe"),
+            r"C:\Program Files\Deno\deno.exe",
+        ):
+            if cand and os.path.isfile(cand):
+                return cand
+    return ""
+
+
+def find_git() -> str:
+    """Git：PATH → 常见安装目录（winget 刚装完、当前窗口 PATH 还没刷新时也能找到）。"""
+    p = shutil.which("git")
+    if p:
+        return p
+    if IS_WIN:
+        for base in (os.environ.get("ProgramFiles", r"C:\Program Files"),
+                     os.environ.get("ProgramFiles(x86)", ""),
+                     os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs")):
+            if not base:
+                continue
+            cand = os.path.join(base, "Git", "cmd", "git.exe")
+            if os.path.isfile(cand):
+                return cand
+    return ""
+
+
+def _winget_install(pkg_id: str) -> bool:
+    if not (IS_WIN and shutil.which("winget")):
+        print("  ! 没有找到 winget（Windows 10 需在 Microsoft Store 安装「应用安装程序」）")
+        return False
+    print("  用 winget 安装（可能弹 UAC，选「是」）")
+    return run([
+        "winget", "install", "--id", pkg_id, "-e",
+        "--accept-package-agreements", "--accept-source-agreements",
+    ], check=False)
+
+
+def do_deno() -> bool:
+    """YouTube 签名/JS 挑战要的 JS 运行时。装失败不影响其它功能。"""
+    hr("① b Deno（YouTube JS 挑战）")
+    found = find_deno()
+    if found:
+        print("  已安装：", found)
+        return True
+    if _winget_install("DenoLand.Deno") and find_deno():
+        print("  ★ 装完需要【新开一个命令行窗口】PATH 才生效。")
+        return True
+    if find_deno() == "":
+        print("  Deno 未装上（只影响 YouTube 下载）。手动安装：")
+        print("    winget install DenoLand.Deno")
+        print("  装完新开命令行窗口再启动桌面助手。")
+        return False
+    return True
+
+
+def do_git() -> bool:
+    """克隆 CosyVoice 源码要用 git。装失败不影响其它功能。"""
+    hr("① c Git（克隆 CosyVoice 源码）")
+    found = find_git()
+    if found:
+        print("  已安装：", found)
+        return True
+    if _winget_install("Git.Git") and find_git():
+        print("  ★ 装完需要【新开一个命令行窗口】PATH 才生效（本次安装会直接用完整路径）。")
+        return True
+    print("  Git 未装上（只影响 CosyVoice 源码克隆）。手动安装：")
+    print("    winget install Git.Git")
+    print("  或从 https://git-scm.com/ 下载安装后新开命令行窗口。")
     return False
 
 
@@ -412,14 +491,15 @@ def do_cosyvoice_code() -> bool:
     if (dest / "cosyvoice" / "cli" / "cosyvoice.py").is_file():
         print("  已存在：", dest)
         return True
-    if not shutil.which("git"):
-        print("  ! 没有 git。先装：winget install Git.Git")
+    git = find_git()
+    if not git:
+        print("  ! 没有 git。先装：winget install Git.Git（或 --only git）")
         return False
     if dest.exists() and any(dest.iterdir()):
         print(f"  ! {dest} 已存在但不完整，请先删掉再跑本脚本")
         return False
     MODEL.mkdir(parents=True, exist_ok=True)
-    return run(["git", "clone", "--recursive",
+    return run([git, "clone", "--recursive",
                 "https://github.com/FunAudioLLM/CosyVoice.git", str(dest)], check=False)
 
 
@@ -698,10 +778,51 @@ def check_all(verbose: bool = True, *, deep_ocr: bool = False) -> dict:
     rows.append(("语音克隆 (CosyVoice)", not miss,
                  "就绪" if not miss else "缺 " + "、".join(miss)))
 
+    # YouTube JS 挑战 / 克隆源码用的系统工具（可自动装：--only deno / --only git）
+    deno = find_deno()
+    st["deno"] = bool(deno)
+    rows.append(("Deno (YouTube)", bool(deno), deno or "未找到，运行 --only deno 或 winget install DenoLand.Deno"))
+    git = find_git()
+    st["git"] = bool(git)
+    rows.append(("Git (克隆源码)", bool(git), git or "未找到，运行 --only git 或 winget install Git.Git"))
+
+    # 手动安装的可选组件：缺了只提示，不算体检失败（判据与程序代码一致）
+    opt = []
+    auk_need = [MODEL / "AuK" / "auk_base.safetensors", MODEL / "AuK" / "config.yaml",
+                MODEL / "AuK-src" / "src" / "auk"]
+    auk_miss = [str(p.relative_to(ROOT)) for p in auk_need if not p.exists()]
+    opt.append(("AuK (音频处理·AUK)", not auk_miss,
+                "就绪" if not auk_miss else "缺 " + "、".join(auk_miss)))
+    qwen = MODEL / "Qwen2.5-Omni-3B"
+    qwen_ok = qwen.is_dir() and any(qwen.iterdir())
+    opt.append(("Qwen2.5-Omni-3B (AuK用)", qwen_ok,
+                "就绪" if qwen_ok else "缺 model/Qwen2.5-Omni-3B"))
+    bi = MODEL / "BiRefNet-general"
+    bi_onnx = [f for f in bi.glob("*.onnx") if f.stat().st_size > 10_000_000] if bi.is_dir() else []
+    opt.append(("BiRefNet (图片处理·抠图)", bool(bi_onnx),
+                bi_onnx[0].name if bi_onnx else "缺 model/BiRefNet-general/*.onnx"))
+    up = MODEL / "upscayl"
+    up_exe = (up / "upscayl-bin.exe").is_file()
+    up_models = any(((d / "realesrgan-x4plus.bin").is_file() and (d / "realesrgan-x4plus.param").is_file())
+                    for d in (up / "models", up))
+    pf_exe = Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Upscayl" / "resources" / "bin" / "upscayl-bin.exe"
+    up_ok = (up_exe and up_models) or pf_exe.is_file()
+    if up_ok:
+        up_note = "就绪" if (up_exe and up_models) else f"用本机 Upscayl：{pf_exe}"
+    else:
+        up_note = "缺 model/upscayl/upscayl-bin.exe + models/realesrgan-x4plus.bin/.param"
+    opt.append(("Upscayl (图片处理·放大)", up_ok, up_note))
+    for name, ok, _n in opt:
+        st["opt:" + name] = ok
+
     if verbose:
         print()
         for name, ok, note in rows:
             print(f"  [{'OK' if ok else '--'}] {name:24} {note}")
+        print()
+        print("  手动安装的可选组件（缺了只影响对应功能，见 README「手动安装的可选组件」）：")
+        for name, ok, note in opt:
+            print(f"  [{'OK' if ok else '..'}] {name:24} {note}")
         print()
     st["_all_ok"] = all(r[1] for r in rows)
     return st
@@ -709,8 +830,11 @@ def check_all(verbose: bool = True, *, deep_ocr: bool = False) -> dict:
 
 # ── 主流程 ────────────────────────────────────────────────────────────
 
-ALL_KEYS = ["ffmpeg", "deps", "torch", "paddle", "paddleocr", "cosyvoice-code", "cosyvoice-deps",
+ALL_KEYS = ["ffmpeg", "deno", "git", "deps", "torch", "paddle", "paddleocr", "cosyvoice-code", "cosyvoice-deps",
             "weights-ocr", "weights-whisper", "weights-cosyvoice"]
+
+# 装失败只警告、不让整体返回失败的系统工具（只影响 YouTube / 源码克隆）
+SOFT_KEYS = {"deno", "git"}
 
 # 仅用于交互菜单里 --only 校验；不进「全部」，只用于反复修不好时的手动兜底
 EXTRA_KEYS = ["paddle-cpu"]
@@ -721,6 +845,8 @@ DL_SIZE_GB = {"weights-ocr": 1.9, "weights-whisper": 0.5, "weights-cosyvoice": 9
 # key → 该项是否已满足（读体检结果）
 DONE_OF = {
     "ffmpeg": "ffmpeg",
+    "deno": "deno",
+    "git": "git",
     "deps": "voice_pkg",
     "torch": "torch",
     "paddle": "ocr_pkg",
@@ -736,8 +862,9 @@ MENU_SPEC = [
     ("1", ["ffmpeg"], "修录屏"),
     ("2", ["deps", "weights-whisper"], "修语音转写"),
     ("3", ["deps", "paddle", "paddleocr", "weights-ocr"], "修截图 OCR"),
-    ("4", ["torch", "cosyvoice-code", "cosyvoice-deps", "weights-cosyvoice"], "修语音克隆"),
+    ("4", ["git", "torch", "cosyvoice-code", "cosyvoice-deps", "weights-cosyvoice"], "修语音克隆"),
     ("5", ALL_KEYS, "全部"),
+    ("6", ["deno"], "修 YouTube（Deno）"),
 ]
 
 
@@ -753,7 +880,7 @@ def _menu_note(keys, st) -> str:
         return "已就绪，无需操作"
     gb = sum(DL_SIZE_GB.get(k, 0) for k in todo)
     desc = "、".join({
-        "ffmpeg": "ffmpeg", "deps": "pip 依赖", "torch": "torch",
+        "ffmpeg": "ffmpeg", "deno": "Deno", "git": "Git", "deps": "pip 依赖", "torch": "torch",
         "paddle": "paddle", "cosyvoice-code": "源码", "cosyvoice-deps": "依赖包",
         "paddleocr": "PaddleOCR-VL 运行库", "weights-ocr": "OCR 权重", "weights-whisper": "whisper 权重",
         "weights-cosyvoice": "克隆权重",
@@ -781,14 +908,16 @@ def main() -> int:
     ap.add_argument("--only", action="append", default=[],
                     help="指定组件，可重复；可选 " + " / ".join(ALL_KEYS + EXTRA_KEYS))
     ap.add_argument("--all", action="store_true", help="全部安装")
-    ap.add_argument("--check", action="store_true", help="只体检")
+    ap.add_argument("--check", action="store_true", help="只体检（轻量，不做 OCR VL 真测）")
+    ap.add_argument("--check-deep", action="store_true", dest="check_deep",
+                    help="深度体检（含 PaddleOCR-VL 真测，较慢）")
     ap.add_argument("--mirror", choices=["hf", "modelscope"], default="hf",
                     help="权重下载源，国内建议 modelscope")
     ap.add_argument("--yes", action="store_true", help="所有确认一律 y")
     args = ap.parse_args()
     ASSUME_YES = args.yes
 
-    print("桌面助手 v9.16 · 组件安装")
+    print("桌面助手 v9.17 · 组件安装")
     print("项目根：", ROOT)
     print("Python：", PY)
 
@@ -849,6 +978,10 @@ def main() -> int:
     for k in [x for x in order if x in keys]:
         if k == "ffmpeg":
             results[k] = do_ffmpeg()
+        elif k == "deno":
+            results[k] = do_deno()
+        elif k == "git":
+            results[k] = do_git()
         elif k == "deps":
             results[k] = do_deps()
         elif k == "torch":
@@ -868,13 +1001,14 @@ def main() -> int:
 
     hr("安装结果")
     for k, ok in results.items():
-        print(f"  [{'OK' if ok else '!!'}] {k}")
+        soft = (not ok) and k in SOFT_KEYS
+        print(f"  [{'OK' if ok else ('..' if soft else '!!')}] {k}" + ("（可稍后手动安装，不影响其它功能）" if soft else ""))
 
     check_all(deep_ocr=False)
     print("★ 装完请【完全退出并重启】桌面助手；OCR 真测请到软件里点「检测」，或：python tools/setup_components.py --check-deep")
     if any(k == "ffmpeg" for k in results):
         print("★ 装过 ffmpeg 的话，要新开一个命令行窗口 PATH 才生效。")
-    return 0 if all(results.values()) else 1
+    return 0 if all(ok for k, ok in results.items() if k not in SOFT_KEYS) else 1
 
 
 if __name__ == "__main__":

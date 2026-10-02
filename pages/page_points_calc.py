@@ -51,15 +51,17 @@ def _style_toggle_btn(btn: QPushButton):
     enabled = btn.isEnabled()
     if theme.is_dark:
         if checked:
-            bg, fg, bd = "#e8eefc", "#0b1124", "#c5d0ea"
-            dis_bg, dis_fg, dis_bd = "rgba(232,238,252,0.22)", "#7a8aab", "rgba(197,208,234,0.22)"
+            # 选中：蓝底白字（原浅白底）
+            bg, fg, bd = "#4ea1ff", "#ffffff", "#3b82f6"
+            dis_bg, dis_fg, dis_bd = "rgba(78,161,255,0.28)", "#9fb0d7", "rgba(59,130,246,0.28)"
         else:
             bg, fg, bd = "rgba(255,255,255,0.06)", "#9fb0d7", "rgba(255,255,255,0.22)"
             dis_bg, dis_fg, dis_bd = "rgba(255,255,255,0.03)", "#5a6a8a", "rgba(255,255,255,0.10)"
     else:
         if checked:
-            bg, fg, bd = "#1f2937", "#f9fafb", "#111827"
-            dis_bg, dis_fg, dis_bd = "rgba(31,41,55,0.28)", "#9ca3af", "rgba(17,24,39,0.18)"
+            # 选中：蓝底白字（与暗色一致）
+            bg, fg, bd = "#3b82f6", "#ffffff", "#2563eb"
+            dis_bg, dis_fg, dis_bd = "rgba(59,130,246,0.28)", "#9ca3af", "rgba(37,99,235,0.22)"
         else:
             bg, fg, bd = "rgba(0,0,0,0.04)", "#4b5563", "rgba(0,0,0,0.14)"
             dis_bg, dis_fg, dis_bd = "rgba(0,0,0,0.02)", "#9ca3af", "rgba(0,0,0,0.08)"
@@ -129,7 +131,7 @@ def _lerp_qcolor(a: QColor, b: QColor, t: float) -> QColor:
 class _UsageSlider(QWidget):
     """圆角轨道 + 白滑块。0=左（生图/蓝），1=右（生视频/绿）。"""
 
-    W, H = 40, 18
+    W, H = 32, 18
     snapped = pyqtSignal(bool)  # True=生视频
 
     def __init__(self, parent=None):
@@ -795,6 +797,87 @@ class _DragContainer(QWidget):
 
 
 # ── 主页面 ───────────────────────────────────────────────────────────────────
+
+class _SecsSlider(QWidget):
+    """简易秒数滑块：2px 蓝线 + 4px 小圆。左=3秒，右=60秒。"""
+
+    valueChanged = pyqtSignal(int)
+    MIN_S, MAX_S = 3, 60
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(8)
+        self.setMinimumWidth(78)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.NoFocus)
+        self._value = 10
+        self._dragging = False
+
+    def value(self) -> int:
+        return self._value
+
+    def setValue(self, v: int, emit: bool = False):
+        v = max(self.MIN_S, min(self.MAX_S, int(v)))
+        changed = v != self._value
+        self._value = v
+        self.update()
+        if emit and changed:
+            self.valueChanged.emit(self._value)
+
+    def _x_to_val(self, x: float) -> int:
+        pad = 4.0  # 半个 8px 小圆
+        span = max(1.0, float(self.width()) - 2.0 * pad)
+        t = max(0.0, min(1.0, (float(x) - pad) / span))
+        return int(round(self.MIN_S + t * (self.MAX_S - self.MIN_S)))
+
+    def _val_to_x(self) -> float:
+        pad = 4.0
+        span = max(1.0, float(self.width()) - 2.0 * pad)
+        t = (self._value - self.MIN_S) / float(self.MAX_S - self.MIN_S)
+        return pad + t * span
+
+    def mousePressEvent(self, e):
+        if not self.isEnabled() or e.button() != Qt.LeftButton:
+            e.accept()
+            return
+        self._dragging = True
+        self.setValue(self._x_to_val(e.x()), emit=True)
+        self.grabMouse()
+        e.accept()
+
+    def mouseMoveEvent(self, e):
+        if not self._dragging:
+            return
+        self.setValue(self._x_to_val(e.x()), emit=True)
+        e.accept()
+
+    def mouseReleaseEvent(self, e):
+        if e.button() == Qt.LeftButton and self._dragging:
+            self._dragging = False
+            try:
+                self.releaseMouse()
+            except Exception:
+                pass
+        e.accept()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        w, h = float(self.width()), float(self.height())
+        enabled = self.isEnabled()
+        blue = QColor("#4ea1ff") if enabled else QColor("#64748B")
+        ty = h * 0.5 - 1.0
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(blue))
+        p.drawRoundedRect(QRectF(4.0, ty, max(0.0, w - 8.0), 2.0), 1.0, 1.0)
+        cx = self._val_to_x()
+        cy = h * 0.5
+        p.setBrush(QBrush(QColor("#FFFFFF") if enabled else QColor("#CBD5E1")))
+        p.setPen(QPen(blue, 1.0))
+        p.drawEllipse(QPointF(cx, cy), 4.0, 4.0)  # 8px 直径
+        p.end()
+
+
 class PagePointsCalc(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -851,18 +934,20 @@ class PagePointsCalc(QWidget):
         section_key = btn.property("sectionKey")
         sort_attr = "_cost_sort_img" if section_key == "img" else "_cost_sort_vid"
         state = getattr(self, sort_attr, 0)
-        texts = {0: "\u2022", 1: "\u25b2", 2: "\u25bc"}  # • ▲ ▼
+        texts = {0: "序", 1: "\u25b2", 2: "\u25bc"}  # 序 ▲ ▼
         text = texts.get(state, "")
-        active = state != 0
-        bg = tk("accent") if active else "transparent"
-        fg = "#fff" if active else tk("text_mut")
-        border = tk("accent_hover") if active else tk("text_faint")
+        # 三种状态统一蓝色（默认/升/降）
+        blue = tk("accent")
+        blue_hover = tk("accent_hover")
+        bg = "transparent"
+        fg = blue
+        border = blue
         radius = "6px"
         btn.setText(text)
         btn.setStyleSheet(
             f"QPushButton#CostSortBtn{{border:1px solid {border};border-radius:{radius};"
-            f"background:{bg};color:{fg};font-size:11px;padding:0;margin:0;}}"
-            f"QPushButton#CostSortBtn:hover{{border-color:{tk('accent_hover')};}}"
+            f"background:{bg};color:{fg};font-size:11px;font-weight:700;padding:0;margin:0;}}"
+            f"QPushButton#CostSortBtn:hover{{border-color:{blue_hover};color:{blue_hover};}}"
         )
 
     # ── 汇率偏好（user.txt · points_calc）────────────────────────────────
@@ -893,7 +978,7 @@ class PagePointsCalc(QWidget):
         return s if s else str(self.DEFAULT_RATE)
 
     def _set_rate_text(self, r: float, *, block_signal: bool = True):
-        """更新汇率显示（「汇率 7.25」）；block_signal 仅为兼容旧调用。"""
+        """更新「汇率 + 数值」整段右对齐；block_signal 仅为兼容旧调用。"""
         try:
             val = float(r)
         except (TypeError, ValueError):
@@ -1006,7 +1091,7 @@ class PagePointsCalc(QWidget):
         box = make_card("CardPointsTop")
 
         form = QVBoxLayout(box)
-        form.setContentsMargins(CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
+        form.setContentsMargins(CARD_LEFT_GAP, 6, CARD_RIGHT_GAP, 6)  # 顶/底边距一致 6
         form.setSpacing(4)
         form.setAlignment(Qt.AlignTop)
 
@@ -1066,12 +1151,13 @@ class PagePointsCalc(QWidget):
             lbl = QLabel(label_text)
             lbl.setObjectName("MetricLabel")
             lbl.setAttribute(Qt.WA_StyledBackground, True)
+            # 字号交给 QSS（MetricLabel 14 / MetricValue 20），此处不盖掉
             lbl.setStyleSheet("background: transparent;")
             lbl.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
             val = QLabel(value_init)
             val.setObjectName("MetricValue")
             val.setAttribute(Qt.WA_StyledBackground, True)
-            val.setStyleSheet("background: transparent; font-size: 13px; font-weight: 700;")
+            val.setStyleSheet("background: transparent; font-weight: 700;")
             val.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             val.setMinimumWidth(48)
             val.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
@@ -1111,18 +1197,23 @@ class PagePointsCalc(QWidget):
         self.inp_amount.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.lbl_amount_unit = _field_lbl("人民币")
         self.lbl_amount_unit.setObjectName("CalcAmountUnit")
+        self.lbl_amount_unit.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         # 人民币/美元同宽，切币种不挤后面的 CNY/USD
         self.lbl_amount_unit.setFixedWidth(
-            self.lbl_amount_unit.fontMetrics().horizontalAdvance("人民币") + 4
+            self.lbl_amount_unit.fontMetrics().horizontalAdvance("人民币")
         )
         self.btn_cny = self._toggle("CNY", True,  lambda: self._set_currency("CNY"))
         self.btn_usd = self._toggle("USD", False, lambda: self._set_currency("USD"))
         self.btn_cny.setFixedWidth(48)
         self.btn_usd.setFixedWidth(48)
         self._fx_rate = float(self.DEFAULT_RATE)
-        self.lbl_rate = _field_lbl(f"汇率 {self._format_rate(self._fx_rate)}")
+        # 「汇率」与数字同一标签，整体右对齐（短数字时两者一起靠右）
+        self.lbl_rate = self._lbl(f"汇率 {self._format_rate(self._fx_rate)}")
+        self.lbl_rate.setObjectName("CalcRateValue")
+        self.lbl_rate.setFixedHeight(_H)
+        self.lbl_rate.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.lbl_rate.setFixedWidth(
-            self.lbl_rate.fontMetrics().horizontalAdvance("汇率 000.0000") + 4
+            self.lbl_rate.fontMetrics().horizontalAdvance("汇率 000.0000") + 2
         )
         self.btn_rate_refresh = apply_mini_button(QPushButton("↻"))
         self.btn_rate_refresh.setObjectName("RateRefreshBtn")
@@ -1136,8 +1227,8 @@ class PagePointsCalc(QWidget):
         row2.addWidget(self.btn_yearly, 0, Qt.AlignVCenter)
         row2.addWidget(lbl_a, 0, Qt.AlignVCenter)
         row2.addWidget(self.inp_amount, 1, Qt.AlignVCenter)
-        row2.addWidget(self.lbl_amount_unit, 0, Qt.AlignVCenter)
-        row2.addWidget(self.btn_cny, 0, Qt.AlignVCenter)
+        # 人民币/美元 与 CNY 贴紧无空隙；USD 仍跟在 CNY 旁
+        row2.addLayout(_glue(self.lbl_amount_unit, self.btn_cny, spacing=6), 0)
         row2.addWidget(self.btn_usd, 0, Qt.AlignVCenter)
 
         self._rate_nam = QNetworkAccessManager(self)
@@ -1147,7 +1238,7 @@ class PagePointsCalc(QWidget):
         def _stepper_btn(symbol):
             b = QPushButton(symbol)
             b.setObjectName("StepperBtn")
-            b.setFixedSize(26, 28)
+            b.setFixedSize(44, 20)  # 高再 +4
             b.setCursor(Qt.PointingHandCursor)
             return b
 
@@ -1155,16 +1246,18 @@ class PagePointsCalc(QWidget):
         self.lbl_secs_display = QLabel("10 秒")
         self.lbl_secs_display.setObjectName("SecsDisplay")
         self.lbl_secs_display.setAlignment(Qt.AlignCenter)
-        self.lbl_secs_display.setFixedWidth(48)
-        self.lbl_secs_display.setFixedHeight(28)
-        self.btn_secs_min = _stepper_btn("◀◀")
+        self.lbl_secs_display.setFixedWidth(56)
+        self.lbl_secs_display.setFixedHeight(20)
         self.btn_secs_dec = _stepper_btn("◀")
         self.btn_secs_inc = _stepper_btn("▶")
-        self.btn_secs_max = _stepper_btn("▶▶")
+        self.secs_slider = _SecsSlider(self)
+        self.secs_slider.setValue(10)
 
-        def _set_secs(s):
-            self._video_secs = max(4, min(60, s))
+        def _set_secs(s, from_slider=False):
+            self._video_secs = max(3, min(60, int(s)))
             self.lbl_secs_display.setText(f"{self._video_secs} 秒")
+            if not from_slider:
+                self.secs_slider.setValue(self._video_secs, emit=False)
             idx = self.cmb_video_secs.findData(self._video_secs)
             if idx >= 0:
                 self.cmb_video_secs.blockSignals(True)
@@ -1172,22 +1265,43 @@ class PagePointsCalc(QWidget):
                 self.cmb_video_secs.blockSignals(False)
             self._schedule_calc()
 
-        self.btn_secs_min.clicked.connect(lambda: _set_secs(4))
+        self._set_video_secs = _set_secs
         self.btn_secs_dec.clicked.connect(lambda: _set_secs(self._video_secs - 1))
         self.btn_secs_inc.clicked.connect(lambda: _set_secs(self._video_secs + 1))
-        self.btn_secs_max.clicked.connect(lambda: _set_secs(60))
+        self.secs_slider.valueChanged.connect(lambda v: _set_secs(v, from_slider=True))
 
         self.cmb_video_secs = QComboBox(self)
         self.cmb_video_secs.setVisible(False)
-        for s in range(4, 61):
+        for s in range(3, 61):
             self.cmb_video_secs.addItem(f"{s} 秒", s)
-        self.cmb_video_secs.setCurrentIndex(6)
+        self.cmb_video_secs.setCurrentIndex(7)  # 10 秒
 
-        self._video_dur_widgets = [
-            self.btn_secs_min, self.btn_secs_dec,
-            self.lbl_secs_display,
-            self.btn_secs_inc, self.btn_secs_max,
-        ]
+        # 上：减1 / 秒数 / 加1；下：滑块贴本行底边
+        secs_row = QHBoxLayout()
+        secs_row.setContentsMargins(0, 0, 0, 0)
+        secs_row.setSpacing(2)
+        secs_row.addWidget(self.btn_secs_dec, 0, Qt.AlignVCenter)
+        secs_row.addWidget(self.lbl_secs_display, 0, Qt.AlignVCenter)
+        secs_row.addWidget(self.btn_secs_inc, 0, Qt.AlignVCenter)
+
+        # 滑块宽度对齐上方三钮
+        _secs_w = 44 + 2 + 56 + 2 + 44  # 各 +8
+        self.secs_slider.setFixedWidth(_secs_w)
+
+        secs_col = QVBoxLayout()
+        secs_col.setContentsMargins(0, 0, 0, 0)
+        secs_col.setSpacing(2)  # 三钮与滑块空隙 2px
+        secs_col.addLayout(secs_row)
+        secs_col.addWidget(self.secs_slider, 0, Qt.AlignTop)
+
+        self.secs_box = QWidget()
+        self.secs_box.setObjectName("SecsBox")
+        self.secs_box.setLayout(secs_col)
+        self.secs_box.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        # 钮 20 + 间距 2 + 滑块 8
+        self.secs_box.setFixedHeight(20 + 2 + 8)
+
+        self._video_dur_widgets = [self.secs_box]
 
         lbl_mp = _field_lbl("每月到账积分")
         self.inp_monthly_pts = self._inp("例：3000")
@@ -1199,13 +1313,14 @@ class PagePointsCalc(QWidget):
         self.inp_consume.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
 
         row3 = _add_row()
+        # 本行抬高以容纳钮+底对齐滑块；其它控件垂直居中，滑块贴行底
+        row3.parentWidget().setFixedHeight(max(_H, 20 + 2 + 8))
         row3.addWidget(lbl_mp, 0, Qt.AlignVCenter)
         row3.addWidget(self.inp_monthly_pts, 1, Qt.AlignVCenter)
         row3.addWidget(lbl_cp, 0, Qt.AlignVCenter)
         row3.addWidget(self.inp_consume, 1, Qt.AlignVCenter)
-        for w in self._video_dur_widgets:
-            row3.addWidget(w, 0, Qt.AlignVCenter)
-        row3.addLayout(_glue(self.lbl_rate, self.btn_rate_refresh), 0)
+        row3.addWidget(self.secs_box, 0, Qt.AlignBottom)
+        row3.addLayout(_glue(self.lbl_rate, self.btn_rate_refresh, spacing=_PAIR), 0)
 
         # ── 行4：每张图片 + 单支视频 + 月成本 + 保存 ──────────────────────
         self.lbl_cost_image = _metric_chip("每张图片", "—")
@@ -1738,13 +1853,11 @@ class PagePointsCalc(QWidget):
             self.inp_consume.setText(str(record.get("consume_pts", "")))
             self._set_usage_type(record.get("usage_type", "image"))
             video_secs = record.get("video_secs", 10)
-            self._video_secs = video_secs
-            self.lbl_secs_display.setText(f"{video_secs} 秒")
-            idx = self.cmb_video_secs.findData(video_secs)
-            if idx >= 0:
-                self.cmb_video_secs.blockSignals(True)
-                self.cmb_video_secs.setCurrentIndex(idx)
-                self.cmb_video_secs.blockSignals(False)
+            try:
+                video_secs = int(video_secs)
+            except (TypeError, ValueError):
+                video_secs = 10
+            self._set_video_secs(video_secs)
         finally:
             self._auto_calc_suspended = False
         self.btn_save.setText("保存修改")
@@ -1876,11 +1989,7 @@ class PagePointsCalc(QWidget):
             self.inp_monthly_pts.clear()
             self.inp_consume.clear()
             # 用途类型不改：取消编辑后仍停在当前生图/生视频列表
-            self._video_secs = 10
-            self.lbl_secs_display.setText("10 秒")
-            self.cmb_video_secs.blockSignals(True)
-            self.cmb_video_secs.setCurrentIndex(6)
-            self.cmb_video_secs.blockSignals(False)
+            self._set_video_secs(10)
         finally:
             self._auto_calc_suspended = False
         self.btn_save.setText("保存到记录")

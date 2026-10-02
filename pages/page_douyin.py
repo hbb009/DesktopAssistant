@@ -17,7 +17,7 @@
 import warnings, urllib3
 warnings.filterwarnings("ignore", category=urllib3.exceptions.InsecureRequestWarning)
 
-import os, re, json, time, threading, uuid, gzip as gzip_mod
+import os, re, json, time, threading, uuid, gzip as gzip_mod, subprocess
 import http.cookiejar, ssl, datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -55,6 +55,7 @@ from styles.style_all import (
     CARD_BOTTOM_GAP,
 )
 from utils.logger import get_logger
+from utils.xvideos import looks_like_xvideos as _looks_like_xvideos
 from utils.cursor_toast import (
     show_cursor_toast, in_batch_download, batch_progress_prefix,
 )
@@ -310,19 +311,31 @@ def extract_url(text: str) -> str:
     """从纯链接或任意分享文字中提取第一个有效抖音/TikTok 链接"""
     pat = re.compile(
         r'https?://(?:v\.douyin\.com|vm\.tiktok\.com|www\.douyin\.com'
-        r'|m\.douyin\.com|www\.tiktok\.com)/[^\s\u4e00-\u9fff，。！？、；：'
+        r'|m\.douyin\.com|www\.tiktok\.com'
+        r'|music\.douyin\.com|qishui\.douyin\.com)/[^\s\u4e00-\u9fff，。！？、；：'
         r'""\'\'【】《》（）\[\]{}]*'
     )
     m = pat.search(text.strip())
     if m:
         return m.group(0).rstrip("/.,;!?）》】")
     raise ValueError(
-        "未找到有效的抖音/TikTok 链接\n\n支持：\n"
+        "未找到有效的抖音/TikTok/汽水音乐链接\n\n支持：\n"
         "• https://v.douyin.com/xxx/\n"
         "• https://www.douyin.com/video/xxx\n"
         "• https://www.douyin.com/note/xxx（图文帖）\n"
+        "• https://music.douyin.com/qishui/share/ugc_video?ugc_video_id=xxx\n"
+        "• https://qishui.douyin.com/s/xxx/\n"
         "• 包含上述链接的分享文字"
     )
+
+
+def is_qishui_url(url: str) -> bool:
+    u = (url or "").lower()
+    if "qishui.douyin.com" in u:
+        return True
+    if "music.douyin.com" in u and "/qishui" in u:
+        return True
+    return False
 
 
 def resolve_short(url: str, cookie_str: str) -> str:
@@ -333,11 +346,197 @@ def resolve_short(url: str, cookie_str: str) -> str:
 
 def get_aweme_id(url: str):
     for p in [r"/video/(\d+)", r"/note/(\d+)",
+              r"ugc_video_id=(\d+)", r"track_id=(\d+)",
               r"item_ids=(\d+)", r"/(\d{15,20})"]:
         m = re.search(p, url)
         if m:
             return m.group(1)
     return None
+
+
+def _parse_router_data(html: str):
+    idx = (html or "").find("_ROUTER_DATA")
+    if idx < 0:
+        return None
+    eq = html.find("=", idx)
+    if eq < 0:
+        return None
+    raw = html[eq + 1:].lstrip()
+    try:
+        data, _end = json.JSONDecoder().raw_decode(raw)
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _qishui_fetch_html(url: str, cookie_str: str = "") -> str:
+    headers = {
+        "User-Agent": UA_MOBILE,
+        "Referer": "https://music.douyin.com/qishui/",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "zh-CN,zh;q=0.9",
+    }
+    if cookie_str:
+        headers["Cookie"] = cookie_str
+    if HAS_REQUESTS:
+        r = req_lib.get(url, headers=headers, timeout=20, verify=False)
+        r.raise_for_status()
+        r.encoding = r.apparent_encoding or "utf-8"
+        return r.text or ""
+    _final, body, status, _n = _get(url, headers, timeout=20)
+    if int(status or 0) >= 400:
+        raise ValueError("汽水分享页 HTTP %s" % status)
+    return body.decode("utf-8", errors="replace")
+
+
+def _audio_quality_rank(item) -> int:
+    """音频档位：无损 > 直链 m4a > mp3；从视频里抽的排在同档直链之后。"""
+    ext = (getattr(item, "ext", "") or "").lower()
+    rank = {
+        ".flac": 500, ".wav": 480, ".alac": 460,
+        ".m4a": 320, ".aac": 300,
+        ".mp3": 180, ".ogg": 140, ".opus": 160,
+    }.get(ext, 100)
+    if not getattr(item, "extract_audio", False):
+        rank += 40
+    label = (getattr(item, "label", "") or "").lower()
+    m = re.search(r"(\d{2,4})\s*k", label)
+    if m:
+        try:
+            rank += min(400, int(m.group(1)))
+        except ValueError:
+            pass
+    return rank
+
+
+def _mark_best_audio_only(media) -> None:
+    """视频不勾。多条音频里只勾品质最好的一条。"""
+    audios = [m for m in (media or []) if getattr(m, "kind", "") == "audio"]
+    best = max(audios, key=_audio_quality_rank) if audios else None
+    for m in media or []:
+        try:
+            m.default_checked = m is best
+        except Exception:
+            pass
+
+
+def parse_qishui_share(url: str, cookie_str: str = "", log_cb=None):
+    """解析汽水音乐分享页（ugc_video / track），返回 (item_dict, media_list)。"""
+    def _log(msg, level="info"):
+        if log_cb:
+            log_cb(msg, level)
+
+    original = url
+    if "qishui.douyin.com" in (url or "").lower():
+        _log("还原汽水短链…")
+        url = resolve_short(url, cookie_str)
+        _log(f"真实 URL：{url}")
+
+    _log("读取汽水分享页…")
+    html = _qishui_fetch_html(url, cookie_str)
+    data = _parse_router_data(html)
+    if not data:
+        raise ValueError("汽水分享页没有 _ROUTER_DATA，页面结构可能已变")
+    ld = data.get("loaderData") or {}
+    media = []
+    author = ""
+    desc = ""
+    vid = get_aweme_id(url) or ""
+    cover = ""
+
+    ugc = ld.get("ugc_video_page") or {}
+    opts = ugc.get("videoOptions") if isinstance(ugc, dict) else None
+    if isinstance(opts, dict) and (opts.get("url") or "").strip():
+        vurl = str(opts.get("url") or "").strip()
+        cover = str(opts.get("coverURL") or opts.get("metaURL") or "").strip()
+        author = str(opts.get("artistName") or "").strip() or "汽水音乐"
+        desc = str(opts.get("videoName") or "").strip() or "汽水视频"
+        vid = str(opts.get("video_id") or vid)
+        media.append(MediaItem(
+            "video", "视频（汽水）", vurl, ".mp4", cover, 0, False,
+        ))
+        media.append(MediaItem(
+            "audio", "音频（汽水）", vurl, ".mp3", cover, 1, False,
+            extract_audio=True,
+        ))
+        _log(f"汽水 UGC 视频：{desc[:40]}")
+
+    tpage = ld.get("track_page") or {}
+    if isinstance(tpage, dict) and not media:
+        audio_opt = tpage.get("audioWithLyricsOption") or {}
+        if not isinstance(audio_opt, dict):
+            audio_opt = {}
+        aurl = str(audio_opt.get("url") or "").strip()
+        track_info = audio_opt.get("trackInfo") if isinstance(audio_opt.get("trackInfo"), dict) else {}
+        # 歌名/歌手/封面在 audioWithLyricsOption 上，不在 metaData
+        author = (
+            str(audio_opt.get("artistName") or "").strip()
+            or " / ".join(
+                str(a.get("name") or "").strip()
+                for a in (track_info.get("artists") or [])
+                if isinstance(a, dict) and str(a.get("name") or "").strip()
+            )
+            or author
+            or "汽水音乐"
+        )
+        desc = (
+            str(audio_opt.get("trackName") or track_info.get("name") or "").strip()
+            or desc
+            or "汽水歌曲"
+        )
+        cover = str(audio_opt.get("coverURL") or "").strip() or cover
+        tid = str(audio_opt.get("track_id") or track_info.get("id") or vid or "").strip()
+        if tid:
+            vid = tid
+        if aurl:
+            ext = ".m4a"
+            low = aurl.lower()
+            if "mp3" in low:
+                ext = ".mp3"
+            media.append(MediaItem(
+                "audio", "音频（汽水）", aurl, ext, cover, 0, False,
+            ))
+            vopt = tpage.get("videoOptions") or {}
+            vurl = str((vopt.get("url") if isinstance(vopt, dict) else "") or "").strip()
+            if vurl:
+                media.insert(0, MediaItem(
+                    "video", "视频（汽水）", vurl, ".mp4",
+                    str((vopt.get("coverURL") if isinstance(vopt, dict) else "") or cover),
+                    0, False,
+                ))
+            _log(f"汽水曲目：{desc[:40]}")
+        else:
+            play_level = str(audio_opt.get("group_playable_level") or "").strip().lower()
+            dl_level = str(audio_opt.get("group_download_level") or "").strip().lower()
+            label = track_info.get("label_info") if isinstance(track_info.get("label_info"), dict) else {}
+            vipish = (
+                play_level in ("pay", "vip")
+                or dl_level in ("pay", "vip")
+                or bool(label.get("only_vip_playable"))
+                or bool(label.get("only_vip_download"))
+            )
+            title = desc if desc and desc != "汽水歌曲" else (tid or "该曲目")
+            if vipish:
+                raise ValueError(
+                    f"《{title}》为 VIP/付费曲，分享页无直链，暂不支持下载"
+                )
+            raise ValueError(
+                f"《{title}》分享页未提供音频地址（可能需登录或已下架）"
+            )
+
+    if not media:
+        raise ValueError("汽水分享页未找到视频或音频地址")
+    _mark_best_audio_only(media)
+
+    item = {
+        "author": {"nickname": author or "汽水音乐"},
+        "desc": desc or "汽水分享",
+        "create_time": 0,
+        "aweme_id": vid,
+        "aweme_type": 0,
+        "referer": original or url,
+    }
+    return item, media
 
 
 def guess_content_type(original_url: str, resolved_url: str) -> str:
@@ -1468,12 +1667,14 @@ class MediaItem:
 
     实况图在网页上就是一格，只是它同时含静图和一段 mp4，因此不再拆成两张卡，
     而是由 live_url 挂在同一项上；下载时该项落两个文件。
+    extract_audio：地址是视频流，下载后用 ffmpeg 抽出音频。
     """
     __slots__ = ("kind", "label", "url", "ext", "thumb_url", "index",
-                 "default_checked", "live_url", "url_alts")
+                 "default_checked", "live_url", "url_alts", "extract_audio")
 
     def __init__(self, kind, label, url, ext, thumb_url="", index=0,
-                 default_checked=True, live_url="", url_alts=None):
+                 default_checked=True, live_url="", url_alts=None,
+                 extract_audio=False):
         self.kind            = kind
         self.label           = label
         self.url             = url
@@ -1484,6 +1685,7 @@ class MediaItem:
         self.live_url        = live_url          # 实况图附带的 mp4，空则无
         # 备选地址（同一内容的其它 CDN / 码率），首选失败时逐个回退
         self.url_alts        = [u for u in (url_alts or []) if u and u != url]
+        self.extract_audio   = bool(extract_audio)
 
 
 def parse_media(item: dict) -> list:
@@ -1644,6 +1846,21 @@ class ParseWorker(QThread):
                 cookie_str, cookie_dict = load_cookies(self.cookie_path)
                 s_v_web_id = cookie_dict.get("s_v_web_id", "")
                 self._log(f"已加载 Cookie（{len(cookie_dict)} 个字段）")
+
+            if is_qishui_url(url):
+                self._log("识别为汽水音乐")
+                item, media = parse_qishui_share(
+                    url, cookie_str,
+                    log_cb=lambda m, lv="info": self._log(m, lv),
+                )
+                vid_n = len([m for m in media if m.kind == "video"])
+                aud_n = len([m for m in media if m.kind == "audio"])
+                self._log(
+                    f"提取完成：汽水音乐，共 {len(media)} 项（{vid_n}视频/{aud_n}音频）",
+                    "ok",
+                )
+                self.ok.emit(item, media)
+                return
 
             # 步骤3：还原短链
             original_url = url
@@ -1895,6 +2112,38 @@ class ParseWorker(QThread):
             self.err.emit(str(e))
 
 
+def _ffmpeg_extract_audio(src: str, ext: str):
+    """从已下载视频抽出音频。返回 (ok, path_or_err)。"""
+    try:
+        from utils.region_recorder import find_ffmpeg
+        ff = find_ffmpeg()
+    except Exception:
+        ff = None
+    if not ff:
+        return False, "未检测到 ffmpeg，无法抽出音频"
+    ext = ext if str(ext).startswith(".") else f".{ext}"
+    dst = os.path.splitext(src)[0] + ext
+    cmd = [ff, "-y", "-i", src, "-vn"]
+    if ext.lower() == ".mp3":
+        cmd += ["-acodec", "libmp3lame", "-q:a", "2"]
+    else:
+        cmd += ["-acodec", "aac", "-b:a", "192k"]
+    cmd.append(dst)
+    try:
+        kw = dict(
+            args=cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180,
+        )
+        if os.name == "nt":
+            kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+        p = subprocess.run(**kw)
+        if p.returncode != 0 or not os.path.isfile(dst) or os.path.getsize(dst) < 32:
+            err = (p.stderr or b"").decode("utf-8", "replace")[-240:]
+            return False, (err or ("ffmpeg 退出码 %s" % p.returncode)).strip()
+        return True, dst
+    except Exception as e:
+        return False, "%s: %s" % (type(e).__name__, e)
+
+
 # ── 下载线程 ──────────────────────────────────────────────────────────────────
 
 class DownloadWorker(QThread):
@@ -1924,8 +2173,10 @@ class DownloadWorker(QThread):
         aweme_id_for_ref = (vi or {}).get("aweme_id", "")
         aweme_type_for_ref = (vi or {}).get("aweme_type", 0)
         ref_path = "note" if aweme_type_for_ref in (2, 68) else "video"
-        ref_url = (f"https://www.douyin.com/{ref_path}/{aweme_id_for_ref}"
-                   if aweme_id_for_ref else "https://www.douyin.com/")
+        ref_url = (vi or {}).get("referer") or (
+            f"https://www.douyin.com/{ref_path}/{aweme_id_for_ref}"
+            if aweme_id_for_ref else "https://www.douyin.com/"
+        )
         hdrs   = {"User-Agent": UA_MOBILE, "Referer": ref_url}
         total  = sum(1 + (1 if it.live_url else 0) for it in self._items)
         done_count = [0]
@@ -2063,9 +2314,26 @@ class DownloadWorker(QThread):
             key = ("dy", id(item))
             wd.begin(key)
             try:
-                ok, info = _save(
-                    [item.url] + item.url_alts, item.label, item.ext, key
-                )
+                if getattr(item, "extract_audio", False):
+                    ok, info = _save(
+                        [item.url] + item.url_alts, item.label, ".mp4", key
+                    )
+                    if ok:
+                        conv, outp = _ffmpeg_extract_audio(info, item.ext)
+                        if conv:
+                            try:
+                                if os.path.normcase(info) != os.path.normcase(outp):
+                                    os.remove(info)
+                            except Exception:
+                                pass
+                            info = outp
+                        else:
+                            ok = False
+                            info = outp or "ffmpeg 抽出音频失败"
+                else:
+                    ok, info = _save(
+                        [item.url] + item.url_alts, item.label, item.ext, key
+                    )
 
                 # 实况图：静图之外再落一个 mp4，两者同属一项
                 if ok and item.live_url:
@@ -2858,6 +3126,16 @@ class PageDouyin(QWidget):
         import re as _re
         return bool(_re.search(r"\bBV[0-9A-Za-z]{10}\b|\bav\d+\b", text or "", _re.I))
 
+    @staticmethod
+    def _looks_like_jimeng(text: str) -> bool:
+        t = (text or "").lower()
+        return ("jimeng.jianying.com" in t) or ("jimeng.com" in t)
+
+    @staticmethod
+    def _looks_like_liblib(text: str) -> bool:
+        t = (text or "").lower()
+        return ("liblib.tv" in t) and ("/detail/" in t)
+
     def _find_page_video(self):
         w = self.parent()
         while w is not None:
@@ -2918,6 +3196,41 @@ class PageDouyin(QWidget):
                 else:
                     self._log("请手动点上方 Tab「B站」后再粘贴解析", "warn")
                 return
+
+
+        # 汽水音乐 → 独立「音频下载」页
+        if probe and (is_qishui_url(probe) or (text and is_qishui_url(text))):
+            handoff = text or raw_clip
+            self._log("检测到汽水音乐链接，已切换到「音频下载」…", "ok")
+            try:
+                from pages.page_audio import open_qishui_page
+                if not open_qishui_page(self, handoff, auto_start=True):
+                    self._log("请从侧栏打开「音频下载」后再粘贴解析", "warn")
+            except Exception:
+                _log.exception("切换到音频下载失败")
+                self._log("请从侧栏打开「音频下载」后再粘贴解析", "warn")
+            return
+
+        # 即梦 / LibTV / XVideos → 「其它视频」
+        if probe and (
+            self._looks_like_jimeng(probe)
+            or self._looks_like_liblib(probe)
+            or _looks_like_xvideos(probe)
+        ):
+            handoff = text or raw_clip
+            self._log(
+                "检测到其它视频链接，已自动切换到「其它视频」分页并开始解析…",
+                "ok",
+            )
+            pv = self._find_page_video()
+            if pv is not None and hasattr(pv, "handoff_to_other"):
+                pv.handoff_to_other(handoff, auto_start=True)
+            elif pv is not None and hasattr(pv, "handoff_to_jimeng"):
+                pv.handoff_to_jimeng(handoff, auto_start=True)
+            else:
+                self._log("请手动点上方 Tab「其它视频」后再粘贴解析", "warn")
+            return
+
 
         if not text:
             self._log("剪贴板里没有抖音链接，输入框也是空的", "warn")

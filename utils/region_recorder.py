@@ -30,11 +30,57 @@ DEFAULT_PRESET = "slow"
 _CREATE_NO_WINDOW = 0x08000000 if sys.platform.startswith("win") else 0
 
 
+def _bundled_tool_dirs() -> list:
+    """便携包内工具目录：exe 旁 / _internal / _MEIPASS。"""
+    dirs = []
+    try:
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            dirs.append(meipass)
+            dirs.append(os.path.join(meipass, "ffmpeg", "bin"))
+            dirs.append(os.path.join(meipass, "deno"))
+    except Exception:
+        pass
+    try:
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        dirs.append(exe_dir)
+        dirs.append(os.path.join(exe_dir, "_internal"))
+        dirs.append(os.path.join(exe_dir, "_internal", "ffmpeg", "bin"))
+        dirs.append(os.path.join(exe_dir, "_internal", "deno"))
+        dirs.append(os.path.join(exe_dir, "ffmpeg", "bin"))
+    except Exception:
+        pass
+    try:
+        from utils.app_paths import app_root
+        root = app_root()
+        dirs.append(os.path.join(root, "_internal"))
+        dirs.append(os.path.join(root, "_internal", "ffmpeg", "bin"))
+        dirs.append(os.path.join(root, "_internal", "deno"))
+    except Exception:
+        pass
+    out, seen = [], set()
+    for d in dirs:
+        if not d:
+            continue
+        key = os.path.normcase(os.path.abspath(d))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(d)
+    return out
+
+
 def find_ffmpeg() -> Optional[str]:
     """返回 ffmpeg 可执行路径；找不到则 None。"""
     path = shutil.which("ffmpeg")
     if path:
         return path
+    # 便携包：_internal/ffmpeg/bin 或 _internal 根目录
+    for d in _bundled_tool_dirs():
+        name = "ffmpeg.exe" if sys.platform.startswith("win") else "ffmpeg"
+        cand = os.path.join(d, name)
+        if os.path.isfile(cand):
+            return cand
     # 常见 scoop / chocolatey / gyan 安装路径兜底
     candidates = []
     if sys.platform.startswith("win"):
