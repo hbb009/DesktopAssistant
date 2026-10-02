@@ -11,12 +11,12 @@
 1. **新增「音频处理」页**（助手区，原「语音克隆」页并入）：上方共用「声音卡」与播放行，下分两个页签——
    - **AUK**：对选中的声音卡做 **降噪 / 改词 / 配音 / 改情绪（开心·悲伤·生气·温柔·平静）/ 转耳语**，带「省显存」开关；推理跑在独立子进程（`--auk-job --serve`），权重放 `model/AuK`、`model/Qwen2.5-Omni-3B`，运行库放 `model/AuK-src`。
    - **CosVoice3**：即原语音克隆面板（本地 Fun-CosyVoice3-0.5B，参考原声 30 秒以内），仍走 `--cosyvoice-job` 子进程。
-   - 两个页签的操作写进同一条记录时间线。AuK 缺的依赖只装在它自己的子进程里，不升级主环境的公共包（曾因升级 transformers 让 CosyVoice 生成乱声）。
+   - 两个页签的操作写进同一条记录时间线。AuK 推理放在自己的子进程里，但与主程序共用同一个 Python 环境；加它时不升级主环境的公共包（曾因升级 transformers 让 CosyVoice 生成乱声，见「手动安装的可选组件」）。
 2. **新增「音频下载」页**（置顶区）：版式对齐抖音页，目前支持 **汽水音乐**，接入预下载队列与角标。
 3. **视频下载新增「其它视频」页签**：**即梦 / LibTV / XVideos / Pornhub** 共用一套「解析 → 画质卡 → 下载」流程；XVideos 默认勾选最高画质（HLS 优先），HLS 分片下载后由 ffmpeg 无损封装为 mp4。
 4. **游戏三件套**（助手区）：
    - **游戏助手** 改为 **OpenAI 兼容大模型 API**（预设 DeepSeek / OpenAI / Kimi / 智谱 GLM / 通义千问 / 豆包 / 腾讯混元 / Ollama 本机 / LM Studio 本机），流程：知识库 + 截图 → 本地 OCR 识字（可编辑）→ 检索知识库 → API 作答，多答案可切换；知识库目录由 `game_assist/` 改名为 `gameassist/`（启动时自动迁移）。
-   - **新增游戏大脑**：文本区内容直接送大模型 API 作答（不检索知识库），默认 **OpenRouter + Jev 决策模型**（`typesafe/jev-1.13`，走 OpenRouter Decisions API，见 `jev_api.md`），也可切换其它兼容服务；结果写入「交互记录」。
+   - **新增游戏大脑**：文本区内容直接送大模型 API 作答（不检索知识库），默认 **OpenRouter + Jev 决策模型**（`typesafe/jev-1.13`，走 OpenRouter Decisions API，见 `docs/jev_api.md`），也可切换其它兼容服务；结果写入「交互记录」。
    - **新增游戏会议**：局域网共享文档（TCP JSON-lines 同步 + UDP 房间发现），成员编辑权勾选、历史数据；全程后台静默，不抢游戏窗口焦点。
 5. **全局 F7「静默复制」+ 侧栏复制归属图标**：「粘贴助手 / 游戏大脑 / 游戏会议」三个侧栏按钮旁各有一个复制归属槽（亮绿 = 当前归属），按 F7 会在不抢焦点的情况下复制前台选中文字并推送到归属页；静默复制总开关关掉即注销 F7，让给游戏或其它程序。
 6. **提示词编辑器预设改为外置 txt**：`docs/内置预设_提示词分类.txt`（79 条）与 `docs/MiniMAX_H3_提示词分类.txt`（1223 条），启动时读取一次；每栏「自定义 + 内置 + H3」按内容去重合并，**前 15 条直接显示，其余折进「H3 ▸」**；点过（加入或取消）的条目自动提到本栏最前（**最近使用排序**，每栏最多记 200 条）。找不到内置 txt 时回退到代码内置预设，找不到 H3 txt 时不显示 H3 按钮。
@@ -76,7 +76,9 @@
 
 ### A. 源码运行
 
-> 建议 **Python 3.10 / 3.11 · Windows 10+**（部分能力仅限 Windows）
+> 仅支持 **Python 3.10 / 3.11 · Windows 10+**（部分能力仅限 Windows）。CosyVoice、PaddlePaddle 等依赖锁定了版本，其它 Python 版本装不上或运行出错；`1安装-组件.bat` 会先检查版本，不符合直接停止。
+>
+> 前置：**Git**（克隆 CosyVoice 源码要用）、**Deno**（YouTube JS 挑战要用）。两者第 1 步都会自动用 winget 安装（已在 PATH 就跳过，装不上只警告并给出手动命令）；也可以先手动装：`winget install Git.Git`、`winget install DenoLand.Deno`。
 
 三步安装（推荐）：
 
@@ -86,19 +88,25 @@
 3启动-程序.bat
 ```
 
-1. **安装组件**：`requirements.txt` + ffmpeg / torch / paddle / paddleocr / CosyVoice 源码与依赖等（按本机 CUDA 选轮子），不下载大权重。
+1. **安装组件**：检查 Python 版本 → `requirements.txt` + ffmpeg / Deno / Git / torch / paddle / paddleocr[doc-parser] / CosyVoice 源码与依赖等（按本机 CUDA 选轮子），不下载大权重。
 2. **安装模型**：交互选择，把开源模型下到 `model\`（PaddleOCR-VL-1.6、faster-whisper tiny/small/large-v3、Fun-CosyVoice3-0.5B）。`model/` 不进 Git。
 3. **启动程序**：运行桌面助手（`pythonw mainv917.py`）。也可直接 `python mainv917.py`。
 
-手动安装等价命令：
+手动安装等价命令（先确认 `python --version` 是 3.10 或 3.11）：
 
 ```bat
+winget install Gyan.FFmpeg
+winget install DenoLand.Deno
+winget install Git.Git
 pip install -r requirements.txt
 pip install -r requirements-models.txt
 python tools\download_models.py
 ```
 
-PyTorch、PaddlePaddle 请按本机 CUDA 另装，命令见 `requirements-models.txt` 注释；系统组件：`winget install Gyan.FFmpeg`、`winget install DenoLand.Deno`。
+- `requirements-models.txt` 里 OCR 用的是 `paddleocr[doc-parser]>=3.6.0`（不带 `[doc-parser]` 跑不了 PaddleOCR-VL）；`numpy` 锁在 `<2`、`onnxruntime` 锁在 `<1.19`（CosyVoice 固定 1.18.0）。
+- PyTorch、PaddlePaddle 请按本机 CUDA 另装，命令见 `requirements-models.txt` 注释。
+- 两份 requirements 现在只含 ASCII 注释，中文 Windows 上**不再需要**设置 `PYTHONUTF8=1` 才能 `pip install -r`。
+- winget 装完 ffmpeg / Deno / Git 后要**新开命令行窗口**，PATH 才生效。
 
 装完组件后请**完全退出再开**；装过 ffmpeg 请**新开命令行窗口**再启动。
 
@@ -109,6 +117,24 @@ python tools\setup_components.py --check
 python tools\diagnose_dll.py ocr
 tools\fix_ocr.bat
 ```
+
+`--check` 只检查不安装：会列出 ffmpeg、语音、OCR、CosyVoice、Deno、Git，以及下面几个手动组件的状态（手动组件缺了只提示，不算失败）。
+
+#### 手动安装的可选组件
+
+以下组件 `2安装-模型.bat` / `download_models.py` **不会下载**，需要自己准备文件放到下面的位置（路径相对项目根；编译版相对 exe 所在目录）。缺了只影响对应功能，其它功能照常。
+
+| 组件 | 用在哪 | 程序查找的位置 |
+|------|--------|----------------|
+| **AuK** 权重 | 音频处理 · AUK 页签 | `model\AuK\auk_base.safetensors`、`model\AuK\config.yaml` |
+| **AuK** 运行库 | 同上 | `model\AuK-src\src\`（里面是 `auk` 包，程序调用 `auk.infer.infer_auk`；启动子进程时把这个目录加进 `PYTHONPATH`） |
+| **Qwen2.5-Omni-3B** | 同上（AuK 依赖） | `model\Qwen2.5-Omni-3B\`（完整模型目录，不能为空） |
+| **BiRefNet-general** | 图片处理 · 抠图 | `model\BiRefNet-general\*.onnx`（只认大于 10 MB 的 `.onnx`，有多个时用最大的那个） |
+| **Upscayl** | 图片处理 · 放大 | `model\upscayl\upscayl-bin.exe` + 模型 `model\upscayl\models\<模型名>.bin` / `.param`（也可直接放在 `model\upscayl\` 下；至少要有默认的 `realesrgan-x4plus`）；没有时回退到已安装的 Upscayl 桌面版 `C:\Program Files\Upscayl\resources\bin\upscayl-bin.exe` 及其 `resources\models` |
+
+> ⚠️ **AuK 与 CosyVoice 的 transformers 冲突**：AuK 需要 `transformers 4.57`，CosyVoice 固定 `transformers 4.51.3`。AuK 子进程用的是主程序同一个 Python（`sys.executable`，只额外加了 `PYTHONPATH`），没有独立的包目录。曾为 AuK 把全局 transformers 升到 4.57，结果 CosyVoice 生成的声音变成乱声。二选一：
+> - **推荐**：另建一个 venv（同样 Python 3.10 / 3.11）专门装 AuK 的依赖，需要用 AuK 时从这个环境启动桌面助手；语音克隆留在主环境里用。
+> - **或者接受**：主环境保持 `transformers==4.51.3`，AuK 可能跑不起来。如果要在主环境装 4.57，语音克隆就会出问题，用完 AuK 要换回 4.51.3。
 
 **关于管理员权限**：默认普通用户启动，需要时可显式提权 `python mainv917.py --as-admin`；目录映射页的 mklink 也可单独勾选管理员执行。
 
@@ -132,8 +158,8 @@ tools\fix_ocr.bat
 - **faster-whisper + sounddevice + soundfile**：语音录入转写需要，权重放 `model/faster-whisper-*`。
 - **paddlepaddle + paddleocr[doc-parser]**：截图工具与游戏助手的 OCR 识字，权重放 `model/PaddleOCR-VL-1.6`（约 1.9GB）；异常可用 `tools/fix_ocr.bat` 修复。
 - **CosyVoice3（可选，体积大）**：音频处理 · CosVoice3 页签需要，权重 `model/Fun-CosyVoice3-0.5B`（约 9GB），源码 `model/CosyVoice`（`python tools/download_models.py --only cosyvoice --only cosyvoice-code`）；PyTorch 按本机 CUDA 安装。
-- **AuK（可选，需手动放置）**：音频处理 · AUK 页签需要 `model/AuK`（`auk_base.safetensors` + `config.yaml`）、`model/Qwen2.5-Omni-3B`、`model/AuK-src/src`；`download_models.py` 暂不包含这几项。
-- **Upscayl / BiRefNet（可选，需手动放置）**：图片处理「放大」需要 `upscayl-bin.exe` 及模型放 `model/upscayl`（或本机已装 Upscayl）；「抠图」需要 `model/BiRefNet-general` 下的 `.onnx`。
+- **AuK（可选，需手动放置）**：音频处理 · AUK 页签需要 `model/AuK`（`auk_base.safetensors` + `config.yaml`）、`model/Qwen2.5-Omni-3B`、`model/AuK-src/src`；`download_models.py` 暂不包含这几项，transformers 版本与 CosyVoice 冲突，见上文「手动安装的可选组件」。
+- **Upscayl / BiRefNet（可选，需手动放置）**：图片处理「放大」需要 `model/upscayl/upscayl-bin.exe` 及 `model/upscayl/models` 下的模型（或本机已装 Upscayl）；「抠图」需要 `model/BiRefNet-general` 下大于 10 MB 的 `.onnx`。详见上文「手动安装的可选组件」。
 - **大模型 API**：游戏助手 / 游戏大脑需要一个 OpenAI 兼容服务（云端 API Key，或本机 Ollama / LM Studio）。
 - **Get cookies.txt LOCALLY（浏览器扩展）**：导出 YouTube / e-hentai / hitomi.la / Pixiv 等站点 Cookie（Netscape 格式）。
 
@@ -143,8 +169,8 @@ tools\fix_ocr.bat
 
 ### 🔑 配置
 
-- **API Key**：仓库不含任何密钥。游戏大脑的 OpenRouter Key 在页面「API Key」里填写（优先），或设置环境变量 `OPENROUTER_API_KEY`（参考 `.env.example`）；未设置时点「开工」会提示先填写 Key。
-- **数据目录**：`data/`、`records/`、`VoiceEdit/`、`gameassist/`、`gamebrain/` 首次运行自动创建，属于个人数据，已在 `.gitignore` 排除。
+- **API Key**：仓库不含任何密钥。游戏大脑的 OpenRouter Key 在页面「API Key」里填写（优先），或设置环境变量 `OPENROUTER_API_KEY`；未设置时点「开工」会提示先填写 Key。
+- **数据目录**：`data/`、`records/`、`VoiceEdit/`、`gameassist/`、`gamebrain/` 首次运行自动创建，属于个人数据，不要上传到仓库。
 - **保存位置**：各功能的输出统一放在「公共保存」根目录下（默认系统「下载」文件夹），可在系统总览设置区修改。
 
 ---
@@ -160,8 +186,6 @@ tools\fix_ocr.bat
 ├─ ui_main.py                   # 主窗口 + 侧栏三分区 + 拖拽排序 + 分区改名 + 底栏 + 顶栏（电子钟）
 │                                 #   + 复制归属槽 + F7 静默复制
 ├─ requirements.txt / requirements-models.txt
-├─ jev_api.md                   # Jev 决策模型接入说明（OpenRouter Decisions API）
-├─ .env.example                 # OPENROUTER_API_KEY=
 ├─ pages/
 │  ├─ page_overview.py          # 系统总览（环境信息 + 资源监控 + 设置区 + 白名单/组件安装）
 │  ├─ settings_section.py       # 设置区（缩放 / Cookie / 公共保存 / 预下载 / 数据管理 / 功能与说明）
@@ -216,7 +240,8 @@ tools\fix_ocr.bat
 │  └─ cursor_toast.py           # 全局鼠标旁轻提示气泡
 ├─ styles/                      # style_all.py + side_nav_icons.py（侧栏矢量图标）
 ├─ assets/                      # app.qss / app_light.qss / 图标 / guides/*.webp（功能与说明）
-├─ docs/                        # 分发说明 + 两份提示词预设 txt（发布时随 exe 一起带上）
+├─ docs/                        # 分发说明 + jev_api.md（Jev 决策模型接入说明）
+│                                 #   + 两份提示词预设 txt（发布时随 exe 一起带上）
 ├─ tools/                       # 安装 / 模型下载 / OCR 修复 / DLL 诊断 / hitomi 调试 / 打包瘦身 / 会议协议测试
 │
 │  # —— 运行时生成（不进仓库）——
@@ -247,7 +272,9 @@ tools\fix_ocr.bat
 - **速存图片插件状态灯黄/红** → 黄=等待连接或心跳超时；红=端口占用或 Chrome 未运行，确认安全软件未拦截本机 19876 端口。
 - **截图 OCR 无法识字** → 需安装 `paddlepaddle`（或 `paddlepaddle-gpu`）与 `paddleocr[doc-parser]`，并把 `PaddleOCR-VL-1.6` 权重放到 `model/`；可运行 `tools/fix_ocr.bat`，或在「截图工具」内点「检测」。
 - **CosVoice3 没反应 / 提示缺权重** → 需要 `model/Fun-CosyVoice3-0.5B` 与 `model/CosyVoice` 源码；参考原声超过 30 秒会被裁剪。
-- **AUK 提示「还缺：…」** → 按提示把 AuK 权重、`model/AuK-src`、`model/Qwen2.5-Omni-3B` 放齐；显存不够可打开「省显存」。
+- **AUK 提示「还缺：…」** → 按提示把 AuK 权重、`model/AuK-src`、`model/Qwen2.5-Omni-3B` 放齐（见「手动安装的可选组件」）；显存不够可打开「省显存」。不要为了 AuK 在主环境升级 transformers，否则语音克隆会出乱声。
+- **`1安装-组件.bat` 提示 Python 版本不对** → 只支持 3.10 / 3.11，装好后新开窗口再运行；装了多个版本时让 PATH 里的 `python` 指向 3.10 / 3.11。
+- **第 1 步 Deno / Git 装不上** → 不影响其它组件；手动执行 `winget install DenoLand.Deno` / `winget install Git.Git`，新开窗口后运行 `python tools\setup_components.py --check` 确认。
 - **图片处理「放大」提示缺少程序** → 把 `upscayl-bin.exe` 与模型放到 `model/upscayl`，或安装 Upscayl 桌面版。
 - **游戏大脑提示「还没有 API Key」** → 在页面「API Key」里填写 OpenRouter 密钥，或设置环境变量 `OPENROUTER_API_KEY` 后重启。
 - **游戏助手连不上模型 / 检索无结果** → 检查「大模型 API」的地址、Key 与模型名（可点「检测」拉取模型列表）；用本机 Ollama / LM Studio 时先启动服务；知识库为空时先导入攻略文本/文件。
@@ -269,7 +296,7 @@ tools\fix_ocr.bat
 - **后台线程与关窗清理**：涉及定时器/`QThread` 的页面需在 `ui_main.py` 的 `closeEvent` 统一停止，见 `utils/qthread_util.py`。
 - **持久化原子写入**：用户配置「写 `.tmp` + `os.replace`」，见 `utils/user_prefs.py`。
 - **数据与模型分层**：程序运行数据进 `data/`，用户创造的数据进 `records/`；大体积模型权重进 `model/`；知识库单独放 `gameassist/` / `gamebrain/`。
-- **不提交密钥与个人数据**：API Key 只来自页面输入或环境变量；运行时目录全部在 `.gitignore`。
+- **不提交密钥与个人数据**：API Key 只来自页面输入或环境变量；运行时目录不上传到仓库。
 
 ---
 
