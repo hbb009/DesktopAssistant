@@ -1,4 +1,4 @@
-![Uploading 01b9e61b-6e7f-4894-98b4-0fbae9a5d525.png…]()
+<img width="962" height="1032" alt="temp1" src="https://github.com/user-attachments/assets/573b4860-abed-4fb5-ae06-5fa19c7ab90f" />
 
 # 桌面助手 v9.18 · 给 AI 人的口袋瑞士军刀 🔧🧠
 
