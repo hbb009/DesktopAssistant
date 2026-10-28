@@ -12,7 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PY = sys.executable
-MAIN = ROOT / "mainv917.py"
+MAIN = ROOT / "mainv918.py"
 CREATE_NO_WINDOW = 0x08000000
 
 
@@ -75,7 +75,7 @@ def main() -> int:
     _fix_stdio()
     os.chdir(ROOT)
     if not MAIN.is_file():
-        _error_popup("找不到 mainv917.py")
+        _error_popup("找不到 mainv918.py")
         return 1
     try:
         _spawn_main()

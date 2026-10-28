@@ -89,13 +89,16 @@ _NAV_COLORS = {
     "digital_human":("#E879F9", "#C026D3"),  # 品红 · 数字人
     "prompt":    ("#38BDF8", "#0284C7"),   # 天蓝 · 提示词
     "points":    ("#F59E0B", "#D97706"),   # 琥珀 · 积分
+    "sub_usage": ("#22D3EE", "#0891B2"),   # 青 · 订阅用量
     "shot":      ("#06B6D4", "#0891B2"),   # 青蓝 · 截图
     "ratio":     ("#6366F1", "#4F46E5"),   # 靛 · 比例（实用工具子页图标）
     "dir_link":  ("#F97316", "#EA580C"),   # 橙 · 目录（实用工具子页图标）
     "dup_clean": ("#14B8A6", "#0D9488"),   # 青 · 同名清理
-    "tz_fx":     ("#10B981", "#059669"),   # 翠绿 · 时区汇率（实用工具子页图标）
+    "tz_fx":     ("#10B981", "#059669"),
+    "ollama":    ("#8B5CF6", "#7C3AED"),   # 紫 · 本地对话（Ollama）   # 翠绿 · 时区汇率（实用工具子页图标）
     "region_rec":("#EF4444", "#DC2626"),   # 录制红 · 区域录屏
     "img_proc":  ("#EC4899", "#DB2777"),   # 品红 · 图片处理
+    "pixel_board": ("#818CF8", "#4338CA"),  # 靛 · 像素画板
     "about":     ("#64748B", "#475569"),   # 石板灰 · 关于
 }
 
@@ -347,6 +350,16 @@ def _draw_points(p, s):
     p.drawPath(path)
 
 
+def _draw_sub_usage(p, s):
+    """用量表：圆弧 + 指针"""
+    pen = QPen(QColor("#FFFFFF"), max(1.6, s * 0.08))
+    pen.setCapStyle(Qt.RoundCap)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+    p.drawArc(QRectF(s * 0.20, s * 0.26, s * 0.60, s * 0.60), 210 * 16, -240 * 16)
+    p.drawLine(QPointF(s * 0.50, s * 0.56), QPointF(s * 0.70, s * 0.40))
+
+
 def _draw_shot(p, s):
     """相机"""
     _w(p)
@@ -421,6 +434,21 @@ def _draw_tz_fx(p, s):
     p.drawLine(QPointF(s * 0.28, s * 0.62), QPointF(s * 0.72, s * 0.62))
 
 
+def _draw_ollama(p, s):
+    """对话气泡 + 三点：本地 Ollama 对话"""
+    _w(p)
+    path = QPainterPath()
+    path.addRoundedRect(QRectF(s * 0.22, s * 0.26, s * 0.56, s * 0.38), s * 0.10, s * 0.10)
+    path.moveTo(s * 0.34, s * 0.62)
+    path.lineTo(s * 0.30, s * 0.76)
+    path.lineTo(s * 0.46, s * 0.63)
+    path.closeSubpath()
+    p.drawPath(path.simplified())
+    p.setBrush(QBrush(QColor("#7C3AED")))
+    for cx in (0.37, 0.50, 0.63):
+        p.drawEllipse(QPointF(s * cx, s * 0.45), s * 0.04, s * 0.04)
+
+
 def _draw_region_rec(p, s):
     """区域框 + 录制圆点"""
     _w(p)
@@ -471,6 +499,27 @@ def _draw_img_proc(p, s):
     p.drawLine(QPointF(s * 0.78, s * 0.70), QPointF(s * 0.78, s * 0.54))
 
 
+def _draw_pixel_board(p, s):
+    """四格小表：像素画板"""
+    _w(p)
+    cell = s * 0.20
+    gap = s * 0.06
+    x0 = (s - (cell * 2 + gap)) / 2
+    y0 = (s - (cell * 2 + gap)) / 2
+    for row in range(2):
+        for col in range(2):
+            p.drawRoundedRect(
+                QRectF(
+                    x0 + col * (cell + gap),
+                    y0 + row * (cell + gap),
+                    cell,
+                    cell,
+                ),
+                1.6,
+                1.6,
+            )
+
+
 def _draw_about(p, s):
     """信息 i / 关于"""
     _w(p)
@@ -502,13 +551,16 @@ _DRAWERS = {
     "digital_human": _draw_digital_human,
     "prompt": _draw_prompt,
     "points": _draw_points,
+    "sub_usage": _draw_sub_usage,
     "shot": _draw_shot,
     "ratio": _draw_ratio,
     "dir_link": _draw_dir_link,
     "dup_clean": _draw_dup_clean,
     "tz_fx": _draw_tz_fx,
+    "ollama": _draw_ollama,
     "region_rec": _draw_region_rec,
     "img_proc": _draw_img_proc,
+    "pixel_board": _draw_pixel_board,
     "about": _draw_about,
 }
 

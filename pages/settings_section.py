@@ -1,5 +1,5 @@
 # pages/settings_section.py
-# 「界面缩放 / Cookie设置 / 公共保存 / 预下载 / 数据管理 / 功能与说明」设置区。
+# 「ACDSeeMini / 文件阅读器 / 界面缩放 / Cookie设置 / 公共保存 / 预下载 / 数据管理 / 功能与说明」设置区。
 # 原属「关于」页，现搬到「系统总览」页，抽成可复用组件。
 
 from __future__ import annotations
@@ -11,8 +11,8 @@ from PyQt5.QtCore import Qt, QTimer, QEvent, QRectF, pyqtSignal, QSize
 from PyQt5.QtGui import QPixmap, QPainter, QPen, QBrush, QColor
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QLineEdit,
-    QFileDialog, QRadioButton, QButtonGroup, QSizePolicy, QAbstractButton,
-    QDialog, QScrollArea, QFrame,
+    QFileDialog, QRadioButton, QCheckBox, QButtonGroup, QSizePolicy, QAbstractButton,
+    QStackedLayout,
 )
 
 from styles.style_all import (
@@ -25,6 +25,7 @@ from utils.app_paths import (
     user_downloads_dir, user_documents_dir,
     is_usable_public_save_dir, is_other_user_profile_path,
     apply_public_save_base, this_machine_downloads_dir,
+    PUBLIC_SAVE_SUBDIRS, resolved_subdir_name,
 )
 from utils.flow_layout import FlowLayout
 from utils.logger import get_logger
@@ -67,6 +68,153 @@ _GUIDE_DOT_COLORS = (
     "#3b82f6",  # 蓝
     "#a855f7",  # 紫
 )
+
+
+class _SubdirNameLabel(QLabel):
+    """单行子目录名。列宽不够时省略，避免把总览两列的最小宽度顶开。"""
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self._full = text or ""
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setWordWrap(False)
+        self.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self._elide()
+
+    def setText(self, text):
+        self._full = text or ""
+        self.setToolTip(self._full)
+        self._elide()
+
+    def fullText(self) -> str:
+        return self._full
+
+    def _elide(self):
+        fm = self.fontMetrics()
+        super().setText(fm.elidedText(self._full, Qt.ElideRight, max(0, self.width())))
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._elide()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        self._elide()
+
+
+class _FlatNameEdit(QLineEdit):
+    """就地改名输入框。尺寸提示固定为 0，避免长文件名把总览列宽顶开。"""
+
+    def sizeHint(self):
+        return QSize(0, 22)
+
+    def minimumSizeHint(self):
+        return QSize(0, 22)
+
+
+class _SubdirNameField(QWidget):
+    """点文件夹名就地修改。平时省略显示，编辑时换成单行输入。"""
+
+    edit_started = pyqtSignal()
+    submitted = pyqtSignal(str)
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self.setMinimumWidth(0)
+        self.setFixedHeight(22)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("点击修改文件夹名")
+        self._editing = False
+        self._cancel = False
+        self.label = _SubdirNameLabel(text)
+        self.label.setCursor(Qt.PointingHandCursor)
+        self.edit = _FlatNameEdit(text)
+        self.edit.setMinimumWidth(0)
+        self.edit.setFixedHeight(22)
+        self.edit.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.edit.setFrame(False)
+        self.edit.hide()
+        self.label.installEventFilter(self)
+        self.edit.installEventFilter(self)
+        self.edit.editingFinished.connect(self._on_editing_finished)
+        lay = QStackedLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.addWidget(self.label)
+        lay.addWidget(self.edit)
+        self._stack = lay
+
+    def setText(self, text):
+        self.label.setText(text or "")
+        if not self._editing:
+            self.edit.setText(self.label.fullText())
+
+    def fullText(self) -> str:
+        return self.label.fullText()
+
+    def setPlaceholderText(self, text: str):
+        self.edit.setPlaceholderText(text or "")
+
+    def apply_styles(self, name_qss: str, edit_qss: str):
+        self.label.setStyleSheet(name_qss)
+        self.edit.setStyleSheet(edit_qss)
+        self.label._elide()
+
+    def eventFilter(self, obj, event):
+        if (
+            obj is self.label
+            and event.type() == QEvent.MouseButtonPress
+            and event.button() == Qt.LeftButton
+        ):
+            self.begin_edit()
+            return True
+        if (
+            obj is self.edit
+            and event.type() == QEvent.KeyPress
+            and event.key() == Qt.Key_Escape
+        ):
+            self._cancel = True
+            self.edit.clearFocus()
+            return True
+        return super().eventFilter(obj, event)
+
+    def begin_edit(self):
+        if self._editing:
+            return
+        self._editing = True
+        self._cancel = False
+        self.edit.setText(self.label.fullText())
+        self._stack.setCurrentWidget(self.edit)
+        self.edit.setFocus()
+        self.edit.selectAll()
+        self.setCursor(Qt.IBeamCursor)
+        self.edit_started.emit()
+        QTimer.singleShot(0, self._select_all_if_editing)
+
+    def _select_all_if_editing(self):
+        if self._editing:
+            self.edit.setFocus()
+            self.edit.selectAll()
+
+    def _show_label(self):
+        self._editing = False
+        self._stack.setCurrentWidget(self.label)
+        self.setCursor(Qt.PointingHandCursor)
+        self.label._elide()
+
+    def _on_editing_finished(self):
+        if not self._editing:
+            return
+        cancel = self._cancel
+        text = self.edit.text()
+        self._cancel = False
+        self._show_label()
+        if not cancel:
+            self.submitted.emit(text)
+
+    def minimumSizeHint(self):
+        return QSize(0, 22)
 
 
 class GuidePageDot(QAbstractButton):
@@ -160,14 +308,14 @@ def _guides_dir() -> str:
     except Exception:
         d = _app_root_dir()
         try:
-            os.makedirs(os.path.join(d, "data"), exist_ok=True)
+            os.makedirs(os.path.join(d, "userdata"), exist_ok=True)
         except Exception:
             pass
-        return os.path.join(d, "data")
+        return os.path.join(d, "userdata")
 
 
 def _guides_scan_dirs() -> List[str]:
-    """扫描顺序：用户 data/ 根优先，其次内置 assets/guides。"""
+    """扫描顺序：用户 userdata/ 根优先，其次内置 assets/guides。"""
     user_d = _guides_dir()
     dirs: List[str] = [user_d]
     try:
@@ -221,7 +369,7 @@ def _list_guide_image_paths() -> List[str]:
 
 
 class SettingsSection(QWidget):
-    """左：功能与说明；右：界面缩放 + Cookie设置 + 公共保存 + 预下载 + 数据管理。
+    """左：功能与说明；右：ACDSeeMini + 界面缩放 + Cookie设置 + 公共保存 + 预下载 + 数据管理。
 
     系统总览页用 ``install_into(left_layout, right_layout)`` 把两栏
     嵌进整页两列，使「功能与说明」与「环境信息」同列、始终等宽。
@@ -286,11 +434,15 @@ class SettingsSection(QWidget):
         left_col.setContentsMargins(0, 0, 0, 0)
         left_col.setSpacing(8)
         left_col.setAlignment(Qt.AlignTop)
-        # 顺序：界面缩放 → Cookie设置 → 公共保存 → 预下载开关 → 数据管理
+        # 右栏设置卡：ACDSeeMini → 文件阅读器 → 界面缩放 → Cookie → 预下载 → 数据管理
+        # 「公共保存」默认插在 Cookie 后；总览 take 后改挂到左列热键下方
+        self._public_save_card = self._build_public_save_card()
         self._settings_cards = [
+            self._build_photo_viewer_card(),
+            self._build_md_reader_card(),
             self._build_scale_card(),
             self._build_cookie_card(),
-            self._build_public_save_card(),
+            self._public_save_card,
             self._build_pre_dl_card(),
             self._build_data_card(),
         ]
@@ -314,6 +466,30 @@ class SettingsSection(QWidget):
         root.setSpacing(8)
         root.addWidget(self.right_panel, 1)
         root.addWidget(self.left_panel, 1)
+
+        # 看图里按 / 会改 user.txt 的自适应。开着的总览跟着改勾选。
+        self._pv_fit_timer = QTimer(self)
+        self._pv_fit_timer.setInterval(250)
+        self._pv_fit_timer.timeout.connect(self._poll_pv_auto_fit)
+        self._pv_fit_timer.start()
+
+    def take_public_save_card(self):
+        """从本栏取出「公共保存」卡，供总览挂到热键占用下方（只取一次）。"""
+        card = getattr(self, "_public_save_card", None)
+        if card is None:
+            return None
+        self._public_save_card = None
+        cards = getattr(self, "_settings_cards", None)
+        if isinstance(cards, list) and card in cards:
+            try:
+                cards.remove(card)
+            except ValueError:
+                pass
+        lay = self.left_panel.layout() if getattr(self, "left_panel", None) is not None else None
+        if lay is not None:
+            lay.removeWidget(card)
+        card.setParent(None)
+        return card
 
     def install_into(self, left_layout, right_layout):
         """把左右栏嵌进外部两列布局（与上方环境/资源监控同列对齐）。"""
@@ -348,6 +524,8 @@ class SettingsSection(QWidget):
             self._load_cookies(prefs)
             self._load_scale()
             self._load_pre_dl_auto(prefs)
+            self._load_photo_viewer(prefs)
+            self._load_md_reader(prefs)
         finally:
             self._loading = False
         # 启动/刷新后：空的公共保存目录补成系统「下载」；未齐的 Cookie 自动搜目录
@@ -397,9 +575,12 @@ class SettingsSection(QWidget):
                 pass
         self._style_path_buttons()
         self._style_cookie_row_labels()
+        self._style_subdir_rows()
         self._apply_alert_style()
         self._style_guide_placeholder()
         self._style_guide_dots()
+        self._style_pv_labels()
+        self._style_md_labels()
         QTimer.singleShot(0, self._sync_guide_to_settings_height)
 
     # ── 卡片：预下载自动处理（数据管理上方；仅区域名 + 开关）──
@@ -429,7 +610,7 @@ class SettingsSection(QWidget):
         title_row.addWidget(self.sw_pre_dl_auto, 0, Qt.AlignVCenter)
         self.btn_pre_dl_file = apply_mini_button(QPushButton("预处理文件"))
         self.btn_pre_dl_file.setMinimumWidth(0)
-        self.btn_pre_dl_file.setToolTip("查看并编辑预下载队列（records/pre_download.json）")
+        self.btn_pre_dl_file.setToolTip("查看并编辑预下载队列（userdata/pre_download.txt）")
         self.btn_pre_dl_file.clicked.connect(self._on_pre_dl_file)
         title_row.addWidget(self.btn_pre_dl_file, 0, Qt.AlignVCenter)
         box.addLayout(title_row)
@@ -495,6 +676,7 @@ class SettingsSection(QWidget):
                 lambda: getattr(mw, "_pre_dl_store", None),
                 mw,
                 on_changed=_after,
+                detect_platform=getattr(mw, "_detect_pre_download_platform", None),
             )
         except Exception:
             log.exception("打开预处理文件失败")
@@ -834,6 +1016,517 @@ class SettingsSection(QWidget):
             parent.updateGeometry()
         QTimer.singleShot(0, self._fit_guide_image)
 
+    # ── 卡片：ACDSeeMini（右列最上面）────────────────────────
+    def _build_photo_viewer_card(self):
+        from utils.photo_viewer_cfg import DEFAULT_EXTS, PIERCE_NEXT, PIERCE_STAY
+
+        card = self._shrinkable_card(make_card("CardPhotoViewer"))
+        box = QVBoxLayout(card)
+        box.setContentsMargins(CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
+        box.setSpacing(6)
+        self._theme_titles.append(install_card_title(card, box, "ACDSeeMini"))
+
+        self._pv_labels: List[QLabel] = []
+        self._pv_checks: Dict[str, QCheckBox] = {}
+        self._pv_prev: Dict[str, str] = {}
+
+        def _section(text: str) -> QLabel:
+            lab = QLabel(text)
+            lab.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            self._pv_labels.append(lab)
+            return lab
+
+        box.addWidget(_section("文件关联"))
+        ext_host = QWidget()
+        ext_host.setMinimumWidth(0)
+        ext_flow = FlowLayout(ext_host, margin=0, h_spacing=10, v_spacing=2)
+        for ext in DEFAULT_EXTS:
+            cb = QCheckBox(ext[1:].upper())
+            cb.setStyleSheet("QCheckBox{background:transparent;}")
+            cb.setCursor(Qt.PointingHandCursor)
+            cb.setMinimumWidth(0)
+            cb.toggled.connect(lambda checked, e=ext: self._on_pv_ext_toggled(e, checked))
+            ext_flow.addWidget(cb)
+            self._pv_checks[ext] = cb
+        box.addWidget(ext_host)
+
+        box.addWidget(_section("文件夹穿透"))
+        pierce_host = QWidget()
+        pierce_host.setMinimumWidth(0)
+        pierce_flow = FlowLayout(pierce_host, margin=0, h_spacing=12, v_spacing=2)
+        self._pv_pierce_group = QButtonGroup(self)
+        self._pv_pierce_group.setExclusive(True)
+        self.rb_pv_stay = QRadioButton("留在当前文件夹")
+        self.rb_pv_next = QRadioButton("前往下一个文件夹")
+        self.rb_pv_stay.setChecked(True)
+        for rb, val in ((self.rb_pv_stay, PIERCE_STAY), (self.rb_pv_next, PIERCE_NEXT)):
+            rb.setStyleSheet("QRadioButton{background:transparent;}")
+            rb.setCursor(Qt.PointingHandCursor)
+            rb.setMinimumWidth(0)
+            self._pv_pierce_group.addButton(rb)
+            pierce_flow.addWidget(rb)
+            rb.toggled.connect(lambda checked, v=val: self._on_pv_pierce_toggled(checked, v))
+        box.addWidget(pierce_host)
+
+        opt_host = QWidget()
+        opt_host.setMinimumWidth(0)
+        opt_flow = FlowLayout(opt_host, margin=0, h_spacing=12, v_spacing=2)
+        self.cb_pv_lock_scale = QCheckBox("锁定比例")
+        self.cb_pv_auto_window = QCheckBox("窗口随图")
+        self.cb_pv_auto_fit = QCheckBox("自适应")
+        self.cb_pv_auto_fit.setChecked(True)
+        for cb, slot in (
+            (self.cb_pv_lock_scale, self._on_pv_lock_scale_toggled),
+            (self.cb_pv_auto_window, self._on_pv_auto_window_toggled),
+            (self.cb_pv_auto_fit, self._on_pv_auto_fit_toggled),
+        ):
+            cb.setStyleSheet("QCheckBox{background:transparent;}")
+            cb.setCursor(Qt.PointingHandCursor)
+            cb.setMinimumWidth(0)
+            cb.toggled.connect(slot)
+            opt_flow.addWidget(cb)
+        box.addWidget(opt_host)
+
+        self._pv_hk_header = QLabel("快捷键")
+        self._pv_hk_header.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        box.addWidget(self._pv_hk_header)
+        box.addWidget(self._build_pv_hotkey_list())
+
+        self._pv_status = QLabel("")
+        self._pv_status.setWordWrap(True)
+        self._pv_status.setVisible(False)
+        self._pv_labels.append(self._pv_status)
+        box.addWidget(self._pv_status)
+        self._style_pv_labels()
+        return card
+
+    def _style_pv_labels(self):
+        try:
+            mut = tk("text_mut")
+            warn = tk("warn")
+        except Exception:
+            mut, warn = "#94a3b8", "#f59e0b"
+        for lab in getattr(self, "_pv_labels", []) or []:
+            if lab is getattr(self, "_pv_status", None):
+                lab.setStyleSheet(
+                    f"QLabel{{color:{warn};font-size:12px;"
+                    f"background:transparent;border:none;}}"
+                )
+                continue
+            weight = "600" if lab.text() in ("文件关联", "文件夹穿透") else "400"
+            lab.setStyleSheet(
+                f"QLabel{{color:{mut};font-size:12px;font-weight:{weight};"
+                f"background:transparent;border:none;}}"
+            )
+        self._style_pv_hotkeys()
+
+    def _build_pv_hotkey_list(self) -> QWidget:
+        """快捷键行：左键名、右说明。对齐总览左列「速存图文」。"""
+        rows = (
+            ("*", "去黑边"),
+            ("/", "开关自适应"),
+            ("滚轮", "缩放"),
+            ("←→", "翻页"),
+            ("A / 退格 / PageUp", "上一张"),
+            ("D / 空格 / PageDown", "下一张"),
+            ("Home", "第一张"),
+            ("End", "最后一张"),
+            ("Esc", "退出"),
+        )
+        self._pv_hk_keys: List[QLabel] = []
+        self._pv_hk_names: List[QLabel] = []
+        host = QWidget()
+        host.setMinimumWidth(0)
+        lay = QVBoxLayout(host)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(2)
+        for key, name in rows:
+            line = QWidget()
+            line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            hl = QHBoxLayout(line)
+            hl.setContentsMargins(0, 2, 0, 2)
+            hl.setSpacing(8)
+            key_lbl = QLabel(key)
+            key_lbl.setFixedWidth(248)
+            key_lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            name_lbl = QLabel(name)
+            name_lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            name_lbl.setMinimumWidth(0)
+            hl.addWidget(key_lbl)
+            hl.addWidget(name_lbl, 1)
+            self._pv_hk_keys.append(key_lbl)
+            self._pv_hk_names.append(name_lbl)
+            lay.addWidget(line)
+        return host
+
+    def _style_pv_hotkeys(self):
+        try:
+            text = tk("text")
+            mut = tk("text_mut")
+            accent = tk("accent")
+        except Exception:
+            text, mut, accent = "#e5e7eb", "#94a3b8", "#38bdf8"
+        hdr = getattr(self, "_pv_hk_header", None)
+        if hdr is not None:
+            hdr.setStyleSheet(
+                f"QLabel{{color:{accent};font-size:13px;font-weight:700;"
+                f"background:transparent;border:none;}}"
+            )
+        key_qss = (
+            f"QLabel{{color:{mut};font-size:14px;"
+            f"background:transparent;border:none;}}"
+        )
+        name_qss = (
+            f"QLabel{{color:{text};font-size:14px;"
+            f"background:transparent;border:none;}}"
+        )
+        for lab in getattr(self, "_pv_hk_keys", []) or []:
+            lab.setStyleSheet(key_qss)
+        for lab in getattr(self, "_pv_hk_names", []) or []:
+            lab.setStyleSheet(name_qss)
+
+    def _set_pv_status(self, text: str):
+        lab = getattr(self, "_pv_status", None)
+        if lab is None:
+            return
+        lab.setText(text or "")
+        lab.setVisible(bool(text))
+
+    def _load_photo_viewer(self, prefs: dict):
+        from utils.photo_viewer_cfg import section_from_prefs, PIERCE_NEXT
+
+        sec = section_from_prefs(prefs if isinstance(prefs, dict) else {})
+        self._pv_prev = dict(sec.get("prev_prog") or {})
+        chosen = set(sec.get("exts") or [])
+        for ext, cb in self._pv_checks.items():
+            cb.blockSignals(True)
+            cb.setChecked(ext in chosen)
+            cb.blockSignals(False)
+        nxt = sec.get("pierce") == PIERCE_NEXT
+        self.rb_pv_next.blockSignals(True)
+        self.rb_pv_stay.blockSignals(True)
+        self.rb_pv_next.setChecked(nxt)
+        self.rb_pv_stay.setChecked(not nxt)
+        self.rb_pv_next.blockSignals(False)
+        self.rb_pv_stay.blockSignals(False)
+        lock = bool(sec.get("lock_scale"))
+        self.cb_pv_lock_scale.blockSignals(True)
+        self.cb_pv_lock_scale.setChecked(lock)
+        self.cb_pv_lock_scale.blockSignals(False)
+        auto_window = bool(sec.get("auto_window"))
+        self.cb_pv_auto_window.blockSignals(True)
+        self.cb_pv_auto_window.setChecked(auto_window)
+        self.cb_pv_auto_window.blockSignals(False)
+        auto_fit = bool(sec.get("auto_fit", True))
+        self.cb_pv_auto_fit.blockSignals(True)
+        self.cb_pv_auto_fit.setChecked(auto_fit)
+        self.cb_pv_auto_fit.blockSignals(False)
+        # 启动时只恢复界面；关联只在用户点勾选时写，避免每次启动跑 PowerShell。
+
+    def _checked_pv_exts(self) -> List[str]:
+        from utils.photo_viewer_cfg import DEFAULT_EXTS
+        return [ext for ext in DEFAULT_EXTS if self._pv_checks[ext].isChecked()]
+
+    def _write_photo_viewer_prefs(self):
+        if self._mw is None:
+            return
+        from utils.user_prefs import save_user_prefs, default_prefs
+        from utils.photo_viewer_cfg import PIERCE_NEXT
+
+        cur = getattr(self._mw, "_user_prefs", None)
+        if not isinstance(cur, dict):
+            cur = default_prefs()
+            self._mw._user_prefs = cur
+        cur["photo_viewer"] = {
+            "exts": self._checked_pv_exts(),
+            "pierce": PIERCE_NEXT if self.rb_pv_next.isChecked() else "stay",
+            "lock_scale": self.cb_pv_lock_scale.isChecked(),
+            "auto_window": self.cb_pv_auto_window.isChecked(),
+            "auto_fit": self.cb_pv_auto_fit.isChecked(),
+            "prev_prog": dict(getattr(self, "_pv_prev", {}) or {}),
+        }
+        save_user_prefs(cur)
+
+    def _persist_photo_viewer(self):
+        if self._loading or self._mw is None:
+            return
+        try:
+            self._write_photo_viewer_prefs()
+        except Exception:
+            log.exception("保存看图设置失败")
+
+    def _on_pv_ext_toggled(self, ext: str, checked: bool):
+        if self._loading:
+            return
+        from utils.photo_viewer_cfg import associate_ext, unassociate_ext
+
+        prev = getattr(self, "_pv_prev", None)
+        if not isinstance(prev, dict):
+            prev = {}
+            self._pv_prev = prev
+        try:
+            warning = ""
+            if checked:
+                warning = associate_ext(ext, prev)
+            else:
+                unassociate_ext(ext, prev)
+        except Exception as ex:
+            log.exception("切换看图文件关联失败 ext=%s", ext)
+            cb = self._pv_checks.get(ext)
+            if cb is not None:
+                cb.blockSignals(True)
+                cb.setChecked(not checked)
+                cb.blockSignals(False)
+            self._set_pv_status("文件关联没有写上：" + str(ex))
+            return
+        self._set_pv_status(warning)
+        self._persist_photo_viewer()
+
+    def _on_pv_pierce_toggled(self, checked: bool, _value: str):
+        if not checked or self._loading:
+            return
+        self._persist_photo_viewer()
+
+    def _on_pv_lock_scale_toggled(self, _checked: bool):
+        if self._loading:
+            return
+        self._persist_photo_viewer()
+
+    def _on_pv_auto_window_toggled(self, _checked: bool):
+        if self._loading:
+            return
+        self._persist_photo_viewer()
+
+    def _on_pv_auto_fit_toggled(self, _checked: bool):
+        if self._loading:
+            return
+        self._persist_photo_viewer()
+
+    def _remember_pv_auto_fit(self, on: bool) -> None:
+        mw = getattr(self, "_mw", None)
+        if mw is None:
+            return
+        cur = getattr(mw, "_user_prefs", None)
+        if not isinstance(cur, dict):
+            return
+        pv = cur.get("photo_viewer")
+        if not isinstance(pv, dict):
+            pv = {}
+            cur["photo_viewer"] = pv
+        pv["auto_fit"] = bool(on)
+
+    def apply_auto_fit_from_disk_value(self, on: bool) -> None:
+        """按磁盘上的自适应改勾选。不发 toggled，避免再写一遍文件。"""
+        if getattr(self, "_loading", False):
+            return
+        cb = getattr(self, "cb_pv_auto_fit", None)
+        if cb is None:
+            return
+        on = bool(on)
+        if cb.isChecked() != on:
+            cb.blockSignals(True)
+            cb.setChecked(on)
+            cb.blockSignals(False)
+        self._remember_pv_auto_fit(on)
+        # 勾选已经跟上磁盘。再点这一下是新的选择，不能被刚才的 / 盖掉。
+        try:
+            from utils.photo_viewer_cfg import note_saved_auto_fit
+            note_saved_auto_fit(on)
+        except Exception:
+            pass
+
+    def _poll_pv_auto_fit(self) -> None:
+        if getattr(self, "_loading", False):
+            return
+        cb = getattr(self, "cb_pv_auto_fit", None)
+        if cb is None:
+            return
+        try:
+            from utils.photo_viewer_cfg import read_auto_fit
+            on = bool(read_auto_fit())
+        except Exception:
+            return
+        mem = None
+        mw = getattr(self, "_mw", None)
+        cur = getattr(mw, "_user_prefs", None) if mw is not None else None
+        if isinstance(cur, dict) and isinstance(cur.get("photo_viewer"), dict):
+            mem = bool(cur["photo_viewer"].get("auto_fit", True))
+        if cb.isChecked() == on and mem == on:
+            return
+        self.apply_auto_fit_from_disk_value(on)
+
+    # ── 卡片：文件阅读器（紧挨 ACDSeeMini 下面）──────────
+    def _build_md_reader_card(self):
+        from ui_main import SideToggleSwitch
+        from utils.md_reader_cfg import EXT_GROUPS
+
+        card = self._shrinkable_card(make_card("CardMdReader"))
+        box = QVBoxLayout(card)
+        box.setContentsMargins(CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
+        box.setSpacing(6)
+        self._theme_titles.append(install_card_title(card, box, "文件阅读器"))
+
+        self._md_labels: List[QLabel] = []
+        self._md_names: List[QLabel] = []
+        self._md_switches: Dict[str, SideToggleSwitch] = {}
+        self._md_group_exts: Dict[str, tuple] = {}
+        self._md_prev: Dict[str, str] = {}
+
+        sec = QLabel("文件关联")
+        sec.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        self._md_labels.append(sec)
+        box.addWidget(sec)
+
+        for label, exts in EXT_GROUPS:
+            line = QWidget()
+            line.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            row = QHBoxLayout(line)
+            row.setContentsMargins(0, 2, 0, 2)
+            row.setSpacing(8)
+            name = QLabel(label)
+            name.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            name.setMinimumWidth(0)
+            self._md_names.append(name)
+            sw = SideToggleSwitch(on_color="#7AA2FF", parent=card)
+            sw.setChecked(False)
+            sw.clicked.connect(lambda *args, name=label: self._on_md_ext_clicked(name))
+            self._md_switches[label] = sw
+            self._md_group_exts[label] = tuple(exts)
+            row.addWidget(name, 1)
+            row.addWidget(sw, 0, Qt.AlignVCenter)
+            box.addWidget(line)
+
+        hint = QLabel("打开后，这类文件双击用文件阅读器打开。")
+        hint.setWordWrap(True)
+        self._md_labels.append(hint)
+        box.addWidget(hint)
+
+        self._md_status = QLabel("")
+        self._md_status.setWordWrap(True)
+        self._md_status.setVisible(False)
+        self._md_labels.append(self._md_status)
+        box.addWidget(self._md_status)
+        self._style_md_labels()
+        return card
+
+    def _style_md_labels(self):
+        try:
+            text = tk("text")
+            mut = tk("text_mut")
+            warn = tk("warn")
+        except Exception:
+            text, mut, warn = "#e5e7eb", "#94a3b8", "#f59e0b"
+        for lab in getattr(self, "_md_labels", []) or []:
+            if lab is getattr(self, "_md_status", None):
+                lab.setStyleSheet(
+                    f"QLabel{{color:{warn};font-size:12px;"
+                    f"background:transparent;border:none;}}"
+                )
+                continue
+            weight = "600" if lab.text() == "文件关联" else "400"
+            lab.setStyleSheet(
+                f"QLabel{{color:{mut};font-size:12px;font-weight:{weight};"
+                f"background:transparent;border:none;}}"
+            )
+        name_qss = (
+            f"QLabel{{color:{text};font-size:14px;"
+            f"background:transparent;border:none;}}"
+        )
+        for lab in getattr(self, "_md_names", []) or []:
+            lab.setStyleSheet(name_qss)
+
+    def _set_md_status(self, text: str):
+        lab = getattr(self, "_md_status", None)
+        if lab is None:
+            return
+        lab.setText(text or "")
+        lab.setVisible(bool(text))
+
+    def _load_md_reader(self, prefs: dict):
+        from utils.md_reader_cfg import section_from_prefs
+
+        sec = section_from_prefs(prefs if isinstance(prefs, dict) else {})
+        self._md_prev = dict(sec.get("prev_prog") or {})
+        self._md_blocked = list(sec.get("assoc_blocked") or [])
+        chosen = set(sec.get("exts") or [])
+        for label, exts in self._md_group_exts.items():
+            sw = self._md_switches[label]
+            sw.setChecked(any(ext in chosen for ext in exts))
+        # 启动时只恢复开关；关联只在用户切换开关时写，不自动重试。
+        blocked = [e for e in self._md_blocked if e in self._checked_md_exts()]
+        self._set_md_status("系统保护拦截，关联未生效" if blocked else "")
+
+    def _checked_md_exts(self) -> List[str]:
+        out: List[str] = []
+        for label, exts in self._md_group_exts.items():
+            sw = self._md_switches.get(label)
+            if sw is not None and sw.isChecked():
+                out.extend(exts)
+        return out
+
+    def _write_md_reader_prefs(self):
+        if self._mw is None:
+            return
+        from utils.user_prefs import save_user_prefs, default_prefs
+
+        cur = getattr(self._mw, "_user_prefs", None)
+        if not isinstance(cur, dict):
+            cur = default_prefs()
+            self._mw._user_prefs = cur
+        cur["md_reader"] = {
+            "exts": self._checked_md_exts(),
+            "prev_prog": dict(getattr(self, "_md_prev", {}) or {}),
+            "assoc_blocked": list(getattr(self, "_md_blocked", []) or []),
+        }
+        save_user_prefs(cur)
+
+    def _persist_md_reader(self):
+        if self._loading or self._mw is None:
+            return
+        try:
+            self._write_md_reader_prefs()
+        except Exception:
+            log.exception("保存文件阅读器设置失败")
+
+    def _on_md_ext_clicked(self, label: str):
+        if self._loading:
+            return
+        from utils.md_reader_cfg import associate_exts, is_ours, summarize_notes, unassociate_ext
+
+        exts = tuple(self._md_group_exts.get(label) or ())
+        sw = self._md_switches.get(label)
+        checked = bool(sw.isChecked()) if sw is not None else False
+        prev = getattr(self, "_md_prev", None)
+        if not isinstance(prev, dict):
+            prev = {}
+            self._md_prev = prev
+        notes: List[str] = []
+        blocked = [e for e in (getattr(self, "_md_blocked", None) or []) if e not in exts]
+        try:
+            if checked:
+                notes = associate_exts(exts, prev, interactive=True)
+            else:
+                for ext in exts:
+                    unassociate_ext(ext, prev, interactive=True)
+        except Exception as ex:
+            log.exception("切换文件阅读器关联失败 label=%s", label)
+            if sw is not None:
+                sw.setChecked(not checked)
+            msg = (str(ex).strip().splitlines() or ["设置文件关联失败"])[0]
+            if "受系统保护" in msg:
+                self._set_md_status(msg)
+            else:
+                self._set_md_status("文件关联没有写上：" + msg)
+            return
+        if checked:
+            blocked.extend(ext for ext in exts if not is_ours(ext))
+        self._md_blocked = blocked
+        status = summarize_notes(notes)
+        if checked and any(ext in blocked for ext in exts):
+            status = ("系统保护拦截，关联未生效。" + status).strip()
+        self._set_md_status(status)
+        self._persist_md_reader()
+
     # ── 卡片：界面缩放 ───────────────────────────────────────
     def _build_scale_card(self):
         card = self._shrinkable_card(make_card("CardAboutScale"))
@@ -965,7 +1658,7 @@ class SettingsSection(QWidget):
         box.setContentsMargins(CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
         self._theme_titles.append(install_card_title(card, box, "公共保存"))
 
-        hint = QLabel("派生速存 / 截图 / 录屏 / 图片处理 / 各下载子目录。")
+        hint = QLabel("每个功能一个文件夹，都建在这个目录下。点文件夹名即可修改。")
         hint.setWordWrap(True)
         hint.setStyleSheet(
             f"QLabel{{color:{tk('text_mut')};font-size:12px;"
@@ -988,16 +1681,116 @@ class SettingsSection(QWidget):
         self.save_edit.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.save_edit.textChanged.connect(self._schedule_persist)
         save_row.addWidget(self.save_edit, 1)
-
-        self.btn_subdir = QPushButton("浏览")
-        self.btn_subdir.setCursor(Qt.PointingHandCursor)
-        self.btn_subdir.setMinimumWidth(0)
-        self.btn_subdir.clicked.connect(self._open_subdir_dialog)
-        save_row.addWidget(self.btn_subdir)
         box.addLayout(save_row)
 
+        # 每个功能一行：功能名 + 当前文件夹名。点文件夹名就地修改。
+        self._subdir_feat_labels: List[QLabel] = []
+        self._subdir_name_labels: List[tuple] = []
+        names_box = QVBoxLayout()
+        names_box.setContentsMargins(0, 2, 0, 0)
+        names_box.setSpacing(2)
+        for row in PUBLIC_SAVE_SUBDIRS:
+            section, sub_key, default, label = row[0], row[1], row[2], row[3]
+            line_w = QWidget()
+            line_w.setObjectName("PubSaveRow")
+            line_w.setStyleSheet("#PubSaveRow{background:transparent;}")
+            line_w.setMinimumWidth(0)
+            line_w.setFixedHeight(22)
+            line_w.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            line = QHBoxLayout(line_w)
+            line.setContentsMargins(0, 0, 0, 0)
+            line.setSpacing(8)
+            feat = QLabel(label)
+            feat.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            feat.setFixedWidth(84)
+            name = _SubdirNameField(default)
+            name.setPlaceholderText(default)
+            name.edit_started.connect(self._clear_subdir_err)
+            name.submitted.connect(
+                lambda text, s=section, k=sub_key, d=default, lab=label, field=name:
+                self._commit_subdir_name(s, k, d, lab, field, text)
+            )
+            line.addWidget(feat, 0)
+            line.addWidget(name, 1)
+            names_box.addWidget(line_w)
+            self._subdir_feat_labels.append(feat)
+            self._subdir_name_labels.append((section, sub_key, default, label, name))
+        box.addLayout(names_box)
+
+        self._subdir_err = QLabel("")
+        self._subdir_err.setWordWrap(True)
+        self._subdir_err.setVisible(False)
+        self._subdir_err.setMinimumWidth(0)
+        box.addWidget(self._subdir_err)
+
         self._style_path_buttons()
+        self._style_subdir_rows()
         return card
+
+    def _style_subdir_rows(self):
+        try:
+            mut = tk("text_mut")
+            text = tk("text")
+            hover = tk("accent_hover")
+            err_c = tk("err")
+        except Exception:
+            mut, text, hover, err_c = "#94a3b8", "#e2e8f0", "#60a5fa", "#ef4444"
+        feat_qss = (
+            f"QLabel{{color:{mut};font-size:12px;font-weight:600;"
+            f"background:transparent;border:none;}}"
+        )
+        name_qss = (
+            f"QLabel{{color:{text};font-size:12px;"
+            f"background:transparent;border:none;}}"
+            f"QLabel:hover{{color:{hover};}}"
+        )
+        edit_qss = (
+            f"QLineEdit, QLineEdit:focus{{color:{text};font-size:12px;"
+            f"padding:0;margin:0;background:transparent;"
+            f"border:none;border-radius:0;outline:none;}}"
+        )
+        for lab in getattr(self, "_subdir_feat_labels", []) or []:
+            lab.setStyleSheet(feat_qss)
+        for _section, _sub, _default, _label, lab in getattr(self, "_subdir_name_labels", []) or []:
+            lab.apply_styles(name_qss, edit_qss)
+        err = getattr(self, "_subdir_err", None)
+        if err is not None:
+            err.setStyleSheet(
+                f"QLabel{{color:{err_c};font-size:12px;"
+                f"background:transparent;border:none;}}"
+            )
+
+    def _refresh_subdir_names(self, prefs=None):
+        """按当前配置刷新每个功能的文件夹名。"""
+        rows = getattr(self, "_subdir_name_labels", None) or []
+        if not rows:
+            return
+        if prefs is None:
+            prefs = getattr(self._mw, "_user_prefs", None) if self._mw is not None else {}
+        if not isinstance(prefs, dict):
+            prefs = {}
+        for section, sub_key, default, _label, lab in rows:
+            name = resolved_subdir_name(prefs, section, sub_key, default)
+            lab.setText(name)
+            tip = "点击修改文件夹名"
+            if name != default:
+                tip = f"{name}（出厂名 {default}）\n{tip}"
+            lab.setToolTip(tip)
+
+    def _clear_subdir_err(self):
+        err = getattr(self, "_subdir_err", None)
+        if err is None:
+            return
+        err.clear()
+        err.setVisible(False)
+
+    def _show_subdir_err(self, text: str, field=None):
+        err = getattr(self, "_subdir_err", None)
+        if err is not None:
+            err.setText(text)
+            err.setVisible(True)
+        if field is not None:
+            field.setToolTip(text)
 
     def _style_cookie_row_labels(self):
         try:
@@ -1027,7 +1820,7 @@ class SettingsSection(QWidget):
 
     def _style_path_buttons(self):
         qss = self._default_muted_btn_qss()
-        for attr in ("btn_browse", "btn_subdir"):
+        for attr in ("btn_browse",):
             btn = getattr(self, attr, None)
             if btn is not None:
                 btn.setStyleSheet(qss)
@@ -1083,6 +1876,7 @@ class SettingsSection(QWidget):
         self.save_edit.blockSignals(True)
         self.save_edit.setText((base or "").replace("\\", "/"))
         self.save_edit.blockSignals(False)
+        self._refresh_subdir_names(prefs)
 
     def _auto_fill_downloads_if_needed(self):
         """空路径或无效/外机路径时，写入本机「下载」目录并落盘。"""
@@ -1218,189 +2012,114 @@ class SettingsSection(QWidget):
             self._save_path_autofilled = False
             self.save_edit.setText(p.replace("\\", "/"))
 
-    def _open_subdir_dialog(self):
-        """列出公共保存下每个子目录名，可单独改，保存后按新名字重派路径。"""
+    def _commit_subdir_name(self, section, sub_key, default, label, field, raw):
+        """点某一行的文件夹名改完后保存。只动这一行，规则与原先整表保存相同。"""
         from utils.app_paths import (
             PUBLIC_SAVE_SUBDIRS, clean_subdir_name, resolved_subdir_name,
             subdir_storage_key,
         )
 
-        prefs = getattr(self._mw, "_user_prefs", None) if self._mw is not None else {}
-        if not isinstance(prefs, dict):
-            prefs = {}
-
-        dlg = QDialog(self.window() or self)
-        dlg.setWindowTitle("子目录")
-        try:
-            dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowContextHelpButtonHint)
-        except Exception:
-            pass
-        dlg.setMinimumWidth(420)
-        lay = QVBoxLayout(dlg)
-        lay.setContentsMargins(14, 14, 14, 12)
-        lay.setSpacing(8)
-
-        hint = QLabel("这些文件夹都建在上面的公共保存目录下。只改名字。")
-        hint.setWordWrap(True)
-        try:
-            mut = tk("text_mut")
-        except Exception:
-            mut = "#94a3b8"
-        hint.setStyleSheet(
-            f"QLabel{{color:{mut};font-size:12px;background:transparent;border:none;}}"
-        )
-        lay.addWidget(hint)
-
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        scroll.verticalScrollBar().setStyleSheet(
-            "QScrollBar:vertical{width:0px;margin:0;background:transparent;}"
-        )
-        host = QWidget()
-        form = QVBoxLayout(host)
-        form.setContentsMargins(0, 0, 0, 0)
-        form.setSpacing(6)
-        edits = []
-        for row in PUBLIC_SAVE_SUBDIRS:
-            section, sub_key, default, label = row[0], row[1], row[2], row[3]
-            line = QHBoxLayout()
-            line.setSpacing(8)
-            lab = QLabel(label)
-            lab.setMinimumWidth(72)
-            try:
-                lab_c = tk("text")
-            except Exception:
-                lab_c = "#e2e8f0"
-            lab.setStyleSheet(
-                f"QLabel{{color:{lab_c};font-size:12px;"
-                f"background:transparent;border:none;}}"
+        cleaned = clean_subdir_name(raw)
+        if not cleaned:
+            self._show_subdir_err(
+                f"「{label}」的目录名不能为空，也不能包含 \\ / : * ? \" < > |",
+                field,
             )
-            edit = QLineEdit(resolved_subdir_name(prefs, section, sub_key, default))
-            edit.setPlaceholderText(default)
-            line.addWidget(lab, 0)
-            line.addWidget(edit, 1)
-            form.addLayout(line)
-            edits.append((section, sub_key, default, label, edit))
-        scroll.setWidget(host)
-        scroll.setMinimumHeight(min(420, 28 * len(edits) + 8))
-        lay.addWidget(scroll, 1)
-
-        err = QLabel("")
-        err.setWordWrap(True)
-        err.setVisible(False)
-        try:
-            err_c = tk("err")
-        except Exception:
-            err_c = "#ef4444"
-        err.setStyleSheet(
-            f"QLabel{{color:{err_c};font-size:12px;background:transparent;border:none;}}"
+            return
+        if self._mw is None:
+            self._show_subdir_err("设置还没接上主窗口", field)
+            return
+        cur = getattr(self._mw, "_user_prefs", None)
+        if not isinstance(cur, dict):
+            self._show_subdir_err("读不到当前配置", field)
+            return
+        old_names = cur.get("save_subdir_names") if isinstance(cur.get("save_subdir_names"), dict) else {}
+        target = subdir_storage_key(section, sub_key)
+        current = resolved_subdir_name(
+            {"save_subdir_names": old_names}, section, sub_key, default
         )
-        lay.addWidget(err)
+        if cleaned == current:
+            field.setText(current)
+            self._clear_subdir_err()
+            return
 
-        btns = QHBoxLayout()
-        btns.setSpacing(8)
-        btns.addStretch(1)
-        btn_save = QPushButton("保存并关闭")
-        btn_close = QPushButton("关闭")
-        btn_save.setCursor(Qt.PointingHandCursor)
-        btn_close.setCursor(Qt.PointingHandCursor)
-        qss = self._default_muted_btn_qss()
-        btn_save.setStyleSheet(qss)
-        btn_close.setStyleSheet(qss)
-        btns.addWidget(btn_save)
-        btns.addWidget(btn_close)
-        lay.addLayout(btns)
-
-        def _show_err(text):
-            err.setText(text)
-            err.setVisible(True)
-
-        def _commit():
-            names = {}
-            seen = {}
-            for section, sub_key, default, label, edit in edits:
-                raw = edit.text()
-                cleaned = clean_subdir_name(raw)
-                if not cleaned:
-                    _show_err(f"「{label}」的目录名不能为空，也不能包含 \\ / : * ? \" < > |")
-                    edit.setFocus()
-                    return
-                fold = cleaned.casefold()
-                if fold in seen:
-                    _show_err(f"「{label}」和「{seen[fold]}」不能用同一个目录名")
-                    edit.setFocus()
-                    return
-                seen[fold] = label
-                names[subdir_storage_key(section, sub_key)] = cleaned
-            base = (self.save_edit.text() or "").strip()
-            if self._mw is None:
-                _show_err("设置还没接上主窗口")
+        names = {}
+        seen = {}
+        rows = []
+        for row in PUBLIC_SAVE_SUBDIRS:
+            sec, sk, dflt, lab = row[0], row[1], row[2], row[3]
+            key = subdir_storage_key(sec, sk)
+            name = cleaned if key == target else resolved_subdir_name(
+                {"save_subdir_names": old_names}, sec, sk, dflt
+            )
+            fold = name.casefold()
+            if fold in seen:
+                self._show_subdir_err(
+                    f"「{lab}」和「{seen[fold]}」不能用同一个目录名",
+                    field,
+                )
                 return
-            cur = getattr(self._mw, "_user_prefs", None)
-            if not isinstance(cur, dict):
-                _show_err("读不到当前配置")
-                return
-            old_names = cur.get("save_subdir_names") if isinstance(cur.get("save_subdir_names"), dict) else {}
-            if base and os.path.isdir(base):
-                moves = []
-                leaving = set()
-                planned = []
-                for section, sub_key, default, label, _edit in edits:
-                    key = subdir_storage_key(section, sub_key)
-                    old = resolved_subdir_name(
-                        {"save_subdir_names": old_names}, section, sub_key, default
+            seen[fold] = lab
+            names[key] = name
+            rows.append((sec, sk, dflt, lab, key))
+
+        base = (self.save_edit.text() or "").strip()
+        if base and os.path.isdir(base):
+            moves = []
+            leaving = set()
+            planned = []
+            for sec, sk, dflt, lab, key in rows:
+                old = resolved_subdir_name(
+                    {"save_subdir_names": old_names}, sec, sk, dflt
+                )
+                new = names[key]
+                if old == new:
+                    continue
+                old_dir = os.path.join(base, old)
+                new_dir = os.path.join(base, new)
+                planned.append((old_dir, new_dir, lab))
+                if os.path.isdir(old_dir):
+                    leaving.add(os.path.normcase(os.path.abspath(old_dir)))
+            for old_dir, new_dir, lab in planned:
+                if not os.path.isdir(old_dir):
+                    continue
+                if os.path.normcase(os.path.abspath(old_dir)) == os.path.normcase(os.path.abspath(new_dir)):
+                    continue
+                if os.path.exists(new_dir) and os.path.normcase(os.path.abspath(new_dir)) not in leaving:
+                    self._show_subdir_err(
+                        f"「{lab}」要改成的 {os.path.basename(new_dir)} 已经存在，没有改名",
+                        field,
                     )
-                    new = names[key]
-                    if old == new:
-                        continue
-                    old_dir = os.path.join(base, old)
-                    new_dir = os.path.join(base, new)
-                    planned.append((old_dir, new_dir, label, old))
-                    if os.path.isdir(old_dir):
-                        leaving.add(os.path.normcase(os.path.abspath(old_dir)))
-                for old_dir, new_dir, label, _old in planned:
-                    if not os.path.isdir(old_dir):
-                        continue
-                    if os.path.normcase(os.path.abspath(old_dir)) == os.path.normcase(os.path.abspath(new_dir)):
-                        continue
-                    if os.path.exists(new_dir) and os.path.normcase(os.path.abspath(new_dir)) not in leaving:
-                        _show_err(f"「{label}」要改成的 {os.path.basename(new_dir)} 已经存在，没有改名")
-                        return
-                    moves.append((old_dir, new_dir))
-                temps = []
-                try:
-                    for old_dir, new_dir in moves:
-                        tmp = old_dir + ".__renaming"
-                        n = 1
-                        while os.path.exists(tmp):
-                            tmp = old_dir + ".__renaming%d" % n
-                            n += 1
-                        os.rename(old_dir, tmp)
-                        temps.append((tmp, new_dir, old_dir))
-                    for tmp, new_dir, _old_dir in temps:
-                        os.rename(tmp, new_dir)
-                except Exception as exc:
-                    for tmp, new_dir, old_dir in reversed(temps):
-                        try:
-                            if os.path.isdir(new_dir) and not os.path.exists(old_dir):
-                                os.rename(new_dir, old_dir)
-                            elif os.path.isdir(tmp) and not os.path.exists(old_dir):
-                                os.rename(tmp, old_dir)
-                        except Exception:
-                            log.exception("回滚子目录改名失败")
-                    log.exception("重命名子目录失败")
-                    _show_err("改名没有完成：%s" % exc)
                     return
-            cur["save_subdir_names"] = names
-            self._persist_now()
-            dlg.accept()
-
-        btn_save.clicked.connect(_commit)
-        btn_close.clicked.connect(dlg.reject)
-        dlg.exec_()
+                moves.append((old_dir, new_dir))
+            temps = []
+            try:
+                for old_dir, new_dir in moves:
+                    tmp = old_dir + ".__renaming"
+                    n = 1
+                    while os.path.exists(tmp):
+                        tmp = old_dir + ".__renaming%d" % n
+                        n += 1
+                    os.rename(old_dir, tmp)
+                    temps.append((tmp, new_dir, old_dir))
+                for tmp, new_dir, _old_dir in temps:
+                    os.rename(tmp, new_dir)
+            except Exception as exc:
+                for tmp, new_dir, old_dir in reversed(temps):
+                    try:
+                        if os.path.isdir(new_dir) and not os.path.exists(old_dir):
+                            os.rename(new_dir, old_dir)
+                        elif os.path.isdir(tmp) and not os.path.exists(old_dir):
+                            os.rename(tmp, old_dir)
+                    except Exception:
+                        log.exception("回滚子目录改名失败")
+                log.exception("重命名子目录失败")
+                self._show_subdir_err("改名没有完成：%s" % exc, field)
+                return
+        cur["save_subdir_names"] = names
+        self._persist_now()
+        self._refresh_subdir_names(cur)
+        self._clear_subdir_err()
 
     def _browse_cookie(self, name: str):
         start = (self._cookie_paths.get(name) or "").strip() or os.path.expanduser("~")

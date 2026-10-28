@@ -2,7 +2,7 @@
 # ---------------------------------------------------------------------------
 # 无 Qt 的 AuK 子进程。切勿 import PyQt5。
 # 开发：python -m utils.auk_job --serve
-# 打包：mainv917.exe --auk-job --serve
+# 打包：mainv918.exe --auk-job --serve
 # 协议：stdin 一行一个 JSON 请求，stdout 一行一个 JSON 结果。日志走 stderr。
 #
 # 加新功能时不要改已经在用的部分。语音克隆、听写、抠图、下载各自有自己的

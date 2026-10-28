@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v9.17 组件一键安装 —— ffmpeg / torch / paddle / CosyVoice / 权重
+"""v9.18 组件一键安装 —— ffmpeg / torch / paddle / CosyVoice / 权重
 
 requirements.txt 与 requirements-models.txt 只管纯 pip 包。
 录屏要的 ffmpeg 是系统二进制，torch / paddlepaddle 要按本机 CUDA 选轮子，
@@ -27,13 +27,13 @@ import sys
 from pathlib import Path
 
 def _find_root() -> Path:
-    """定位项目根：从本文件往上找，认 mainv917.py（或任意 mainv9*.py）。
+    """定位项目根：从本文件往上找，认 mainv918.py（或任意 mainv9*.py）。
 
     这样脚本放在 tools/ 或直接放项目根都不会算错。
     """
     here = Path(__file__).resolve()
     for cand in (here.parent, *here.parents):
-        if (cand / "mainv917.py").is_file() or any(cand.glob("mainv9*.py")):
+        if (cand / "mainv918.py").is_file() or any(cand.glob("mainv9*.py")):
             return cand
     return here.parents[1] if len(here.parents) > 1 else here.parent
 
@@ -917,7 +917,7 @@ def main() -> int:
     args = ap.parse_args()
     ASSUME_YES = args.yes
 
-    print("桌面助手 v9.17 · 组件安装")
+    print("桌面助手 v9.18 · 组件安装")
     print("项目根：", ROOT)
     print("Python：", PY)
 

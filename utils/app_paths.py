@@ -8,7 +8,9 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
+import time
 
 
 def is_frozen() -> bool:
@@ -72,6 +74,7 @@ _MIGRATED_VC = False
 _MIGRATED_VE = False
 _MIGRATED_FLAT = False
 _MIGRATED_RECORDS_SPLIT = False
+_MIGRATED_USERDATA = False
 
 
 def _norm(path: str) -> str:
@@ -245,7 +248,7 @@ _GB_DIRNAME = "gamebrain"
 def _relocate_user_gameassist_paths(old_base: str, new_base: str) -> None:
     """user.txt 里游戏助手段的托管路径从旧基址改写到新基址。"""
     try:
-        p = os.path.join(_data_root_dir(), "user.txt")
+        p = os.path.join(_userdata_root_dir(), "user.txt")
         if not os.path.isfile(p):
             return
         with open(p, "r", encoding="utf-8") as f:
@@ -291,20 +294,25 @@ def _migrate_gameassist_once() -> None:
         _relocate_user_gameassist_paths(old, new)
 
 
+def _log_root_dir() -> str:
+    """log/ absolute path (no ensure; avoid migrate recursion). Runtime logs only."""
+    return os.path.join(app_root(), "log")
+
+
 def _data_root_dir() -> str:
-    """data/ 的绝对路径（不经 ensure_data_layout，避免迁移相互递归）。"""
+    """Legacy alias: old data/ path for one-time migrate into log/userdata."""
     return os.path.join(app_root(), "data")
 
 
 def _records_root_dir() -> str:
-    """records/ 的绝对路径（不经 ensure_data_layout，避免迁移相互递归）。"""
+    """Legacy alias: old records/ path for one-time migrate into userdata. Do not create."""
     return os.path.join(app_root(), "records")
 
 
 def _read_user_prefs_early() -> dict:
-    """不依赖 user_prefs 模块，直接读 data/user.txt（不存在返回空 dict）。"""
+    """Read userdata/user.txt early without user_prefs import."""
     try:
-        p = os.path.join(_data_root_dir(), "user.txt")
+        p = os.path.join(_userdata_root_dir(), "user.txt")
         with open(p, "r", encoding="utf-8") as f:
             data = json.load(f)
         return data if isinstance(data, dict) else {}
@@ -320,6 +328,7 @@ PUBLIC_SAVE_SUBDIRS = (
     ("screenshot", None, "ScreenshotImageSaver", "截图工具"),
     ("region_record", None, "RegionRecord", "区域录屏"),
     ("image_proc", None, "ImageProc", "图片处理"),
+    ("pixel_board", None, "PixelBoard", "像素画板"),
     ("voice_clone", None, "VoiceClone", "语音克隆"),
     ("video", "douyin", "douyin", "抖音"),
     ("video", "bilibili", "bilibili", "B站"),
@@ -725,7 +734,7 @@ def _migrate_voice_clone_once() -> None:
 
     # user.txt 的 voice_clone 段改写路径
     try:
-        p = os.path.join(_data_root_dir(), "user.txt")
+        p = os.path.join(_userdata_root_dir(), "user.txt")
         if os.path.isfile(p):
             with open(p, "r", encoding="utf-8") as f:
                 data = json.load(f)
@@ -766,9 +775,9 @@ def _prompts_flat_name(name: str) -> str:
     base = os.path.basename(name or "")
     low = base.lower()
     if low == "editor.json":
-        return "prompts_editor.json"
+        return "prompts_editor.txt"
     if low == "history.jsonl":
-        return "prompts_history.jsonl"
+        return "prompts_history.txt"
     if base.startswith("prompts_"):
         return base
     return "prompts_" + base
@@ -799,12 +808,14 @@ def flatten_data_subdirs() -> None:
     用户数据平铺进 records/：
       cards    → card_*
       guides   → guide_*
-      prompts  → prompts_editor.json / prompts_history.jsonl
-      voice_clone → voice_clone_history.jsonl
+      prompts  → prompts_editor.txt / prompts_history.txt
+      voice_clone → voice_clone_history.txt
     同时兼容旧备份仍把这些子目录落在 data/ 的情况：先平铺到 data，再由
     _migrate_user_records_split_once 挪进 records/。
     """
-    for root in (_records_root_dir(), _data_root_dir()):
+    for root in (_records_root_dir(), _data_root_dir(), _log_root_dir()):
+        if not os.path.isdir(root):
+            continue  # skip; do not create deprecated records/data
         try:
             os.makedirs(root, exist_ok=True)
         except Exception:
@@ -819,9 +830,12 @@ def flatten_data_subdirs() -> None:
         )
         _relocate_subdir_files_in(root, "prompts", _prompts_flat_name)
         src = os.path.join(root, "voice_clone", "history.jsonl")
-        dst = os.path.join(root, "voice_clone_history.jsonl")
+        dst = os.path.join(root, "voice_clone_history.txt")
         if os.path.isfile(src) and not os.path.exists(dst):
             _move_entry(src, dst)
+        old_flat = os.path.join(root, "voice_clone_history.jsonl")
+        if os.path.isfile(old_flat) and not os.path.exists(dst):
+            _move_entry(old_flat, dst)
         _rmdir_if_empty(os.path.join(root, "voice_clone"))
 
 
@@ -840,11 +854,17 @@ _USER_RECORD_EXACT = {
     "paste_helper.txt",
     "points_calc.txt",
     "pre_download.json",
+    "pre_download.txt",
     "gallery_eh.txt",
     "gallery_hitomi.txt",
+    "other_video.txt",
+    "qishui.txt",
     "prompts_editor.json",
+    "prompts_editor.txt",
     "prompts_history.jsonl",
+    "prompts_history.txt",
     "voice_clone_history.jsonl",
+    "voice_clone_history.txt",
     "world_clock_cities.txt",
 }
 
@@ -877,14 +897,16 @@ def _migrate_user_records_split_once() -> None:
 
     data = _data_root_dir()
     rec = _records_root_dir()
-    try:
-        os.makedirs(data, exist_ok=True)
-        os.makedirs(rec, exist_ok=True)
-    except Exception:
+    if not os.path.isdir(data):
         return
     try:
         names = list(os.listdir(data))
     except Exception:
+        return
+    # Only move into records/ if it already exists OR we still need a staging dir.
+    # Prefer moving straight to userdata via later _migrate_userdata_once; here keep
+    # legacy split only when records/ already present (do not create new records/).
+    if not os.path.isdir(rec):
         return
     for name in names:
         if not _is_user_record_filename(name):
@@ -895,11 +917,169 @@ def _migrate_user_records_split_once() -> None:
         _move_entry(src, os.path.join(rec, name))
 
 
-def ensure_data_layout() -> str:
-    """迁移旧目录并确保 data/、records/、model/ 等存在。启动时尽早调用。
 
-    data/     ：程序运行数据（user.txt、日志…）
-    records/  ：用户创造的数据（记录卡、图集已下、粘贴/积分、提示词…）
+_MIGRATED_DATA_TO_LOG = False
+_TEMP_CLEANED = False
+
+# temp/ retention (startup cleanup)
+_TEMP_SCRATCH_MAX_AGE_DAYS = 7.0
+_TEMP_BAK_MAX_AGE_DAYS = 30.0
+
+
+def _migrate_data_to_log_once() -> None:
+    """Move runtime logs from legacy data/ into log/; remove empty data/.
+
+    Layout note:
+      userdata/ = 用户数据（偏好、记录、队列）
+      log/      = 运行日志（app.log / crash_*.log）
+      temp/     = 草稿与补丁（定时清理）
+      records/  = 已废弃（仅一次性迁出后删除，不再创建）
+    """
+    global _MIGRATED_DATA_TO_LOG
+    if _MIGRATED_DATA_TO_LOG:
+        return
+    _MIGRATED_DATA_TO_LOG = True
+
+    root = app_root()
+    old = os.path.join(root, "data")
+    new = _log_root_dir()
+    try:
+        os.makedirs(new, exist_ok=True)
+    except Exception:
+        return
+    if not os.path.isdir(old):
+        return
+    try:
+        for name in list(os.listdir(old)):
+            src = os.path.join(old, name)
+            if not os.path.isfile(src):
+                # leave non-files; try rmtree empty auk-like dirs later
+                continue
+            low = name.lower()
+            if not (low == "app.log" or low.startswith("app.log.") or (low.startswith("crash_") and low.endswith(".log"))):
+                continue
+            dst = os.path.join(new, name)
+            if os.path.exists(dst):
+                # keep newer / existing log; drop duplicate old
+                try:
+                    os.remove(src)
+                except Exception:
+                    pass
+                continue
+            try:
+                shutil.move(src, dst)
+            except Exception:
+                try:
+                    shutil.copy2(src, dst)
+                    os.remove(src)
+                except Exception:
+                    pass
+        # remove empty leftover dirs under data/
+        for name in list(os.listdir(old)):
+            p = os.path.join(old, name)
+            if os.path.isdir(p):
+                try:
+                    os.rmdir(p)  # only if empty
+                except Exception:
+                    pass
+        # remove data/ if empty
+        try:
+            if not os.listdir(old):
+                os.rmdir(old)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _remove_empty_records_dir() -> None:
+    """records/ is deprecated; delete if empty (do not recreate)."""
+    rec = _records_root_dir()
+    if not os.path.isdir(rec):
+        return
+    try:
+        if not os.listdir(rec):
+            os.rmdir(rec)
+    except Exception:
+        pass
+
+
+def cleanup_temp_dir(*, scratch_days: float | None = None, bak_days: float | None = None) -> int:
+    """Delete aged scratch under temp/; keep recent bak_patches.
+
+    Policy:
+      - temp/* (except bak_patches/, README.txt): delete if mtime older than scratch_days (default 7)
+      - temp/bak_patches/*: delete if mtime older than bak_days (default 30)
+    Returns number of removed entries.
+    """
+    scratch_days = _TEMP_SCRATCH_MAX_AGE_DAYS if scratch_days is None else float(scratch_days)
+    bak_days = _TEMP_BAK_MAX_AGE_DAYS if bak_days is None else float(bak_days)
+    temp = os.path.join(app_root(), "temp")
+    if not os.path.isdir(temp):
+        return 0
+    now = time.time()
+    removed = 0
+
+    def _aged(path: str, days: float) -> bool:
+        try:
+            return os.path.getmtime(path) < (now - days * 86400.0)
+        except Exception:
+            return False
+
+    def _rm(path: str) -> None:
+        nonlocal removed
+        try:
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+            elif os.path.isfile(path):
+                os.remove(path)
+            else:
+                return
+            removed += 1
+        except Exception:
+            pass
+
+    try:
+        for name in list(os.listdir(temp)):
+            if name in ("README.txt", "README.md"):
+                continue
+            path = os.path.join(temp, name)
+            if name == "bak_patches":
+                if not os.path.isdir(path):
+                    continue
+                for bak_name in list(os.listdir(path)):
+                    bp = os.path.join(path, bak_name)
+                    if _aged(bp, bak_days):
+                        _rm(bp)
+                continue
+            if _aged(path, scratch_days):
+                _rm(path)
+    except Exception:
+        pass
+    return removed
+
+
+def cleanup_temp_once() -> None:
+    """Run temp cleanup once per process (startup)."""
+    global _TEMP_CLEANED
+    if _TEMP_CLEANED:
+        return
+    _TEMP_CLEANED = True
+    try:
+        cleanup_temp_dir()
+    except Exception:
+        pass
+
+
+def ensure_data_layout() -> str:
+    """One-shot migrates + ensure userdata/ / log/ / model/ exist.
+
+    Directory roles（备注）:
+      userdata/ = 用户数据（偏好、下载记录、预下载队列等）
+      log/      = 运行日志（app.log / crash_*.log）
+      temp/     = 草稿与补丁；启动时按 retention 清理
+      records/  = 已废弃，迁出后删除，不再创建
+      data/     = 已废弃（旧日志目录），迁入 log/ 后删除
     """
     _migrate_legacy_data_once()
     _migrate_gameassist_once()
@@ -907,14 +1087,17 @@ def ensure_data_layout() -> str:
     _migrate_voice_edit_once()
     _flatten_data_subdirs_once()
     _migrate_user_records_split_once()
-    d = os.path.join(app_root(), "data")
-    r = os.path.join(app_root(), "records")
+    _migrate_userdata_once()
+    _migrate_data_to_log_once()
+    _remove_empty_records_dir()
+    cleanup_temp_once()
+    d = _log_root_dir()
     try:
         os.makedirs(d, exist_ok=True)
     except Exception:
         pass
     try:
-        os.makedirs(r, exist_ok=True)
+        os.makedirs(_userdata_root_dir(), exist_ok=True)
     except Exception:
         pass
     model_dir()
@@ -925,20 +1108,174 @@ def ensure_data_layout() -> str:
     return d
 
 
-def data_dir() -> str:
-    """程序运行数据：偏好 user.txt、日志 app.log / crash_*.log 等。"""
-    return ensure_data_layout()
+def _userdata_root_dir() -> str:
+    """userdata/ absolute path (no ensure; avoid recursion)."""
+    return os.path.join(app_root(), "userdata")
 
 
-def records_dir() -> str:
-    """用户创造的数据目录：记录卡、图集已下、粘贴/积分、提示词、预下载队列等。"""
+def _copy_file_if_needed(src: str, dst: str) -> bool:
+    """Copy src -> dst when dst missing. Returns True if copied."""
+    try:
+        if not os.path.isfile(src):
+            return False
+        if os.path.exists(dst):
+            return False
+        parent = os.path.dirname(dst)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        shutil.copy2(src, dst)
+        return True
+    except Exception:
+        return False
+
+
+def _convert_pre_download_json_to_txt(src: str, dst_txt: str) -> bool:
+    """Convert legacy pre_download.json into sectioned pre_download.txt."""
+    try:
+        if os.path.exists(dst_txt):
+            return False
+        with open(src, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if not isinstance(payload, dict):
+            return False
+        lines = [f"# last_finish_ts={float(payload.get('last_finish_ts') or 0)}", ""]
+        items = payload.get("items") or []
+        by = {}
+        if isinstance(items, list) and items:
+            for it in items:
+                if isinstance(it, (list, tuple)) and len(it) >= 2:
+                    by.setdefault(str(it[0]), []).append(str(it[1]))
+                elif isinstance(it, dict):
+                    plat = str(it.get("platform") or it.get("plat") or "")
+                    url = str(it.get("url") or it.get("text") or "")
+                    by.setdefault(plat, []).append(url)
+        else:
+            qs = payload.get("queues") or {}
+            if isinstance(qs, dict):
+                for k, v in qs.items():
+                    if isinstance(v, list):
+                        by[k] = [str(x) for x in v]
+        plats = (
+            "douyin", "qishui", "bilibili", "youtube", "jimeng",
+            "liblib", "xvideos", "pornhub", "ehentai", "pixiv", "hitomi",
+        )
+        for plat in plats:
+            lines.append(f"# {plat}")
+            for u in by.get(plat) or []:
+                u = " ".join(str(u).split())
+                if u:
+                    lines.append(u)
+            lines.append("")
+        lines.append("# failed")
+        failed = payload.get("failed") or []
+        if isinstance(failed, list):
+            for it in failed:
+                if isinstance(it, str):
+                    u = " ".join(it.split())
+                elif isinstance(it, (list, tuple)) and it:
+                    u = " ".join(str(it[-1]).split())
+                elif isinstance(it, dict):
+                    u = " ".join(str(it.get("url") or it.get("text") or "").split())
+                else:
+                    u = ""
+                if u:
+                    lines.append(u)
+        lines.append("")
+        parent = os.path.dirname(dst_txt)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        tmp = dst_txt + ".tmp"
+        with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+            f.write("\n".join(lines))
+        os.replace(tmp, dst_txt)
+        return True
+    except Exception:
+        return False
+
+
+def _migrate_userdata_once() -> None:
+    """Copy records/ + selected data/ files into userdata/ with .txt renames.
+
+    Safer than move: old paths stay for read fallbacks. Idempotent.
+    """
+    global _MIGRATED_USERDATA
+    if _MIGRATED_USERDATA:
+        return
+
+    ud = _userdata_root_dir()
+    try:
+        os.makedirs(ud, exist_ok=True)
+    except Exception:
+        return
+
+    rec = _records_root_dir()
+    data = _data_root_dir()
+
+    if os.path.isdir(rec) and os.path.normcase(os.path.abspath(rec)) != os.path.normcase(os.path.abspath(ud)):
+        try:
+            for name in os.listdir(rec):
+                src = os.path.join(rec, name)
+                if not os.path.isfile(src):
+                    continue
+                new_name = _USERDATA_RENAME.get(name, name)
+                if name == "pre_download.json":
+                    dst_txt = os.path.join(ud, "pre_download.txt")
+                    if not _convert_pre_download_json_to_txt(src, dst_txt):
+                        pass  # leave conversion failure; do not keep json in userdata
+                    continue
+                _copy_file_if_needed(src, os.path.join(ud, new_name))
+        except Exception:
+            pass
+
+    _copy_file_if_needed(os.path.join(data, "user.txt"), os.path.join(ud, "user.txt"))
+
+    gsrc = os.path.join(data, "gamemeet_history.json")
+    gdst = os.path.join(ud, "gamemeet_history.txt")
+    if os.path.isfile(gsrc) and not os.path.exists(gdst):
+        try:
+            shutil.copy2(gsrc, gdst)
+        except Exception:
+            pass
+
+    auk_src = os.path.join(data, "auk")
+    auk_dst = os.path.join(ud, "auk")
+    if os.path.isdir(auk_src):
+        try:
+            os.makedirs(auk_dst, exist_ok=True)
+            for name in os.listdir(auk_src):
+                s = os.path.join(auk_src, name)
+                if os.path.isfile(s):
+                    _copy_file_if_needed(s, os.path.join(auk_dst, name))
+        except Exception:
+            pass
+
+    _MIGRATED_USERDATA = True
+
+
+def userdata_dir() -> str:
+    """Unified user-data folder (prefs + records). Prefer this for backup."""
     ensure_data_layout()
-    d = _records_root_dir()
+    d = _userdata_root_dir()
     try:
         os.makedirs(d, exist_ok=True)
     except Exception:
         pass
     return d
+
+
+def log_dir() -> str:
+    """Runtime logs directory: log/app.log, crash_*.log."""
+    return ensure_data_layout()
+
+
+def data_dir() -> str:
+    """Deprecated alias of log_dir() (old name was data/)."""
+    return log_dir()
+
+
+def records_dir() -> str:
+    """User business data directory (alias of userdata_dir)."""
+    return userdata_dir()
 
 
 def records_file(*names: str) -> str:
@@ -978,15 +1315,13 @@ def kb_data_roots() -> list:
 
 
 def local_data_roots() -> list:
-    """导出 / 重置覆盖的本地数据目录（导入按 ZIP 内容分别处理）。
+    """Backup / restore roots.
 
-    data/ = 程序运行数据；records/ = 用户创造的数据；
-    gameassist/ + gamebrain/ = 知识库（kb_data_roots）。
-    导入仍识别旧 zip 里的 gallery/ cards/ 以及「全部塞在 data/」的备份。
+    log/ = runtime logs; userdata/ = user data; kb = gameassist/gamebrain.
     """
     return [
-        ("data", data_dir()),
-        ("records", records_dir()),
+        ("log", log_dir()),
+        ("userdata", userdata_dir()),
     ] + kb_data_roots()
 
 
@@ -1088,11 +1423,11 @@ def voice_clone_dir() -> str:
 
 
 def voice_clone_history_path() -> str:
-    """语音克隆历史记录：records/voice_clone_history.jsonl（用户创造的数据）。
+    """语音克隆历史记录：userdata/voice_clone_history.txt（用户创造的数据）。
 
     公共 VoiceClone 目录只放音频；历史记录进 records/。
     """
-    return os.path.join(records_dir(), "voice_clone_history.jsonl")
+    return os.path.join(records_dir(), "voice_clone_history.txt")
 
 
 def gameassist_dir() -> str:
@@ -1128,7 +1463,7 @@ def gamebrain_dir() -> str:
 
 def digital_human_dir() -> str:
     """数字人工作目录（功能已暂存 BACK/digital_human，主程序不再调用）。"""
-    d = os.path.join(data_dir(), "digital_human")
+    d = os.path.join(userdata_dir(), "digital_human")
     try:
         os.makedirs(d, exist_ok=True)
     except Exception:
@@ -1250,7 +1585,8 @@ def ocr_repair_bat_path() -> str:
     if os.path.isfile(new_path):
         return new_path
     candidates = [
-        os.path.join(data_dir(), "fix_ocr.bat"),
+        os.path.join(log_dir(), "fix_ocr.bat"),
+        os.path.join(app_root(), "data", "fix_ocr.bat"),
         os.path.join(app_root(), "records", "fix_ocr.bat"),
     ]
     for old_path in candidates:

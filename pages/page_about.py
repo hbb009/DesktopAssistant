@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import importlib.util
 import os
+import shutil
 import sys
 from typing import Dict, List
 
@@ -454,6 +456,340 @@ def _guide_pip(args: str) -> str:
     return f'"{py}" -m pip {args}'
 
 
+def _model_root() -> str:
+    try:
+        from utils.app_paths import model_dir
+        return model_dir()
+    except Exception:
+        return os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "model"
+        )
+
+
+def _pkg_spec(name: str) -> bool:
+    try:
+        return importlib.util.find_spec(name) is not None
+    except Exception:
+        return False
+
+
+def _guide_download(only: str) -> str:
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    script = os.path.join(root, "tools", "download_models.py")
+    return f'"{_guide_python()}" "{script}" --only {only}'
+
+
+# 系统总览「模型」：与 model/ 下实际目录一一对应。(key, 标题, 目录名)
+_MODEL_ROWS = (
+    ("ocr", "截图识字", "PaddleOCR-VL-1.6"),
+    ("w_tiny", "语音转写 · 轻量", "faster-whisper-tiny"),
+    ("w_small", "语音转写 · 推荐", "faster-whisper-small"),
+    ("w_large", "语音转写 · 高精度", "faster-whisper-large-v3"),
+    ("opus_zh_en", "中英翻译 · 中→英", "opus-mt-zh-en"),
+    ("opus_en_zh", "中英翻译 · 英→中", "opus-mt-en-zh"),
+    ("cv_w", "克隆权重", "Fun-CosyVoice3-0.5B"),
+    ("cv_src", "克隆源码", "CosyVoice"),
+    ("auk", "音频处理权重", "AuK"),
+    ("auk_src", "音频处理源码", "AuK-src"),
+    ("qwen", "音频处理文本", "Qwen2.5-Omni-3B"),
+    ("biref", "图片抠图", "BiRefNet-general"),
+    ("upscayl", "图片放大", "upscayl"),
+)
+
+# 与图片处理页六选一的文件名一致（.bin / .param）
+_UPSCAYL_IDS = (
+    "realesrgan-x4plus",
+    "realesrgan-x4fast",
+    "remacri",
+    "ultramix_balanced",
+    "ultrasharp",
+    "realesrgan-x4plus-anime",
+)
+
+
+def _find_deno() -> str:
+    p = shutil.which("deno") or ""
+    if p:
+        return p
+    local = os.environ.get("LOCALAPPDATA", "")
+    for cand in (
+        os.path.join(local, "Microsoft", "WinGet", "Links", "deno.exe") if local else "",
+        os.path.join(os.path.expanduser("~"), ".deno", "bin", "deno.exe"),
+        r"C:\Program Files\Deno\deno.exe",
+    ):
+        if cand and os.path.isfile(cand):
+            return cand
+    return ""
+
+
+def _find_node() -> str:
+    return shutil.which("node") or ""
+
+
+def _find_git() -> str:
+    p = shutil.which("git") or ""
+    if p:
+        return p
+    for base in (
+        os.environ.get("ProgramFiles", r"C:\Program Files"),
+        os.environ.get("ProgramFiles(x86)", ""),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs"),
+    ):
+        if not base:
+            continue
+        cand = os.path.join(base, "Git", "cmd", "git.exe")
+        if os.path.isfile(cand):
+            return cand
+    return ""
+
+
+def _whisper_dir(size: str) -> str:
+    try:
+        from utils.voice_input import local_model_dir
+        return local_model_dir(size)
+    except Exception:
+        name = {
+            "tiny": "faster-whisper-tiny",
+            "small": "faster-whisper-small",
+            "large-v3": "faster-whisper-large-v3",
+        }.get(size, size)
+        return os.path.join(_model_root(), name)
+
+
+def _dir_has_files(path: str) -> bool:
+    if not path or not os.path.isdir(path):
+        return False
+    try:
+        names = os.listdir(path)
+    except OSError:
+        return False
+    for name in names:
+        if name in (".git",) or name.startswith("."):
+            continue
+        return True
+    return False
+
+
+def _upscayl_pair_count(folder: str) -> int:
+    if not folder or not os.path.isdir(folder):
+        return 0
+    n = 0
+    for name in _UPSCAYL_IDS:
+        if (
+            os.path.isfile(os.path.join(folder, name + ".bin"))
+            and os.path.isfile(os.path.join(folder, name + ".param"))
+        ):
+            n += 1
+    return n
+
+
+
+def _dir_size_bytes(path: str) -> int:
+    if not path or not os.path.isdir(path):
+        return 0
+    total = 0
+    try:
+        for root, _dirs, files in os.walk(path):
+            for name in files:
+                try:
+                    total += os.path.getsize(os.path.join(root, name))
+                except OSError:
+                    pass
+    except OSError:
+        return 0
+    return total
+
+
+def _fmt_size(n: int) -> str:
+    if n <= 0:
+        return "—"
+    mb = n / (1024 * 1024)
+    if mb < 900:
+        return f"{mb:.0f}MB"
+    return f"{mb / 1024:.2f}GB"
+
+
+def _opus_mt_ready(path: str) -> bool:
+    """Helsinki opus-MT：目录内有 config + 权重文件即视为就位。"""
+    if not path or not os.path.isdir(path):
+        return False
+    if not os.path.isfile(os.path.join(path, "config.json")):
+        return False
+    for name in ("pytorch_model.bin", "model.safetensors", "tf_model.h5"):
+        if os.path.isfile(os.path.join(path, name)):
+            return True
+    try:
+        for fn in os.listdir(path):
+            p = os.path.join(path, fn)
+            if (
+                os.path.isfile(p)
+                and fn.endswith((".bin", ".safetensors"))
+                and os.path.getsize(p) > 1_000_000
+            ):
+                return True
+    except OSError:
+        pass
+    return False
+
+
+def _model_state(key: str):
+    """返回 (是否就位, 短状态, 检测说明)。"""
+    root = _model_root()
+    if key == "ocr":
+        from utils.ocr_util import find_vl_model_dir, has_vl_weights
+        path = find_vl_model_dir()
+        if has_vl_weights():
+            return True, "已就位", f"权重目录：\n{path}"
+        return False, "未放入", f"还没有 PaddleOCR-VL-1.6。\n放到：\n{path}"
+    if key in ("w_tiny", "w_small", "w_large"):
+        size = {"w_tiny": "tiny", "w_small": "small", "w_large": "large-v3"}[key]
+        path = _whisper_dir(size)
+        if _dir_has_files(path):
+            return True, "已就位", f"模型目录：\n{path}"
+        return False, "未放入", f"还没有这个语音模型。\n放到：\n{path}"
+    if key == "cv_w":
+        from utils.cosyvoice_clone import _looks_like_cosyvoice_weights
+        path = os.path.join(root, "Fun-CosyVoice3-0.5B")
+        if _looks_like_cosyvoice_weights(path):
+            return True, "已就位", f"权重目录：\n{path}"
+        return False, "未放入", f"还没有 Fun-CosyVoice3 权重（约 9GB）。\n放到：\n{path}"
+    if key == "cv_src":
+        from utils.cosyvoice_clone import find_cosyvoice_home
+        home = find_cosyvoice_home()
+        expect = os.path.join(root, "CosyVoice")
+        if home:
+            return True, "已就位", f"运行源码：\n{home}"
+        return False, "未放入", (
+            "还没有 CosyVoice 源码（不是权重，不要把 Fun-CosyVoice3-0.5B 改名过来）。\n"
+            f"放到：\n{expect}"
+        )
+    if key == "auk":
+        from utils.auk_client import model_paths
+        p = model_paths()
+        folder = p.get("auk") or os.path.join(root, "AuK")
+        ckpt = os.path.isfile(p.get("ckpt") or "")
+        cfg = os.path.isfile(p.get("config") or "")
+        vae = os.path.isfile(os.path.join(folder, "vae.safetensors"))
+        if ckpt and cfg and vae:
+            return True, "已就位", f"权重目录：\n{folder}"
+        miss = []
+        if not ckpt:
+            miss.append("auk_base.safetensors")
+        if not cfg:
+            miss.append("config.yaml")
+        if not vae:
+            miss.append("vae.safetensors")
+        return False, "未放齐", f"AuK 还缺：{'、'.join(miss)}\n目录：\n{folder}"
+    if key == "auk_src":
+        from utils.auk_client import model_paths
+        src = (model_paths().get("src") or os.path.join(root, "AuK-src", "src"))
+        if os.path.isdir(os.path.join(src, "auk")):
+            return True, "已就位", f"源码：\n{os.path.dirname(src)}"
+        return False, "未放入", f"还没有 AuK 源码。\n放到：\n{os.path.join(root, 'AuK-src')}"
+    if key == "qwen":
+        from utils.auk_client import model_paths
+        path = model_paths().get("qwen") or os.path.join(root, "Qwen2.5-Omni-3B")
+        marker = os.path.isfile(os.path.join(path, "config.json")) or _dir_has_files(path)
+        if os.path.isdir(path) and marker:
+            return True, "已就位", f"文本模型：\n{path}"
+        return False, "未放入", f"AuK 用的文本模型还没放。\n放到：\n{path}"
+    if key == "biref":
+        from utils.matting_job import find_birefnet_onnx
+        path = find_birefnet_onnx() or ""
+        expect = os.path.join(root, "BiRefNet-general")
+        if path:
+            return True, "已就位", f"抠图模型：\n{path}"
+        return False, "未放入", f"还没有 BiRefNet 的 onnx。\n放到：\n{expect}"
+    if key in ("opus_zh_en", "opus_en_zh"):
+        folder = {"opus_zh_en": "opus-mt-zh-en", "opus_en_zh": "opus-mt-en-zh"}[key]
+        path = os.path.join(root, folder)
+        if _opus_mt_ready(path):
+            sz = _fmt_size(_dir_size_bytes(path))
+            detail = "翻译模型：\n" + path + "\n体积：" + sz
+            return True, "已就位 · " + sz, detail
+        miss = (
+            "还没有 " + folder + "（Helsinki-NLP opus-MT，约 0.3GB）。\n"
+            "放到：\n" + path
+        )
+        return False, "未放入", miss
+    if key == "upscayl":
+        local = os.path.join(root, "upscayl")
+        pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+        pf_exe = os.path.join(pf, "Upscayl", "resources", "bin", "upscayl-bin.exe")
+        pf_models = os.path.join(pf, "Upscayl", "resources", "models")
+        folders = (
+            os.path.join(local, "models"),
+            local,
+            pf_models,
+        )
+        best = ""
+        best_n = -1
+        for folder in folders:
+            n = _upscayl_pair_count(folder)
+            if n > best_n:
+                best_n = n
+                best = folder
+        exe = os.path.join(local, "upscayl-bin.exe")
+        if not os.path.isfile(exe) and os.path.isfile(pf_exe):
+            exe = pf_exe
+        exe_ok = os.path.isfile(exe)
+        if exe_ok and best_n >= len(_UPSCAYL_IDS):
+            return True, "已就位", f"程序：\n{exe}\n模型：\n{best}\n{best_n} 个放大模型都在。"
+        bits = []
+        if not exe_ok:
+            bits.append("缺 upscayl-bin.exe")
+        if best_n < len(_UPSCAYL_IDS):
+            bits.append(f"放大模型 {max(0, best_n)}/{len(_UPSCAYL_IDS)}")
+        return False, "未放齐", "图片放大还没齐：" + "，".join(bits) + f"\n目录：\n{local}"
+    return False, "未放入", "没有这项模型。"
+
+
+def _model_guide(key: str):
+    """返回 (窗口标题, 教程段落)。"""
+    title = dict((k, t) for k, t, _f in _MODEL_ROWS).get(key, "模型")
+    folder = dict((k, f) for k, _t, f in _MODEL_ROWS).get(key, "")
+    dest = os.path.join(_model_root(), folder)
+    head = f"放到这个目录（已有就不用再下）：\n{dest}"
+    auto = {
+        "ocr": "paddleocr",
+        "w_tiny": "whisper-tiny",
+        "w_small": "whisper-small",
+        "w_large": "whisper-large",
+        "opus_zh_en": "opus-mt-zh-en",
+        "opus_en_zh": "opus-mt-en-zh",
+        "cv_w": "cosyvoice",
+    }
+    if key in auto:
+        return f"{title} · 安装教程", [
+            head,
+            "可自动下载：",
+            ("cmd", _guide_download(auto[key])),
+            "国内网络可在命令末尾加上：--mirror modelscope",
+            "下完重新打开本程序，回到「模型」点「检测」。",
+        ]
+    if key == "cv_src":
+        from utils.cosyvoice_clone import clone_cmd
+        return "克隆源码 · 安装教程", [
+            "这是推理源码，不是那份 9GB 权重。不要把 Fun-CosyVoice3-0.5B 改名为 CosyVoice。",
+            head,
+            "还没有时执行：",
+            ("cmd", clone_cmd()),
+            "需要本机已有 Git。装好后回到「模型」点「检测」。",
+        ]
+    if key == "upscayl":
+        return "图片放大 · 安装教程", [
+            head,
+            "目录里要有 upscayl-bin.exe，以及 models 下 6 组成对的 .bin / .param。",
+            "没有项目内这份时，也可以安装 Upscayl 桌面版，程序会改用它自带的程序和模型。",
+            "这项没有自动下载。放好后回到「模型」点「检测」。",
+        ]
+    return f"{title} · 安装教程", [
+        head,
+        "这项要自己把整个目录放进 model/，安装脚本不会自动下载。",
+        "放好后重新打开本程序，回到「模型」点「检测」。",
+    ]
+
+
 def _copy_glyph_pixmap(size: int, color: str, *, done: bool = False) -> QPixmap:
     size = max(14, int(size))
     pm = QPixmap(size, size)
@@ -820,6 +1156,8 @@ class PageAbout(QWidget):
         left_lay.setContentsMargins(0, 0, 0, 0)
         left_lay.setSpacing(6)
         left_lay.setAlignment(Qt.AlignTop)
+        left_lay.addWidget(self._build_hotkey_card(), 0, Qt.AlignTop)
+        # 「公共保存」由总览 attach_public_save_card 插在热键与白名单之间
         left_lay.addWidget(self._build_auto_dl_card(), 0, Qt.AlignTop)
 
         self.right_panel = QWidget()
@@ -829,8 +1167,8 @@ class PageAbout(QWidget):
         right_lay.setContentsMargins(0, 0, 0, 0)
         right_lay.setSpacing(6)
         right_lay.setAlignment(Qt.AlignTop)
+        right_lay.addWidget(self._build_models_card(), 0, Qt.AlignTop)
         right_lay.addWidget(self._build_components_card(), 0, Qt.AlignTop)
-        right_lay.addWidget(self._build_hotkey_card(), 0, Qt.AlignTop)
 
         self._installed_split = False
         if self._embedded:
@@ -850,6 +1188,16 @@ class PageAbout(QWidget):
             split.addWidget(self.right_panel, 1, Qt.AlignTop)
             root.addLayout(split)
             root.addStretch(1)
+
+    def attach_public_save_card(self, card) -> None:
+        """把「公共保存」插到左栏：热键占用之下、白名单之上。"""
+        if card is None:
+            return
+        lay = self.left_panel.layout() if getattr(self, "left_panel", None) is not None else None
+        if lay is None:
+            return
+        # index 0 = 热键占用，1 = 白名单 → 插到 1
+        lay.insertWidget(1, card, 0, Qt.AlignTop)
 
     def install_into(self, left_layout, right_layout):
         """把左右栏嵌进系统总览整页两列（与设置区同列对齐）。"""
@@ -891,6 +1239,7 @@ class PageAbout(QWidget):
         del cookie_alert
         self.reload_from_prefs()
         QTimer.singleShot(0, self._refresh_all_component_status)
+        # 只刷新清单；重挂改由热键页就绪后异步轻量执行，避免启动卡死
         self._refresh_hotkey_card()
         QTimer.singleShot(0, self._refresh_hotkey_card)
 
@@ -917,10 +1266,15 @@ class PageAbout(QWidget):
         self._refresh_hotkey_card()
 
     def _refresh_all_component_status(self):
+        self._refresh_model_rows()
         self._refresh_ocr_status()
         self._refresh_record_status()
         self._refresh_voice_status()
         self._refresh_clone_status()
+        self._refresh_matting_runtime_status()
+        self._refresh_ytdlp_status()
+        self._refresh_deno_status()
+        self._refresh_git_status()
 
     def reload_from_prefs(self):
         """从主窗口内存偏好刷新控件（软件信息/界面缩放/保存与Cookie 在系统总览上半）。"""
@@ -1093,25 +1447,76 @@ class PageAbout(QWidget):
             obj_name, title, intro, prefix, on_check, on_install
         )
 
-    def _build_components_card(self) -> QFrame:
-        """四个组件并入同一「模型与组件」区域。"""
-        card = make_card("CardAboutComponents")
+    def _build_area_card(self, obj_name: str, title: str, builders, sep_name: str) -> QFrame:
+        card = make_card(obj_name)
         card.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         box = QVBoxLayout(card)
         box.setContentsMargins(CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
-        box.setSpacing(4)  # 分类间有 1px 线，间距收一点
+        box.setSpacing(4)
         box.setAlignment(Qt.AlignTop)
-        self._add_title(card, box, "模型与组件")
-        for i, builder in enumerate((
-            self._build_ocr_card,
-            self._build_record_card,
-            self._build_voice_card,
-            self._build_clone_card,
-        )):
+        self._add_title(card, box, title)
+        for i, builder in enumerate(builders):
             if i:
-                self._add_category_sep(box, "AboutCompSep")
+                self._add_category_sep(box, sep_name)
             box.addWidget(builder())
         return card
+
+    def _build_models_card(self) -> QFrame:
+        """model/ 里每个目录一行。只看文件在不在，运行库在「组件」。"""
+        builders = []
+        for key, title, folder in _MODEL_ROWS:
+            builders.append(lambda k=key, t=title, f=folder: self._build_comp_block(
+                f"CardAboutModel_{k}", t, f, f"mdl_{k}",
+                lambda _c=False, kk=k: self._on_model_check(kk),
+                lambda _c=False, kk=k: self._on_model_install(kk),
+            ))
+        return self._build_area_card("CardAboutModels", "模型", builders, "AboutModelSep")
+
+    def _refresh_model_rows(self):
+        for key, _title, _folder in _MODEL_ROWS:
+            lbl = getattr(self, f"lbl_mdl_{key}_status", None)
+            if lbl is None:
+                continue
+            try:
+                ok, status, _detail = _model_state(key)
+                self._set_comp_status(lbl, bool(ok), status)
+            except Exception as e:
+                self._set_comp_status(lbl, False, f"状态检测失败：{e}")
+
+    def _on_model_check(self, key: str):
+        title = dict((k, t) for k, t, _f in _MODEL_ROWS).get(key, "模型")
+        try:
+            ok, _status, detail = _model_state(key)
+        except Exception as e:
+            self._refresh_model_rows()
+            message_box_warn(self, title, str(e))
+            return
+        self._refresh_model_rows()
+        if ok:
+            message_box_info(self, title, detail or "已就位。")
+        else:
+            message_box_warn(self, title, (detail or "未放入。") + "\n\n请点「安装教程」。")
+
+    def _on_model_install(self, key: str):
+        title, blocks = _model_guide(key)
+        self._show_install_guide(title, blocks)
+
+    def _build_components_card(self) -> QFrame:
+        """运行库和系统工具。权重与 model/ 里的目录在「模型」。"""
+        return self._build_area_card(
+            "CardAboutComponents", "组件",
+            (
+                self._build_ocr_card,
+                self._build_record_card,
+                self._build_voice_card,
+                self._build_clone_card,
+                self._build_matting_runtime_card,
+                self._build_ytdlp_card,
+                self._build_deno_card,
+                self._build_git_card,
+            ),
+            "AboutCompSep",
+        )
 
     def _set_comp_btns(self, prefix: str, enabled: bool):
         """enabled=False 表示检测中；True 结束忙碌。可用态仍保持冻结。"""
@@ -1124,7 +1529,7 @@ class PageAbout(QWidget):
     # ── 卡片：截图 OCR ───────────────────────────────────────
     def _build_ocr_card(self) -> QFrame:
         return self._build_comp_card(
-            "CardAboutOcr", "截图 OCR", "PaddleOCR-VL-1.6 识字",
+            "CardAboutOcr", "截图 OCR", "运行库 paddleocr",
             "ocr", self._on_ocr_check, self._on_ocr_install,
         )
 
@@ -1136,17 +1541,17 @@ class PageAbout(QWidget):
         if lbl is None:
             return
         try:
-            from utils.ocr_util import local_ocr_status
-            st = local_ocr_status()
-            probe = st.get("probe_ok")
+            from utils.ocr_util import has_paddleocr_runtime, local_ocr_status
+            if not has_paddleocr_runtime():
+                self._set_comp_status(lbl, False, "未安装")
+                return
+            probe = local_ocr_status().get("probe_ok")
             if probe is True:
                 self._set_comp_status(lbl, True, "可用")
             elif probe is False:
                 self._set_comp_status(lbl, False, "不可用")
-            elif st.get("installed"):
-                self._set_comp_status(lbl, True, "文件就绪")
             else:
-                self._set_comp_status(lbl, False, st.get("label") or "未就绪")
+                self._set_comp_status(lbl, True, "已安装")
         except Exception as e:
             self._set_comp_status(lbl, False, f"状态检测失败：{e}")
 
@@ -1166,6 +1571,24 @@ class PageAbout(QWidget):
                         "ok": False, "label": "检测异常",
                         "detail": str(ex), "probe_msg": str(ex),
                     })
+
+        try:
+            from utils.ocr_util import has_paddleocr_runtime, has_vl_weights
+            if not has_paddleocr_runtime():
+                self._refresh_ocr_status()
+                self._set_ocr_btns(True)
+                message_box_warn(self, "截图 OCR", "运行库还没装。\n\n请点「安装教程」。")
+                return
+            if not has_vl_weights():
+                self._refresh_ocr_status()
+                self._set_ocr_btns(True)
+                message_box_warn(
+                    self, "截图 OCR",
+                    "运行库已安装。\n\n权重在上面「模型」里的 PaddleOCR-VL-1.6，还没就位。",
+                )
+                return
+        except Exception:
+            pass
 
         w = _ProbeWorker(self)
 
@@ -1190,9 +1613,10 @@ class PageAbout(QWidget):
         from utils.ocr_util import find_vl_model_dir
         model = find_vl_model_dir()
         self._show_install_guide("截图 OCR · 安装教程", [
-            "截图 OCR 使用本地 PaddleOCR-VL-1.6。请先完全退出本程序，再在命令行执行下列命令（运行中会锁住文件）。",
-            f"1) 权重（约 1.9GB，已放入则跳过）：\n{model}",
-            "2) 运行库。有 NVIDIA 显卡时先装 GPU 版 PaddlePaddle：",
+            "这里只装识字运行库。权重 PaddleOCR-VL-1.6 在上面「模型」里，两边都有才能识字。",
+            "请先完全退出本程序，再执行下列命令（运行中会锁住文件）。",
+            f"权重目录（交给「模型」区检查）：\n{model}",
+            "有 NVIDIA 显卡时先装 GPU 版 PaddlePaddle：",
             ("cmd", _guide_pip(
                 "install paddlepaddle-gpu==3.2.1 "
                 "-i https://www.paddlepaddle.org.cn/packages/stable/cu126/"
@@ -1248,7 +1672,7 @@ class PageAbout(QWidget):
     # ── 卡片：语音组件 ────
     def _build_voice_card(self) -> QFrame:
         return self._build_comp_card(
-            "CardAboutVoice", "语音组件", "录音转文字",
+            "CardAboutVoice", "语音组件", "运行库 faster-whisper",
             "voice", self._on_voice_check, self._on_voice_install,
         )
 
@@ -1292,15 +1716,16 @@ class PageAbout(QWidget):
 
     def _on_voice_install(self):
         self._show_install_guide("语音组件 · 安装教程", [
-            "录音后转成文字，需要 sounddevice、numpy、faster-whisper。请先完全退出本程序，再执行：",
+            "这里只装录音和转写运行库。三个 faster-whisper 模型在上面「模型」里，放好才能离线转写。",
+            "请先完全退出本程序，再执行：",
             ("cmd", _guide_pip("install sounddevice numpy faster-whisper")),
-            "装好后重新打开本程序，到本页点「检测」。首次使用可能联网下载 Whisper 模型。",
+            "装好后重新打开本程序，回到这里点「检测」。",
         ])
 
     # ── 卡片：语音克隆（CosyVoice）──────────────────────────
     def _build_clone_card(self) -> QFrame:
         return self._build_comp_card(
-            "CardAboutClone", "语音克隆", "CosyVoice3 克隆音色",
+            "CardAboutClone", "语音克隆", "运行库 PyTorch",
             "clone", self._on_clone_check, self._on_clone_install,
         )
 
@@ -1309,15 +1734,14 @@ class PageAbout(QWidget):
         if lbl is None:
             return
         try:
-            from utils.cosyvoice_clone import weights_status, status_summary
-            st = weights_status()
-            ok, label, _detail = status_summary(st, None)
-            if st.get("has_weights") and st.get("has_source") and st.get("torch_pkg"):
-                self._set_comp_status(lbl, True, "文件就绪")
-            elif st.get("has_weights"):
-                self._set_comp_status(lbl, False, label)
+            torch_ok = _pkg_spec("torch") and _pkg_spec("torchaudio")
+            deps_ok = _pkg_spec("hyperpyyaml")
+            if torch_ok and deps_ok:
+                self._set_comp_status(lbl, True, "已安装")
+            elif not torch_ok:
+                self._set_comp_status(lbl, False, "未安装")
             else:
-                self._set_comp_status(lbl, False, "未放入模型")
+                self._set_comp_status(lbl, False, "缺依赖")
         except Exception as e:
             self._set_comp_status(lbl, False, f"状态检测失败：{e}")
 
@@ -1331,22 +1755,29 @@ class PageAbout(QWidget):
             pass
         try:
             from utils.cosyvoice_clone import (
-                weights_status, status_summary, ProbeWorker, find_cosyvoice_home,
+                weights_status, ProbeWorker, find_cosyvoice_home,
             )
             st = weights_status()
-            ok, label, detail = status_summary(st, None)
-            if not st.get("has_weights") or not st.get("has_source"):
-                self._refresh_clone_status()
-                message_box_warn(
-                    self, "语音克隆",
-                    f"{label}\n\n{detail}\n\n点「安装教程」查看步骤。",
-                )
-                return
             if not st.get("torch_pkg"):
                 self._refresh_clone_status()
                 message_box_warn(
                     self, "语音克隆",
                     "未安装 PyTorch。\n\n点「安装教程」查看步骤。",
+                )
+                return
+            if not _pkg_spec("hyperpyyaml"):
+                self._refresh_clone_status()
+                message_box_warn(
+                    self, "语音克隆",
+                    "还缺 CosyVoice 的依赖包。\n\n点「安装教程」查看步骤。",
+                )
+                return
+            if not st.get("has_weights") or not st.get("has_source"):
+                self._refresh_clone_status()
+                message_box_warn(
+                    self, "语音克隆",
+                    "运行库已安装。\n\n"
+                    "权重 Fun-CosyVoice3-0.5B 和源码 CosyVoice 在上面「模型」里，还没就位。",
                 )
                 return
 
@@ -1391,7 +1822,6 @@ class PageAbout(QWidget):
                 self._set_comp_btns("clone", True)
 
     def _on_clone_install(self):
-        from utils.cosyvoice_clone import clone_cmd
         try:
             from utils.app_paths import model_dir
             dest = os.path.join(model_dir(), "CosyVoice")
@@ -1400,19 +1830,175 @@ class PageAbout(QWidget):
             dest = r"model\CosyVoice"
             weights = r"model\Fun-CosyVoice3-0.5B"
         self._show_install_guide("语音克隆 · 安装教程", [
-            "两套东西不要混：权重是模型文件（约 9GB），运行库是 GitHub 源码（通常几十 MB）。不要把 Fun-CosyVoice3-0.5B 改名为 CosyVoice。",
-            f"1) 权重（已放好则跳过）：\n{weights}",
-            f"2) 运行库目录：\n{dest}",
-            "还缺运行库时执行：",
-            ("cmd", clone_cmd()),
-            "再装 PyTorch（按本机 CUDA 改 cu124）：",
+            "这里只装 PyTorch 和 CosyVoice 依赖包。权重和源码在上面「模型」里，不要混在一起。",
+            f"权重目录：\n{weights}",
+            f"源码目录：\n{dest}",
+            "先装 PyTorch（按本机 CUDA 改 cu124）：",
             ("cmd", _guide_pip(
                 "install torch torchaudio "
                 "--index-url https://download.pytorch.org/whl/cu124"
             )),
-            "其余依赖：",
+            "源码已经在 model/CosyVoice 时，再装它的依赖：",
             ("cmd", _guide_pip(f'install -r "{os.path.join(dest, "requirements.txt")}"')),
-            "装好后回到本页点「检测」。也可设置 COSYVOICE_HOME 指向源码目录。",
+            "没有源码时，先到「模型」里的 CosyVoice 按教程克隆，再回来装依赖。",
+            "装好后回到这里点「检测」。",
+        ])
+
+    # ── 卡片：抠图运行库 ─────────────────────────────────────
+    def _build_matting_runtime_card(self) -> QFrame:
+        return self._build_comp_card(
+            "CardAboutMattingRt", "抠图运行库", "onnxruntime",
+            "matting", self._on_matting_runtime_check, self._on_matting_runtime_install,
+        )
+
+    def _refresh_matting_runtime_status(self):
+        lbl = getattr(self, "lbl_matting_status", None)
+        if lbl is None:
+            return
+        try:
+            if _pkg_spec("onnxruntime") and _pkg_spec("PIL"):
+                self._set_comp_status(lbl, True, "可用")
+            elif not _pkg_spec("onnxruntime"):
+                self._set_comp_status(lbl, False, "未安装")
+            else:
+                self._set_comp_status(lbl, False, "缺 Pillow")
+        except Exception as e:
+            self._set_comp_status(lbl, False, f"状态检测失败：{e}")
+
+    def _on_matting_runtime_check(self):
+        self._refresh_matting_runtime_status()
+        ort = _pkg_spec("onnxruntime")
+        pil = _pkg_spec("PIL")
+        if ort and pil:
+            message_box_info(self, "抠图运行库", "可用。模型文件在「模型」里的 BiRefNet-general。")
+        elif not ort:
+            message_box_warn(self, "抠图运行库", "未安装 onnxruntime。\n\n请点「安装教程」。")
+        else:
+            message_box_warn(self, "抠图运行库", "还缺 Pillow。\n\n请点「安装教程」。")
+
+    def _on_matting_runtime_install(self):
+        self._show_install_guide("抠图运行库 · 安装教程", [
+            "图片抠图的模型是 BiRefNet-general，在上面「模型」里。这里装的是跑它的运行库。",
+            ("cmd", _guide_pip("install onnxruntime Pillow")),
+            "装好后重新打开本程序，回到这里点「检测」。",
+        ])
+
+    # ── 卡片：视频下载（yt-dlp）──────────────────────────────
+    def _build_ytdlp_card(self) -> QFrame:
+        return self._build_comp_card(
+            "CardAboutYtdlp", "视频下载", "yt-dlp",
+            "ytdlp", self._on_ytdlp_check, self._on_ytdlp_install,
+        )
+
+    def _refresh_ytdlp_status(self):
+        lbl = getattr(self, "lbl_ytdlp_status", None)
+        if lbl is None:
+            return
+        try:
+            if _pkg_spec("yt_dlp") and _pkg_spec("yt_dlp_ejs"):
+                self._set_comp_status(lbl, True, "可用")
+            elif _pkg_spec("yt_dlp"):
+                self._set_comp_status(lbl, False, "缺 ejs")
+            else:
+                self._set_comp_status(lbl, False, "未安装")
+        except Exception as e:
+            self._set_comp_status(lbl, False, f"状态检测失败：{e}")
+
+    def _on_ytdlp_check(self):
+        self._refresh_ytdlp_status()
+        has = _pkg_spec("yt_dlp")
+        ejs = _pkg_spec("yt_dlp_ejs")
+        if has and ejs:
+            message_box_info(self, "视频下载", "可用。B站、YouTube 都能走 yt-dlp。")
+        elif has:
+            message_box_warn(
+                self, "视频下载",
+                "yt-dlp 已安装。YouTube 还缺 yt-dlp-ejs，解签名会失败。\n\n请点「安装教程」。",
+            )
+        else:
+            message_box_warn(self, "视频下载", "未安装 yt-dlp。\n\n请点「安装教程」。")
+
+    def _on_ytdlp_install(self):
+        self._show_install_guide("视频下载 · 安装教程", [
+            "B站和 YouTube 下载都用 yt-dlp。YouTube 还要 yt-dlp-ejs，以及下面的 Deno（或 Node.js）。",
+            "合并高画质音视频还要用录屏那一行的 ffmpeg。",
+            ("cmd", _guide_pip("install -U yt-dlp yt-dlp-ejs")),
+            "装好后重新打开本程序，回到这里点「检测」。",
+        ])
+
+    # ── 卡片：Deno（YouTube）─────────────────────────────────
+    def _build_deno_card(self) -> QFrame:
+        return self._build_comp_card(
+            "CardAboutDeno", "YouTube 签名", "Deno 或 Node.js",
+            "deno", self._on_deno_check, self._on_deno_install,
+        )
+
+    def _refresh_deno_status(self):
+        lbl = getattr(self, "lbl_deno_status", None)
+        if lbl is None:
+            return
+        try:
+            if _find_deno() or _find_node():
+                self._set_comp_status(lbl, True, "可用")
+            else:
+                self._set_comp_status(lbl, False, "未安装")
+        except Exception as e:
+            self._set_comp_status(lbl, False, f"状态检测失败：{e}")
+
+    def _on_deno_check(self):
+        self._refresh_deno_status()
+        deno = _find_deno()
+        node = _find_node()
+        if deno:
+            message_box_info(self, "YouTube 签名", f"可用。\n\nDeno：{deno}")
+        elif node:
+            message_box_info(self, "YouTube 签名", f"可用。\n\nNode.js：{node}")
+        else:
+            message_box_warn(self, "YouTube 签名", "没有 Deno，也没有 Node.js。\n\n请点「安装教程」。")
+
+    def _on_deno_install(self):
+        self._show_install_guide("YouTube 签名 · 安装教程", [
+            "YouTube 现在要 JS 运行时才能解签名。装 Deno 或 Node.js 都可以，优先 Deno。",
+            ("cmd", "winget install DenoLand.Deno"),
+            "或安装 Node.js：https://nodejs.org",
+            "装好后重新打开本程序，回到这里点「检测」。",
+        ])
+
+    # ── 卡片：Git ────────────────────────────────────────────
+    def _build_git_card(self) -> QFrame:
+        return self._build_comp_card(
+            "CardAboutGit", "源码克隆", "Git",
+            "git", self._on_git_check, self._on_git_install,
+        )
+
+    def _refresh_git_status(self):
+        lbl = getattr(self, "lbl_git_status", None)
+        if lbl is None:
+            return
+        try:
+            if _find_git():
+                self._set_comp_status(lbl, True, "可用")
+            else:
+                self._set_comp_status(lbl, False, "未安装")
+        except Exception as e:
+            self._set_comp_status(lbl, False, f"状态检测失败：{e}")
+
+    def _on_git_check(self):
+        self._refresh_git_status()
+        path = _find_git()
+        if path:
+            message_box_info(self, "源码克隆", f"可用。\n\n{path}")
+        else:
+            message_box_warn(
+                self, "源码克隆",
+                "未安装 Git。克隆 CosyVoice / AuK 源码时才需要。\n\n请点「安装教程」。",
+            )
+
+    def _on_git_install(self):
+        self._show_install_guide("源码克隆 · 安装教程", [
+            "只有要自己克隆「模型」里的 CosyVoice、AuK-src 时才需要 Git。权重已经放好就不用装。",
+            ("cmd", "winget install Git.Git"),
+            "装好后重新打开本程序，回到这里点「检测」。",
         ])
 
     # ── 卡片：预下载域名白名单 ───────────────────────────────
@@ -1635,8 +2221,11 @@ class PageAbout(QWidget):
 
     # ── 卡片：热键占用 ──────────────────────────────────────
     _HK_STATE_TEXT = {
+        # ok=本进程 RegisterHotKey/挂钩成功
+        # busy=功能开着但本进程没挂上（常被其它程序或残留实例抢走）
+        # off=功能关着，故意不注册
         "ok": "就绪",
-        "busy": "占用",
+        "busy": "未挂上",
         "off": "未启用",
         "plugin": "扩展",
     }
@@ -1650,7 +2239,7 @@ class PageAbout(QWidget):
         box.setSpacing(4)
         box.setAlignment(Qt.AlignTop)
 
-        # 标题左｜状态 + 清除占用 右对齐（同行）
+        # 摘要占满标题和按钮之间的空档并右对齐，字变短时按钮仍钉在最右
         title_row = QHBoxLayout()
         title_row.setContentsMargins(0, 0, 0, 0)
         title_row.setSpacing(8)
@@ -1659,11 +2248,13 @@ class PageAbout(QWidget):
         _restyle_about_title(title_lbl)
         self._theme_titles.append(title_lbl)
         title_row.addWidget(title_lbl, 0, Qt.AlignVCenter)
-        title_row.addStretch(1)
         self.lbl_hk_summary = QLabel("")
         self.lbl_hk_summary.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        title_row.addWidget(self.lbl_hk_summary, 0, Qt.AlignVCenter)
-        self.btn_hk_clear = apply_live_button(QPushButton("清除占用"))
+        self.lbl_hk_summary.setMinimumWidth(0)
+        self.lbl_hk_summary.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        title_row.addWidget(self.lbl_hk_summary, 1, Qt.AlignVCenter)
+        self.btn_hk_clear = apply_live_button(QPushButton("重新挂上"))
+        self.btn_hk_clear.setToolTip("结束残留桌面助手进程，并按当前开关重注册全部热键")
         self.btn_hk_clear.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.btn_hk_clear.setEnabled(False)
         self.btn_hk_clear.clicked.connect(self._on_clear_hotkeys)
@@ -1678,6 +2269,7 @@ class PageAbout(QWidget):
         self._hk_list_lay.setSpacing(0)
         self._hk_list_lay.setAlignment(Qt.AlignTop)
         box.addWidget(self._hk_list_host, 0, Qt.AlignTop)
+        self._hk_sig = None
         return card
 
     def _hk_state_qss(self, state: str) -> str:
@@ -1787,25 +2379,108 @@ class PageAbout(QWidget):
                 col.addWidget(self._hk_make_row(spec, name_qss, key_qss))
         return col_w
 
-    def _refresh_hotkey_card(self):
-        if getattr(self, "_hk_list_lay", None) is None:
-            return
-        self._hk_clear_list()
+    def _hk_theme_stamp(self):
+        try:
+            return (
+                bool(theme.is_dark),
+                tk("text"), tk("text_mut"), tk("text_faint"),
+                tk("accent"), tk("ok"), tk("err"),
+            )
+        except Exception:
+            return None
 
-        rows = []
+    def _hk_collect_rows(self):
         mw = getattr(self, "_mw", None)
-        if mw is not None and hasattr(mw, "collect_hotkey_inventory"):
-            try:
-                rows = list(mw.collect_hotkey_inventory() or ())
-            except Exception:
-                log.exception("读取热键清单失败")
+        if mw is None or not hasattr(mw, "collect_hotkey_inventory"):
+            return []
+        try:
+            return list(mw.collect_hotkey_inventory() or ())
+        except Exception:
+            log.exception("读取热键清单失败")
+            return []
 
-        n_ok = n_busy = n_off = 0
-        grouped = []
-        last_group = None
-        bucket = []
+    def _hk_signature(self, rows):
+        items = []
         for spec in rows:
-            group = str(spec.get("group") or "")
+            items.append((
+                str(spec.get("group") or ""),
+                str(spec.get("key") or ""),
+                str(spec.get("name") or ""),
+                str(spec.get("state") or "off"),
+                str(spec.get("toggle") or ""),
+                bool(spec.get("checked")),
+            ))
+        return (self._hk_theme_stamp(), tuple(items))
+
+    def _hk_overview(self):
+        w = getattr(self, "_hk_list_host", None)
+        while w is not None:
+            if callable(getattr(w, "relayout_columns", None)):
+                return w
+            w = w.parentWidget()
+        return None
+
+    def _hk_freeze_target(self):
+        return self._hk_overview() or self
+
+    def _hk_scroll_bar(self):
+        ov = self._hk_overview()
+        if ov is None:
+            return None
+        scroll = ov.findChild(QScrollArea, "OverviewScroll")
+        if scroll is None:
+            return None
+        try:
+            return scroll.verticalScrollBar()
+        except Exception:
+            return None
+
+    def _hk_column_clipped(self) -> bool:
+        ov = self._hk_overview()
+        row = getattr(ov, "_cols_row", None) if ov is not None else None
+        if row is None or row._left is None or row.width() <= 0:
+            return False
+        try:
+            half = row._half(row.width())
+            lh = row._col_h(row._left, half)
+        except Exception:
+            return False
+        return int(row._left.height()) + 1 < int(lh)
+
+    def _hk_apply_summary(self, n_ok: int, n_busy: int, n_off: int, has_rows: bool):
+        parts = [f"{n_ok} 就绪"]
+        if n_busy:
+            parts.append(f"{n_busy} 未挂上")
+        if n_off:
+            parts.append(f"{n_off} 未启用")
+        summary = " · ".join(parts) if has_rows else ""
+        color = tk("err") if n_busy else tk("text_mut")
+        lbl = getattr(self, "lbl_hk_summary", None)
+        if lbl is None:
+            return
+        if lbl.text() != summary:
+            lbl.setText(summary)
+        tip = (
+            "就绪=本程序已成功注册该热键；"
+            "未挂上=功能已开但注册失败（常被其它软件或旧版桌面助手实例占用）；"
+            "未启用=对应功能开关关闭，故意不注册。\n"
+            "「重新挂上」会结束残留的本程序进程并重试注册。"
+        )
+        if lbl.toolTip() != tip:
+            lbl.setToolTip(tip)
+        qss = _lbl_qss(color, "body")
+        if lbl.styleSheet() != qss:
+            lbl.setStyleSheet(qss)
+
+    def _refresh_hotkey_card(self):
+        lay = getattr(self, "_hk_list_lay", None)
+        host = getattr(self, "_hk_list_host", None)
+        if lay is None or host is None:
+            return
+        rows = self._hk_collect_rows()
+        sig = self._hk_signature(rows)
+        n_ok = n_busy = n_off = 0
+        for spec in rows:
             state = str(spec.get("state") or "off")
             if state == "ok":
                 n_ok += 1
@@ -1813,6 +2488,19 @@ class PageAbout(QWidget):
                 n_busy += 1
             elif state == "off":
                 n_off += 1
+        self._hk_apply_summary(n_ok, n_busy, n_off, bool(rows))
+        self._sync_hk_clear_btn(n_busy)
+        # 签名相同就别拆清单。清空再重建会让列高先塌再撑开。
+        if sig == getattr(self, "_hk_sig", None) and lay.count() > 0:
+            if int(host.sizeHint().height()) > int(host.height()) + 1:
+                self._hk_relayout()
+            return
+
+        grouped = []
+        last_group = None
+        bucket = []
+        for spec in rows:
+            group = str(spec.get("group") or "")
             if group != last_group:
                 if last_group is not None:
                     grouped.append((last_group, bucket))
@@ -1826,39 +2514,66 @@ class PageAbout(QWidget):
         key_qss = _lbl_qss(tk("text_mut"), "body")
         grp_qss = _lbl_qss(tk("accent"), "group", weight=700)
 
-        if not grouped:
-            empty = QLabel("热键页加载后显示清单")
-            empty.setStyleSheet(_lbl_qss(tk("text_faint"), "body"))
-            empty.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            empty.setMinimumHeight(self._hk_text_h(empty) + 4)
-            self._hk_list_lay.addWidget(empty, 0, Qt.AlignTop)
-        else:
-            self._hk_list_lay.addWidget(
-                self._hk_make_col(grouped, name_qss, key_qss, grp_qss), 0, Qt.AlignTop
-            )
-
-        parts = [f"{n_ok} 就绪"]
-        if n_busy:
-            parts.append(f"{n_busy} 占用")
-        if n_off:
-            parts.append(f"{n_off} 未启用")
-        summary = " · ".join(parts) if rows else ""
-        color = tk("err") if n_busy else tk("text_mut")
-        if getattr(self, "lbl_hk_summary", None) is not None:
-            self.lbl_hk_summary.setText(summary)
-            self.lbl_hk_summary.setStyleSheet(_lbl_qss(color, "body"))
-        self._sync_hk_clear_btn(n_busy)
-        self._hk_relayout()
-
-    def _hk_relayout(self):
-        """清单高度变了：通知总览两列按新 sizeHint 重切，避免仍按空卡高度裁字。"""
-        host = getattr(self, "_hk_list_host", None)
-        w = host
-        while w is not None:
+        target = self._hk_freeze_target()
+        was_enabled = True
+        try:
+            was_enabled = bool(target.updatesEnabled())
+        except Exception:
+            was_enabled = True
+        bar = self._hk_scroll_bar()
+        saved_scroll = None
+        if bar is not None:
             try:
-                w.updateGeometry()
+                saved_scroll = int(bar.value())
+            except Exception:
+                saved_scroll = None
+        if was_enabled:
+            try:
+                target.setUpdatesEnabled(False)
+            except Exception:
+                was_enabled = False
+        try:
+            before_h = int(host.sizeHint().height())
+            self._hk_clear_list()
+            if not grouped:
+                empty = QLabel("热键页加载后显示清单")
+                empty.setStyleSheet(_lbl_qss(tk("text_faint"), "body"))
+                empty.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                empty.setMinimumHeight(self._hk_text_h(empty) + 4)
+                lay.addWidget(empty, 0, Qt.AlignTop)
+            else:
+                lay.addWidget(
+                    self._hk_make_col(grouped, name_qss, key_qss, grp_qss), 0, Qt.AlignTop
+                )
+            try:
+                lay.activate()
             except Exception:
                 pass
+            self._hk_sig = sig
+            after_h = int(host.sizeHint().height())
+            if (
+                before_h != after_h
+                or after_h > int(host.height()) + 1
+                or self._hk_column_clipped()
+            ):
+                self._hk_relayout()
+                if bar is not None and saved_scroll is not None:
+                    try:
+                        if int(bar.value()) != saved_scroll:
+                            bar.setValue(saved_scroll)
+                    except Exception:
+                        pass
+        finally:
+            if was_enabled:
+                try:
+                    target.setUpdatesEnabled(True)
+                except Exception:
+                    pass
+
+    def _hk_relayout(self):
+        """清单高度变了才重切总览两列。不再对每个祖先 updateGeometry，那会再排一次。"""
+        w = getattr(self, "_hk_list_host", None)
+        while w is not None:
             fn = getattr(w, "relayout_columns", None)
             if callable(fn):
                 try:
@@ -1867,7 +2582,7 @@ class PageAbout(QWidget):
                     pass
                 return
             w = w.parentWidget()
-        # 未嵌入总览时，至少让本卡自己撑开
+        host = getattr(self, "_hk_list_host", None)
         if host is not None:
             try:
                 card = host.parentWidget()
@@ -1877,16 +2592,19 @@ class PageAbout(QWidget):
                 pass
 
     def _sync_hk_clear_btn(self, n_busy: int = 0):
-        """有占用时可点（蓝色）；无占用则灰化冻结。"""
+        """有未挂上项时可点；全部就绪/未启用则灰化。"""
         btn = getattr(self, "btn_hk_clear", None)
         if btn is None:
             return
         busy = int(n_busy or 0) > 0
+        changed = btn.isEnabled() != busy
         btn.setEnabled(busy)
         try:
             btn.setCursor(Qt.PointingHandCursor if busy else Qt.ForbiddenCursor)
         except Exception:
             pass
+        if not changed:
+            return
         try:
             st = btn.style()
             if st is not None:
@@ -1895,7 +2613,63 @@ class PageAbout(QWidget):
         except Exception:
             pass
 
+    def _hk_pages_ready(self) -> bool:
+        """四个热键页是否都已创建（延后加载完毕）。"""
+        mw = getattr(self, "_mw", None)
+        if mw is None:
+            return False
+        for attr in ("page_fast", "page_shot", "page_region_rec", "page_paste"):
+            if getattr(mw, attr, None) is None:
+                return False
+        return True
+
+    def _schedule_soft_rehang_once(self, reason: str = "ready"):
+        """启动后只排一次轻量重挂（不杀进程、不 sleep），且避开首帧。"""
+        if getattr(self, "_hk_soft_rehang_scheduled", False):
+            return
+        self._hk_soft_rehang_scheduled = True
+        # 等首屏与延后建页完成后再跑，避免堵启动
+        QTimer.singleShot(600, lambda: self._soft_rehang_hotkeys(reason=reason))
+
+    def _soft_rehang_hotkeys(self, reason: str = "ready"):
+        """自动路径：仅 rebind，不 terminate/wait 残留进程。"""
+        import time
+
+        mw = getattr(self, "_mw", None)
+        if mw is None:
+            return
+        if not self._hk_pages_ready():
+            # 页未齐：再等一轮（最多额外一次）
+            if not getattr(self, "_hk_soft_rehang_retry", False):
+                self._hk_soft_rehang_retry = True
+                QTimer.singleShot(800, lambda: self._soft_rehang_hotkeys(reason=reason + "+retry"))
+            return
+        now = time.monotonic()
+        last = float(getattr(self, "_hk_auto_clear_at", 0.0) or 0.0)
+        if now - last < 5.0:
+            return
+        self._hk_auto_clear_at = now
+        fn = getattr(mw, "rehang_hotkeys_soft", None)
+        try:
+            if callable(fn):
+                result = fn() or {}
+            else:
+                result = mw.force_release_hotkeys(kill_siblings=False) or {}
+            log.info("热键轻量重挂 reason=%s rebound=%s", reason, (result or {}).get("rebound"))
+        except Exception:
+            log.exception("热键轻量重挂失败")
+        self._refresh_hotkey_card()
+        QTimer.singleShot(800, self._refresh_hotkey_card)
+
     def _on_clear_hotkeys(self):
+        # 按钮：完整清残留 + 重挂，但丢到下一事件循环，先让按钮灰掉、界面能画
+        btn = getattr(self, "btn_hk_clear", None)
+        if btn is not None:
+            btn.setEnabled(False)
+        QTimer.singleShot(0, lambda: self._clear_hotkey_occupancy(reason="manual"))
+
+    def _clear_hotkey_occupancy(self, reason: str = "manual"):
+        """手动「重新挂上」：可杀残留进程；仍尽量少堵 UI（无长 sleep）。"""
         mw = getattr(self, "_mw", None)
         btn = getattr(self, "btn_hk_clear", None)
         if mw is None or not hasattr(mw, "force_release_hotkeys"):
@@ -1903,16 +2677,18 @@ class PageAbout(QWidget):
         if btn is not None:
             btn.setEnabled(False)
         try:
-            QApplication.processEvents()
+            result = mw.force_release_hotkeys(kill_siblings=True) or {}
+            log.info(
+                "热键重新挂上 reason=%s killed=%s rebound=%s",
+                reason,
+                (result or {}).get("killed"),
+                (result or {}).get("rebound"),
+            )
         except Exception:
-            pass
-        try:
-            mw.force_release_hotkeys()
-        except Exception:
-            log.exception("清除热键占用失败")
+            log.exception("重新挂上热键失败")
         self._refresh_hotkey_card()
         QTimer.singleShot(600, self._refresh_hotkey_card)
-        QTimer.singleShot(1800, self._refresh_hotkey_card)
+        QTimer.singleShot(1600, self._refresh_hotkey_card)
 
     # ── 持久化 ───────────────────────────────────────────────
     def _schedule_persist(self, *_args):

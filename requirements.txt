@@ -1,7 +1,7 @@
-# Desktop Assistant v9.17 - core app dependencies
+# Desktop Assistant v9.18 - core app dependencies
 # Python 3.10 / 3.11 only, Windows 10+
 # Install: pip install -r requirements.txt
-# Run:     python mainv917.py
+# Run:     python mainv918.py
 #
 # System tools (not pip packages):
 #   winget install Gyan.FFmpeg
@@ -20,6 +20,8 @@ Pillow>=9.0.0
 yt-dlp>=2024.1.0
 yt-dlp-ejs>=0.1.0
 zhconv>=1.4.2
+# pymupdf: PDF text in MarkdownViewer/reader.pyw (`import pymupdf` name needs >=1.24.3)
+pymupdf>=1.24.3
 # numpy < 2: CosyVoice pins onnxruntime 1.18.0, which is built against the NumPy 1.x ABI
 numpy>=1.24,<2
 pywin32>=306; sys_platform == "win32"

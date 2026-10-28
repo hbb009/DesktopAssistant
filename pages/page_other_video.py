@@ -11,7 +11,11 @@ import os
 import subprocess
 import time
 
-from PyQt5.QtCore import QThread, pyqtSignal
+from PyQt5.QtCore import Qt, QThread, QTimer, pyqtSignal
+from PyQt5.QtWidgets import (
+    QDialog, QFileDialog, QHBoxLayout, QLabel, QPushButton, QSizePolicy,
+    QTextEdit, QVBoxLayout, QWidget,
+)
 
 from pages.page_jimeng import (
     PageJimeng,
@@ -38,8 +42,36 @@ from pages.page_douyin import (
     extract_url as extract_douyin_family_url,
     _ffmpeg_extract_audio,
 )
+from styles.style_all import (
+    CARD_LEFT_GAP,
+    CARD_RIGHT_GAP,
+    MEDIUM_BUTTON_H,
+    apply_mini_button,
+    message_box_info,
+    message_box_warn,
+    tk,
+)
 from utils.logger import get_logger
-from utils.cursor_toast import in_batch_download
+from utils.cursor_toast import (
+    in_batch_download, set_batch_progress_note, show_cursor_toast,
+)
+from utils.other_video_records import (
+    PLAT_ORDER,
+    active_names,
+    name_aliases,
+    add_records,
+    classify_label,
+    format_entries,
+    hint_text,
+    load_entries,
+    merge_external,
+    parse_entries,
+    read_external,
+    save_entries,
+    scan_dir,
+)
+from utils.gallery_records import records_path as _gallery_records_path
+from utils.records_dialog_ui import RecordsTotalBar
 from utils.download_watchdog import StalledDownloadError, find_socket
 from utils.xvideos import (
     looks_like_xvideos,
@@ -233,6 +265,7 @@ class OtherDownloadWorker(_JimengDownloadWorker):
 
         wd = self._wd = DownloadWatchdog()
         stall_msg = f"{int(wd.stall_seconds)} 秒无响应，已视为无法下载"
+        self._saved_records = []
         os.makedirs(self._save_dir, exist_ok=True)
         total = len(self._jobs)
         ok_n = 0
@@ -301,9 +334,11 @@ class OtherDownloadWorker(_JimengDownloadWorker):
                             self._emit(f"✗ {label} · {outp}", "err")
                         else:
                             ok_n += 1
+                            self._remember_record(job)
                             self._emit(f"✓ {label} · {os.path.basename(outp)}", "ok")
                     else:
                         ok_n += 1
+                        self._remember_record(job)
                         self._emit(f"✓ {label} · {os.path.basename(final_path)}", "ok")
                 else:
                     self._emit(f"✗ {label} · 空文件", "err")
@@ -323,6 +358,16 @@ class OtherDownloadWorker(_JimengDownloadWorker):
             self.progress.emit(pct)
 
         self.done.emit(self._save_dir, ok_n)
+
+    def _remember_record(self, job):
+        """这一档下成了：记下分类后的正式文件名，供页面写入已下记录。"""
+        rec = job.get("record") if isinstance(job, dict) else None
+        if not isinstance(rec, dict):
+            return
+        name = (rec.get("name") or "").strip()
+        if not name:
+            return
+        self._saved_records.append(dict(rec))
 
     # ── 令牌过期重解析 / 直链 / HLS ─────────────────────────────
     # XVideos 和 Pornhub 的直链都带时效令牌（Pornhub 约 2 小时），
@@ -537,8 +582,39 @@ class OtherDownloadWorker(_JimengDownloadWorker):
         return ts
 
 
+_RECORD_SKIP_YELLOW = "#eab308"
+_RECORD_SKIP_TIP = (
+    "开：按平台、类型、画质查已下记录，命中的那一档跳过\n"
+    "关：不查记录，照常下载；磁盘上的同名文件仍会自动改名"
+)
+_RECORD_PLACEHOLDER = (
+    "# 即梦\n"
+    "[视频 · 原片]\n"
+    "[桌面助手][即梦]作者_标题_原片.mp4\n"
+    "[视频 · 1080p]\n"
+    "[桌面助手][即梦]作者_标题_1080p.mp4\n"
+    "\n"
+    "# LibTV\n"
+    "[成片]\n"
+    "[桌面助手][LibTV]作者_标题_成片.mp4\n"
+    "\n"
+    "# XVideos\n"
+    "[HLS · 1080p]\n"
+    "[桌面助手][XVideos]作者_标题_1080p.mp4\n"
+    "[直链 · MP4 高]\n"
+    "[桌面助手][XVideos]作者_标题_MP4 高.mp4\n"
+    "\n"
+    "# Pornhub\n"
+    "[HLS · 720p]\n"
+    "[桌面助手][Pornhub]作者_标题_720p.mp4\n"
+)
+
+
 class PageOtherVideo(PageJimeng):
-    """其它视频子页：一套 UI，按链接区分即梦 / LibTV / XVideos。"""
+    """其它视频子页：一套 UI，按链接区分即梦 / LibTV / XVideos / Pornhub。
+
+    已下记录和预下载一样分成这四段，段内再按类型和画质分开，只跳过命中的那一档。
+    """
 
     def __init__(self):
         super().__init__()
@@ -553,6 +629,10 @@ class PageOtherVideo(PageJimeng):
             self.lbl_batch_hint.setText("粘贴即梦、LibTV、XVideos 或 Pornhub 链接后按回车开始解析")
         except Exception:
             pass
+        lay = self.layout()
+        if lay is not None:
+            lay.addWidget(self._build_record_bar())
+        self._refresh_record_hint()
 
     def _make_empty_card(self):
         card = super()._make_empty_card()
@@ -683,20 +763,32 @@ class PageOtherVideo(PageJimeng):
         jobs = []
         referer = (self._info or {}).get("referer") or ""
         page_url = (self._info or {}).get("page_url") or ""
+        plat = str((self._info or {}).get("platform") or self._current_platform or "")
         for c in self._cards:
             if not c.is_checked():
                 continue
             it = c.item
+            filename = self._make_filename(it)
+            label = it.label or "视频"
+            tag, kind, qual = classify_label(plat, label)
+            if getattr(it, "extract_audio", False):
+                kind = "音频"
             jobs.append({
-                "label": it.label or "视频",
+                "label": label,
                 "url": it.url,
-                "filename": self._make_filename(it),
+                "filename": filename,
                 "referer": referer,
                 "extract_audio": bool(getattr(it, "extract_audio", False)),
                 "page_url": page_url,
                 # 令牌过期重解析时要按平台走各自的解析器
-                "platform": str((self._info or {}).get("platform")
-                                or self._current_platform or ""),
+                "platform": plat,
+                "record": {
+                    "platform": tag,
+                    "kind": kind,
+                    "quality": qual,
+                    "name": filename,
+                    "suspect": False,
+                },
             })
         if not jobs:
             self._log("请先勾选至少一项", "warn")
@@ -709,7 +801,29 @@ class PageOtherVideo(PageJimeng):
                 self._emit_nav_progress(False)
                 self._report_batch_item_done()
             return
-        self._start_download(jobs)
+        kept, skipped = self._partition_recorded(jobs)
+        if skipped and not kept:
+            self._mark_already_downloaded(skipped)
+            return
+        if skipped:
+            self._log(
+                "记录中已有，跳过 %d 档：%s"
+                % (len(skipped), "、".join(self._record_brief(j) for j in skipped)),
+                "ok",
+            )
+        elif kept and not self._record_skip_enabled():
+            known_names = getattr(self, "_record_known", set())
+            known = [
+                j for j in kept
+                if name_aliases((j.get("record") or {}).get("name") or "") & known_names
+            ]
+            if known:
+                self._log(
+                    "记录中已有 %d 档，防重已关，继续：%s"
+                    % (len(known), "、".join(self._record_brief(j) for j in known)),
+                    "warn",
+                )
+        self._start_download(kept)
 
     def _start_download(self, jobs: list):
         if self._dl_worker and self._dl_worker.isRunning():
@@ -757,3 +871,476 @@ class PageOtherVideo(PageJimeng):
                 w = w.parent()
         except Exception:
             pass
+
+    def _record_skip_widgets(self):
+        out = []
+        for attr in ("sw_record_skip", "sw_record_skip_bar"):
+            w = getattr(self, attr, None)
+            if w is not None:
+                out.append(w)
+        return out
+
+    def _record_skip_enabled(self) -> bool:
+        for w in self._record_skip_widgets():
+            try:
+                return bool(w.isChecked())
+            except Exception:
+                continue
+        return True
+
+    def _set_record_skip(self, on: bool) -> None:
+        on = bool(on)
+        for w in self._record_skip_widgets():
+            try:
+                if bool(w.isChecked()) != on:
+                    w.setChecked(on)
+            except Exception:
+                pass
+        self._refresh_record_hint()
+
+    def _on_record_skip_toggled(self, src=None):
+        if src is not None:
+            try:
+                on = bool(src.isChecked())
+            except Exception:
+                on = self._record_skip_enabled()
+        else:
+            on = self._record_skip_enabled()
+        self._set_record_skip(on)
+        self._log(
+            "已下记录防重：" + ("开（命中的画质跳过）" if on else "关（不查记录，继续下载）"),
+            "info",
+        )
+        self._schedule_prefs_save()
+
+    def _schedule_prefs_save(self):
+        w = self
+        while w is not None:
+            fn = getattr(w, "_schedule_save_user_prefs", None)
+            if callable(fn):
+                try:
+                    fn()
+                except Exception:
+                    pass
+                return
+            w = w.parent()
+
+    def _refresh_record_hint(self, added_names=None):
+        lbl = getattr(self, "lbl_record_hint", None)
+        if lbl is None:
+            return
+        try:
+            text = hint_text(
+                added_names=added_names,
+                skip_on=self._record_skip_enabled(),
+            )
+        except Exception:
+            _log.exception("刷新其它视频已下记录条数失败")
+            return
+        if hasattr(lbl, "setFullText"):
+            lbl.setFullText(text)
+        else:
+            lbl.setText(text)
+        try:
+            lbl.setToolTip(text)
+        except Exception:
+            pass
+
+    def _build_record_bar(self) -> QWidget:
+        bar = QWidget(self)
+        bar.setObjectName("OtherVideoRecordBar")
+        bar.setAttribute(Qt.WA_StyledBackground, True)
+        bar.setStyleSheet("#OtherVideoRecordBar{background:transparent;border:none;}")
+        lay = QHBoxLayout(bar)
+        lay.setContentsMargins(CARD_LEFT_GAP, 2, CARD_RIGHT_GAP, 2)
+        lay.setSpacing(8)
+
+        from pages.page_douyin import _ElideLabel
+        hint = _ElideLabel("已有 0条")
+        hint.setFixedHeight(MEDIUM_BUTTON_H)
+        hint.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        hint.setObjectName("OtherVideoRecordHint")
+        hint.setStyleSheet(
+            "QLabel#OtherVideoRecordHint{font-size:12px;color:#94a3b8;padding:0 4px;"
+            "background:transparent;border:none;}"
+        )
+        self.lbl_record_hint = hint
+        lay.addWidget(hint, 1)
+
+        sw_bar = None
+        try:
+            from ui_main import SideToggleSwitch
+            sw_bar = SideToggleSwitch(on_color=_RECORD_SKIP_YELLOW, parent=bar)
+        except Exception:
+            _log.exception("创建其它视频防重开关失败")
+        if sw_bar is not None:
+            sw_bar.setChecked(True)
+            sw_bar.setToolTip(_RECORD_SKIP_TIP)
+            sw_bar.clicked.connect(lambda: self._on_record_skip_toggled(sw_bar))
+            self.sw_record_skip_bar = sw_bar
+            lay.addWidget(sw_bar, 0, Qt.AlignVCenter)
+        else:
+            self.sw_record_skip_bar = None
+
+        btn = apply_mini_button(QPushButton("已下记录"))
+        btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        btn.setMinimumWidth(max(72, btn.sizeHint().width()))
+        btn.setToolTip("按即梦、LibTV、XVideos、Pornhub 查看和编辑已下载记录")
+        btn.clicked.connect(self._open_records_dialog)
+        self.btn_records = btn
+        lay.addWidget(btn, 0, Qt.AlignVCenter)
+        self._record_bar = bar
+        return bar
+
+    def _record_brief(self, job) -> str:
+        rec = job.get("record") or {}
+        plat = rec.get("platform") or ""
+        kind = rec.get("kind") or ""
+        qual = rec.get("quality") or ""
+        name = rec.get("name") or job.get("filename") or ""
+        head = " · ".join(x for x in (plat, kind, qual) if x)
+        if head and name:
+            return f"{head}（{name}）"
+        return name or head or "这一档"
+
+    def _partition_recorded(self, jobs):
+        """开关开着时，把已在记录里的画质拆出去。返回 (要下的, 跳过的)。"""
+        try:
+            known = active_names()
+        except Exception:
+            _log.exception("读取其它视频已下记录失败")
+            known = set()
+        self._record_known = known
+        if not self._record_skip_enabled():
+            return list(jobs), []
+        kept, skipped = [], []
+        for job in jobs:
+            name = ((job.get("record") or {}).get("name") or "").strip()
+            if name and name_aliases(name) & known:
+                skipped.append(job)
+            else:
+                kept.append(job)
+        return kept, skipped
+
+    def _mark_already_downloaded(self, skipped):
+        """勾选的每一档都已在记录里：整条按「已下载过」收口。"""
+        briefs = [self._record_brief(j) for j in (skipped or [])]
+        self._log("━" * 36, "info")
+        self._log("📋 已下载记录：%s" % "、".join(briefs), "info")
+        self._log("这些画质已在下载记录中，跳过重复下载", "ok")
+        self._log("━" * 36, "info")
+        self._set_status("已跳过 · 下载记录中已有", "#22c55e")
+        self._last_download_ok = True
+        self._last_batch_note = "已下载过"
+        self._auto_dl = False
+        if not set_batch_progress_note("已下载过"):
+            show_cursor_toast("下载", "已下载过", accent="ok")
+        self._reset_btns()
+        self._report_batch_item_done()
+
+    def _commit_saved_records(self) -> list:
+        worker = getattr(self, "_dl_worker", None)
+        recs = list(getattr(worker, "_saved_records", []) or []) if worker is not None else []
+        if worker is not None:
+            worker._saved_records = []
+        if not recs:
+            return []
+        try:
+            added = add_records(recs)
+        except Exception:
+            _log.exception("写入其它视频已下记录失败")
+            return []
+        if added:
+            self._log("防重记录已更新 %d 条" % len(added), "ok")
+            self._refresh_record_hint(added)
+        return added
+
+    def _on_dl_done(self, save_dir, success_count=0):
+        self._commit_saved_records()
+        super()._on_dl_done(save_dir, success_count)
+
+    def _on_dl_cancel(self):
+        self._commit_saved_records()
+        super()._on_dl_cancel()
+
+    def _scan_save_dir(self, folder: str, *, log_result: bool = False) -> list:
+        try:
+            added = scan_dir(folder)
+        except Exception:
+            _log.exception("扫描其它视频保存目录失败")
+            added = []
+        suspects = list(getattr(scan_dir, "last_suspects", []) or [])
+        self._refresh_record_hint(added if added else None)
+        if log_result:
+            if added or suspects:
+                bits = []
+                if added:
+                    bits.append("新增 %d 条" % len(added))
+                if suspects:
+                    bits.append("待核 %d 条" % len(suspects))
+                self._log("已下载：" + "，".join(bits), "ok")
+            else:
+                self._log("已下载：未发现新记录", "ok")
+        return added
+
+    def _open_records_dialog(self):
+        _open_other_video_records_dialog(self)
+
+    def export_settings(self) -> dict:
+        data = super().export_settings()
+        data["check_records"] = self._record_skip_enabled()
+        return data
+
+    def apply_settings(self, d: dict):
+        super().apply_settings(d if isinstance(d, dict) else {})
+        if isinstance(d, dict) and "check_records" in d:
+            self._set_record_skip(bool(d.get("check_records")))
+        path = ""
+        try:
+            path = (self.save_edit.text() or "").strip()
+        except Exception:
+            path = ""
+        if path:
+            self._scan_save_dir(path, log_result=False)
+
+
+def _open_other_video_records_dialog(page):
+    """已下记录弹窗。正文按 # 即梦 / # LibTV / # XVideos / # Pornhub 分段。"""
+    dlg = QDialog(page)
+    dlg.setWindowTitle("已下记录")
+    try:
+        dlg.setWindowFlags(dlg.windowFlags() & ~Qt.WindowContextHelpButtonHint)
+    except Exception:
+        pass
+    dlg.resize(780, 440)
+    dlg.setMinimumSize(620, 320)
+    try:
+        if page is not None and page.styleSheet():
+            dlg.setStyleSheet(page.styleSheet())
+    except Exception:
+        pass
+
+    v = QVBoxLayout(dlg)
+    v.setContentsMargins(12, 12, 12, 12)
+    v.setSpacing(10)
+
+    preview = QTextEdit()
+    preview.setAcceptRichText(False)
+    preview.setPlaceholderText(_RECORD_PLACEHOLDER)
+    preview.setStyleSheet(
+        f"QTextEdit{{background:{tk('input_bg')};color:{tk('text')};"
+        f"border:1px solid {tk('border')};border-radius:6px;font-size:13px;}}"
+    )
+    preview.setPlainText(format_entries(load_entries()))
+    v.addWidget(preview, 1)
+
+    _rec_file = _gallery_records_path("other_video")
+    lbl_total = RecordsTotalBar(_rec_file, dlg)
+    v.addWidget(lbl_total)
+
+    def _editor_entries():
+        return parse_entries(preview.toPlainText())
+
+    def _set_total_text(extra: str = ""):
+        rows = _editor_entries()
+        n = sum(1 for e in rows if not e.get("suspect"))
+        suspects = sum(1 for e in rows if e.get("suspect"))
+        text = f"共 {n} 条"
+        if suspects:
+            text += f" · 待核 {suspects}"
+        counts = {}
+        for e in rows:
+            if e.get("suspect"):
+                continue
+            plat = e.get("platform") or ""
+            if plat in PLAT_ORDER:
+                counts[plat] = counts.get(plat, 0) + 1
+        bits = [f"{plat} {counts[plat]}" for plat in PLAT_ORDER if counts.get(plat)]
+        if bits:
+            text += " · " + " · ".join(bits)
+        lbl_total.set_count_text(text + (extra or ""))
+
+    preview.textChanged.connect(lambda: _set_total_text())
+    _set_total_text()
+
+    def _reload():
+        preview.blockSignals(True)
+        try:
+            preview.setPlainText(format_entries(load_entries()))
+        finally:
+            preview.blockSignals(False)
+        _set_total_text()
+
+    def _make_btn(text, bg=None, fg=None, bd=None, hover_bg=None):
+        b = QPushButton(text)
+        b.setFixedHeight(34)
+        b.setCursor(Qt.PointingHandCursor)
+        if bg:
+            qss = (
+                f"QPushButton{{background:{bg};color:{fg or '#ffffff'};"
+                f"border:1px solid {bd or bg};border-radius:6px;font-size:13px;}}"
+            )
+            if hover_bg:
+                qss += f"QPushButton:hover{{background:{hover_bg};}}"
+        else:
+            qss = (
+                f"QPushButton{{background:{tk('input_bg')};color:{tk('text')};"
+                f"border:1px solid {tk('border')};border-radius:6px;font-size:13px;}}"
+            )
+            if hover_bg:
+                qss += f"QPushButton:hover{{background:{hover_bg};}}"
+        b.setStyleSheet(qss)
+        return b
+
+    def _write_editor():
+        rows = _editor_entries()
+        if not save_entries(rows):
+            message_box_warn(dlg, "保存失败", "无法写入已下记录文件。")
+            return False
+        if hasattr(page, "_refresh_record_hint"):
+            page._refresh_record_hint()
+        return True
+
+    def _do_add_dir():
+        start = ""
+        try:
+            start = (page.save_edit.text() or "").strip()
+        except Exception:
+            start = ""
+        if not start:
+            start = os.path.expanduser("~/Downloads")
+        folder = QFileDialog.getExistingDirectory(dlg, "选择要扫描的文件夹", start)
+        if not folder:
+            return
+        if hasattr(page, "_scan_save_dir"):
+            page._scan_save_dir(folder, log_result=True)
+        _reload()
+
+    def _do_add_file():
+        def _tell(text, *, warn=False):
+            fn = message_box_warn if warn else message_box_info
+            QTimer.singleShot(0, lambda t=text, f=fn: f(dlg, "添加记录文件", t))
+
+        try:
+            start = os.path.join(os.path.expanduser("~"), "Desktop")
+            if not os.path.isdir(start):
+                start = os.path.expanduser("~")
+            path, _ = QFileDialog.getOpenFileName(
+                dlg, "选择记录文件", start,
+                "文本文件 (*.txt);;所有文件 (*.*)",
+            )
+            path = (path or "").strip().strip('"')
+            if not path:
+                return
+            incoming = read_external(path)
+            if incoming is None:
+                _tell(f"无法读取该文件：\n{path}", warn=True)
+                return
+            if not incoming:
+                _tell("文件里没有可用记录（需要每行一条文件名，或按 # 即梦 / # LibTV / # XVideos / # Pornhub 分段）。", warn=True)
+                return
+            current = _editor_entries()
+            merged, added, _changed = merge_external(current, incoming)
+            preview.blockSignals(True)
+            try:
+                preview.setPlainText(format_entries(merged))
+            finally:
+                preview.blockSignals(False)
+            if not save_entries(merged):
+                _tell("已读入编辑框，但写入记录文件失败。", warn=True)
+                _set_total_text()
+                return
+            if hasattr(page, "_refresh_record_hint"):
+                page._refresh_record_hint(added)
+            try:
+                if added:
+                    page._log("已下载：从文件新增 %d 条记录" % len(added), "ok")
+                else:
+                    page._log("已下载：文件中无新记录", "ok")
+            except Exception:
+                pass
+            skipped = max(0, len(incoming) - len(added))
+            _set_total_text(f" · 本次新增 {len(added)} 条，跳过 {skipped} 条已有")
+            _tell(f"已读 {len(incoming)} 条\n新增 {len(added)} 条\n跳过 {skipped} 条（已有）")
+        except Exception as e:
+            _log.exception("添加其它视频记录文件失败")
+            _tell(f"导入出错：{e}", warn=True)
+
+    def _scroll_to_sep():
+        text = preview.toPlainText()
+        idx = text.find("-----")
+        if idx < 0:
+            return
+        cur = preview.textCursor()
+        cur.setPosition(idx)
+        preview.setTextCursor(cur)
+        preview.ensureCursorVisible()
+
+    def _do_organize():
+        rows = _editor_entries()
+        preview.blockSignals(True)
+        try:
+            preview.setPlainText(format_entries(rows))
+        finally:
+            preview.blockSignals(False)
+        if not save_entries(_editor_entries()):
+            message_box_warn(dlg, "保存失败", "无法写回记录文件。")
+            _set_total_text()
+            return
+        if hasattr(page, "_refresh_record_hint"):
+            page._refresh_record_hint()
+        _set_total_text()
+        if any(e.get("suspect") for e in rows):
+            QTimer.singleShot(0, _scroll_to_sep)
+
+    def _do_save_close():
+        if _write_editor():
+            dlg.accept()
+
+    btn_row = QHBoxLayout()
+    btn_row.setSpacing(8)
+    btn_add = _make_btn(
+        "添加已经下目录",
+        bg="#1d4ed8", fg="#dbeafe", bd="#2563eb", hover_bg="#2563eb",
+    )
+    btn_add.setToolTip(
+        "扫描文件夹里的视频。只记即梦、LibTV、XVideos、Pornhub。"
+        "新文件按 [桌面助手][平台] 归类，旧的「_原片 / _成片」按文件名末尾归类"
+    )
+    btn_add.clicked.connect(_do_add_dir)
+    btn_row.addWidget(btn_add)
+
+    btn_add_file = _make_btn(
+        "添加记录文件",
+        bg="#1d4ed8", fg="#dbeafe", bd="#2563eb", hover_bg="#2563eb",
+    )
+    btn_add_file.setToolTip("从其它 .txt 合并记录。可按 # 平台名 分段，也可以一行一个文件名")
+    btn_add_file.clicked.connect(_do_add_file)
+    btn_row.addWidget(btn_add_file)
+
+    btn_org = _make_btn(
+        "整理记录",
+        bg="#a16207", fg="#fef9c3", bd="#ca8a04", hover_bg="#ca8a04",
+    )
+    btn_org.setToolTip(
+        "按即梦 / LibTV / XVideos / Pornhub 重新分组，每组再按类型和画质分开，"
+        "并把 _2、(2) 另存名挪到分隔线下面（不删除）"
+    )
+    btn_org.clicked.connect(_do_organize)
+    btn_row.addWidget(btn_org)
+
+    btn_row.addStretch(1)
+
+    btn_save = _make_btn(
+        "保存并关闭",
+        bg="#14532d", fg="#bbf7d0", bd="#166534", hover_bg="#166534",
+    )
+    btn_save.clicked.connect(_do_save_close)
+    btn_row.addWidget(btn_save)
+
+    btn_close = _make_btn("关闭")
+    btn_close.clicked.connect(dlg.reject)
+    btn_row.addWidget(btn_close)
+    v.addLayout(btn_row)
+
+    dlg.exec_()

@@ -12,7 +12,7 @@ import time
 from collections import defaultdict
 from datetime import datetime
 
-from PyQt5.QtCore import Qt, QSize, QThread, QEvent, QPoint, QRectF, pyqtSignal
+from PyQt5.QtCore import Qt, QSize, QThread, QEvent, QPoint, QRectF, QTimer, pyqtSignal
 from PyQt5.QtGui import QPainter, QColor, QPen, QPixmap, QFont, QFontMetrics
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -39,6 +39,7 @@ _FOF_NOCONFIRMATION = 0x0010
 _FOF_ALLOWUNDO = 0x0040
 _FOF_NOERRORUI = 0x0400
 _REPORT_GROUP_CAP = 200
+_MULTI_ROW_CAP = 300
 
 # 扩展名过滤卡：参照文本编辑页的前缀符号卡
 _EXT_MAX = 48
@@ -284,15 +285,32 @@ def _still_safe_to_delete(keep: FileRec, victim: FileRec) -> str:
     return ""
 
 
+def _as_ext_filt(ext_filter):
+    """None = 全部文件。False = 一个都不收。其它可迭代 = 白名单。"""
+    if ext_filter is False:
+        return False
+    if not ext_filter:
+        return None
+    filt = {normalize_ext(x) for x in ext_filter}
+    filt.discard("")
+    if not filt:
+        return False
+    return filt
+
+
+def _ext_blocked(filt, name: str) -> bool:
+    if filt is False:
+        return True
+    if filt is None:
+        return False
+    return not file_matches_ext_filter(name, filt)
+
+
 def scan_tree(root: str, progress_cb=None, should_stop=None, ext_filter=None) -> ScanResult:
     result = ScanResult(root)
-    filt = None
-    if ext_filter:
-        filt = {normalize_ext(x) for x in ext_filter}
-        filt.discard("")
+    filt = _as_ext_filt(ext_filter)
+    if isinstance(filt, set):
         result.ext_filter = tuple(sorted(filt))
-        if not filt:
-            filt = None
     if not root or not os.path.isdir(root):
         result.errors += 1
         return result
@@ -329,7 +347,7 @@ def scan_tree(root: str, progress_cb=None, should_stop=None, ext_filter=None) ->
                         continue
                     if not is_file:
                         continue
-                    if filt is not None and not file_matches_ext_filter(entry.name, filt):
+                    if _ext_blocked(filt, entry.name):
                         continue
                     try:
                         st = entry.stat(follow_symlinks=False)
@@ -441,19 +459,113 @@ def build_report_text(result: ScanResult) -> tuple:
 
 
 def _reveal_in_explorer(path: str) -> None:
-    """只打开资源管理器并选中该文件，不打开文件本身。"""
+    """打开资源管理器并选中该文件，再把这个窗口带到最前。
+
+    查重窗是模态的，explorer /select 常常开在它后面，文件也未必被选中。
+    用 SHOpenFolderAndSelectItems 选中，稍后再把资源管理器窗口抬上来。
+    """
     path = os.path.normpath(path or "")
     if not path:
         return
+    target = path if os.path.exists(path) else os.path.dirname(path)
+    if not target or not os.path.exists(target):
+        return
+    folder_name = os.path.basename(target if os.path.isdir(target) else os.path.dirname(target))
     try:
-        if os.path.exists(path):
-            subprocess.Popen(["explorer", "/select,", path])
-            return
-        folder = os.path.dirname(path)
-        if os.path.isdir(folder):
-            subprocess.Popen(["explorer", folder])
+        _select_in_shell(target)
     except Exception:
-        log.warning("打开文件位置失败 %s", path)
+        log.warning("定位文件失败 %s", path, exc_info=True)
+        try:
+            if os.path.isdir(target):
+                subprocess.Popen(["explorer", target])
+            else:
+                subprocess.Popen(["explorer", "/select,", target])
+        except Exception:
+            log.warning("打开文件位置失败 %s", path)
+            return
+    QTimer.singleShot(200, lambda name=folder_name: _raise_explorer_window(name))
+
+
+def _select_in_shell(path: str) -> None:
+    """让资源管理器打开 path 所在文件夹并选中它。"""
+    path = os.path.abspath(path)
+    shell32 = ctypes.windll.shell32
+    ole32 = ctypes.windll.ole32
+    shell32.SHParseDisplayName.argtypes = [
+        ctypes.c_wchar_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p),
+        ctypes.c_ulong, ctypes.c_void_p,
+    ]
+    shell32.SHParseDisplayName.restype = ctypes.HRESULT
+    shell32.ILFindLastID.argtypes = [ctypes.c_void_p]
+    shell32.ILFindLastID.restype = ctypes.c_void_p
+    shell32.ILClone.argtypes = [ctypes.c_void_p]
+    shell32.ILClone.restype = ctypes.c_void_p
+    shell32.ILRemoveLastID.argtypes = [ctypes.c_void_p]
+    shell32.ILRemoveLastID.restype = ctypes.c_bool
+    shell32.SHOpenFolderAndSelectItems.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p), ctypes.c_ulong,
+    ]
+    shell32.SHOpenFolderAndSelectItems.restype = ctypes.HRESULT
+    shell32.ILFree.argtypes = [ctypes.c_void_p]
+
+    hr_init = int(ole32.CoInitialize(None) or 0)
+    pidl = ctypes.c_void_p()
+    parent = ctypes.c_void_p()
+    try:
+        hr = int(shell32.SHParseDisplayName(path, None, ctypes.byref(pidl), 0, None) or 0)
+        if hr < 0 or not pidl.value:
+            raise OSError("SHParseDisplayName 失败")
+        child = shell32.ILFindLastID(pidl)
+        parent = ctypes.c_void_p(shell32.ILClone(pidl))
+        if not parent.value or not shell32.ILRemoveLastID(parent):
+            raise OSError("无法拆出父文件夹")
+        items = (ctypes.c_void_p * 1)(child)
+        hr = int(shell32.SHOpenFolderAndSelectItems(parent, 1, items, 0) or 0)
+        if hr < 0:
+            raise OSError("SHOpenFolderAndSelectItems 失败")
+    finally:
+        if parent.value:
+            shell32.ILFree(parent)
+        if pidl.value:
+            shell32.ILFree(pidl)
+        if hr_init == 0:
+            ole32.CoUninitialize()
+
+
+def _raise_explorer_window(folder_name: str) -> None:
+    """把标题里含该文件夹名的资源管理器窗口抬到最前。"""
+    user32 = ctypes.windll.user32
+    found = []
+
+    @ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+    def _enum(hwnd, _lparam):
+        cls = ctypes.create_unicode_buffer(256)
+        user32.GetClassNameW(hwnd, cls, 256)
+        if cls.value != "CabinetWClass":
+            return True
+        if not folder_name:
+            found.append(hwnd)
+            return True
+        title = ctypes.create_unicode_buffer(512)
+        user32.GetWindowTextW(hwnd, title, 512)
+        if folder_name.casefold() in (title.value or "").casefold():
+            found.append(hwnd)
+        return True
+
+    user32.EnumWindows(_enum, 0)
+    if not found:
+        return
+    hwnd = found[-1]
+    flags = 0x0001 | 0x0002 | 0x0040  # NOSIZE | NOMOVE | SHOWWINDOW
+    user32.ShowWindow(hwnd, 9)  # SW_RESTORE
+    user32.SetWindowPos.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_uint,
+    ]
+    user32.SetWindowPos.restype = ctypes.c_bool
+    user32.SetWindowPos(hwnd, ctypes.c_void_p(-1), 0, 0, 0, 0, flags)
+    user32.SetWindowPos(hwnd, ctypes.c_void_p(-2), 0, 0, 0, 0, flags)
+    user32.SetForegroundWindow(hwnd)
 
 
 class _ScanWorker(QThread):
@@ -464,7 +576,7 @@ class _ScanWorker(QThread):
         super().__init__(parent)
         self._root = root
         self._stop = False
-        self._ext_filter = tuple(ext_filter) if ext_filter else ()
+        self._ext_filter = False if ext_filter is False else (tuple(ext_filter) if ext_filter else ())
 
     def stop(self):
         self._stop = True
@@ -478,7 +590,7 @@ class _ScanWorker(QThread):
                 self._root,
                 progress_cb=_prog,
                 should_stop=lambda: self._stop or self.isInterruptionRequested(),
-                ext_filter=self._ext_filter or None,
+                ext_filter=False if self._ext_filter is False else (self._ext_filter or None),
             )
         except Exception as e:
             log.exception("扫描失败")
@@ -528,10 +640,11 @@ class _DeleteWorker(QThread):
 
 
 class _ExtCard(QWidget):
-    """扩展名过滤卡：彩色圆角。单击选中回填 / ✕删除 / 按住拖动排序。"""
+    """扩展名过滤卡：彩色圆角。单击回填 / 圆点临时关闭 / ✕删除 / 按住拖动排序。"""
 
     clicked = pyqtSignal(str)
     remove_requested = pyqtSignal(str)
+    live_toggled = pyqtSignal(str)
 
     def __init__(self, ext: str, accent: str, owner, parent=None):
         super().__init__(parent)
@@ -539,20 +652,28 @@ class _ExtCard(QWidget):
         self._owner = owner
         self._press = None
         self._dragging = False
+        self._live = True
         self.setObjectName("DupExtCard")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setAutoFillBackground(False)
         self.setCursor(Qt.OpenHandCursor)
         self.setFixedHeight(_EXT_CARD_H)
         self.setMinimumWidth(_EXT_CARD_MIN_W)
+        self.setToolTip("单击把扩展名填回输入框。按住可拖动排序。")
 
         self._accent = accent
         self._selected = False
-        self._apply_card_style()
 
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(8, 0, 20, 0)
-        lay.setSpacing(0)
+        lay.setContentsMargins(2, 0, 18, 0)
+        lay.setSpacing(2)
+        self.btn_live = QPushButton("●", self)
+        self.btn_live.setObjectName("DupExtCardLive")
+        self.btn_live.setCursor(Qt.PointingHandCursor)
+        self.btn_live.setFocusPolicy(Qt.NoFocus)
+        self.btn_live.setFixedSize(16, 16)
+        self.btn_live.clicked.connect(lambda: self.live_toggled.emit(self.ext))
+        lay.addWidget(self.btn_live, 0, Qt.AlignVCenter)
         lab = QLabel("." + ext)
         lab.setAlignment(Qt.AlignCenter)
         lab.setAttribute(Qt.WA_TransparentForMouseEvents, True)
@@ -564,8 +685,10 @@ class _ExtCard(QWidget):
         self.btn_x.setCursor(Qt.PointingHandCursor)
         self.btn_x.setFocusPolicy(Qt.NoFocus)
         self.btn_x.setFixedSize(18, 18)
+        self.btn_x.setToolTip("删除这个扩展名")
         self.btn_x.clicked.connect(lambda: self.remove_requested.emit(self.ext))
         self._place_x()
+        self.set_live(True)
 
     def _place_x(self):
         b = self.btn_x
@@ -586,19 +709,45 @@ class _ExtCard(QWidget):
         self._selected = selected
         self._apply_card_style()
 
+    def set_live(self, on: bool):
+        self._live = bool(on)
+        self.btn_live.setText("●" if self._live else "○")
+        self.btn_live.setToolTip(
+            "关闭后查重会跳过它，下次打开程序仍保持" if self._live else "已关闭，再点一次打开"
+        )
+        font = self._lab.font()
+        font.setStrikeOut(not self._live)
+        self._lab.setFont(font)
+        self._apply_card_style()
+
     def _apply_card_style(self):
-        accent = self._accent
-        fg = _ext_contrast_fg(accent)
-        bd = "#ffffff" if self._selected else _mix_hex(accent, "#ffffff", 0.10)
+        if not self._live:
+            try:
+                dark = bool(theme.is_dark)
+            except Exception:
+                dark = True
+            accent = "#334155" if dark else "#e2e8f0"
+            fg = "#94a3b8" if dark else "#64748b"
+            bd = "#475569" if dark else "#cbd5e1"
+            del_c = fg
+            del_hover = "#ef4444"
+        else:
+            accent = self._accent
+            fg = _ext_contrast_fg(accent)
+            bd = "#ffffff" if self._selected else _mix_hex(accent, "#ffffff", 0.10)
+            del_c = "rgba(255,255,255,200)"
+            del_hover = "#111111"
         self.setStyleSheet(
             "#DupExtCard{background-color:%s;border:2px solid %s;"
             "border-radius:8px;}"
             "#DupExtCard QLabel{background:transparent;border:none;color:%s;"
             "font-size:12px;font-weight:600;}"
+            "QPushButton#DupExtCardLive{background:transparent;border:none;"
+            "color:%s;font-size:11px;font-weight:700;padding:0;}"
             "QPushButton#DupExtCardDel{background:transparent;border:none;"
-            "color:rgba(255,255,255,200);font-size:12px;font-weight:700;padding:0;}"
-            "QPushButton#DupExtCardDel:hover{color:#111111;}"
-            % (accent, bd, fg)
+            "color:%s;font-size:12px;font-weight:700;padding:0;}"
+            "QPushButton#DupExtCardDel:hover{color:%s;}"
+            % (accent, bd, fg, fg, del_c, del_hover)
         )
 
     def mousePressEvent(self, e):
@@ -715,9 +864,10 @@ class _ExtHScroll(QScrollArea):
 
 
 class ExtFilterBar(QWidget):
-    """扩展名过滤卡栏：输入 + 存卡 / 点选回填 / ✕删除 / 拖拽排序。
+    """扩展名过滤卡栏：输入 + 存卡 / 点选回填 / 圆点临时关闭 / ✕删除 / 拖拽排序。
 
-    无卡片 = 扫描全部扩展名；有卡片 = 只处理这些类型。
+    无卡片 = 扫描全部扩展名；有卡片 = 只处理还开着的类型。
+    圆点关掉的卡片仍留在栏上。标签顺序和开关都会写入用户设置。
     """
 
     changed = pyqtSignal()
@@ -730,6 +880,7 @@ class ExtFilterBar(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
 
         self._exts = []
+        self._off = set()
         self._selected = None
         self._loading = False
         self._click_filter_on = False
@@ -756,7 +907,8 @@ class ExtFilterBar(QWidget):
         self.inp.setCursor(Qt.IBeamCursor)
         self.inp.setToolTip(
             "输入扩展名后点 + 存成过滤卡。无卡片则处理全部类型。\n"
-            "可一次输入多个，用空格或逗号分开。"
+            "可一次输入多个，用空格或逗号分开。\n"
+            "卡片左侧圆点可关闭该扩展名，开关会记住。✕ 才是删除。"
         )
         self.inp.returnPressed.connect(self._save_current)
         row.addWidget(self.inp, 1)
@@ -819,9 +971,18 @@ class ExtFilterBar(QWidget):
             pass
 
     def exts(self) -> list:
+        """全部卡片，含临时关掉的。用于保存。"""
         return list(self._exts)
 
-    def set_exts(self, items):
+    def active_exts(self) -> list:
+        """当前参与查重的扩展名。"""
+        return [e for e in self._exts if e not in self._off]
+
+    def off_exts(self) -> list:
+        """已关闭的扩展名，顺序与卡片一致。用于写入用户设置。"""
+        return [e for e in self._exts if e in self._off]
+
+    def set_exts(self, items, off=None):
         hist = []
         for s in items or []:
             e = normalize_ext(s)
@@ -829,11 +990,20 @@ class ExtFilterBar(QWidget):
                 hist.append(e)
                 if len(hist) >= _EXT_MAX:
                     break
-        if hist == self._exts:
+        if off is None:
+            new_off = {e for e in self._off if e in hist}
+        else:
+            new_off = set()
+            for s in off or []:
+                e = normalize_ext(str(s))
+                if e and e in hist:
+                    new_off.add(e)
+        if hist == self._exts and new_off == self._off:
             return
         self._loading = True
         try:
             self._exts = hist
+            self._off = new_off
             if self._selected and self._selected not in self._exts:
                 self._selected = None
             self._refresh_chips()
@@ -953,11 +1123,25 @@ class ExtFilterBar(QWidget):
             pass
         return super().eventFilter(obj, ev)
 
+    def _toggle_ext(self, ext: str):
+        if ext not in self._exts:
+            return
+        if ext in self._off:
+            self._off.discard(ext)
+        else:
+            self._off.add(ext)
+        for w in self._cards():
+            if w.ext == ext:
+                w.set_live(ext not in self._off)
+                break
+        self._emit_changed()
+
     def _remove_ext(self, ext: str):
         if ext not in self._exts:
             return
         if self._selected == ext:
             self._selected = None
+        self._off.discard(ext)
         self._exts.remove(ext)
         self._refresh_chips()
         self._emit_changed()
@@ -983,9 +1167,11 @@ class ExtFilterBar(QWidget):
             accent = _EXT_PALETTE[i % len(_EXT_PALETTE)]
             card = _ExtCard(text, accent, self, self.host)
             shown = "." + text
-            w = max(_EXT_CARD_MIN_W, fm.horizontalAdvance(shown) + 36)
+            w = max(_EXT_CARD_MIN_W, fm.horizontalAdvance(shown) + 52)
             card.setFixedWidth(w)
+            card.set_live(text not in self._off)
             card.clicked.connect(lambda e=text: self._use_ext(e))
+            card.live_toggled.connect(lambda e=text: self._toggle_ext(e))
             card.remove_requested.connect(lambda e=text: self._remove_ext(e))
             flow.addWidget(card)
         flow.addStretch(1)
@@ -1330,6 +1516,911 @@ class _ReportDialog(QDialog):
 
     def shutdown(self):
         stop_qthread(self._del_worker, name="dup_clean_delete")
+
+
+def _pack_file(rec: FileRec) -> dict:
+    return {
+        "path": rec.path,
+        "name": rec.name,
+        "size": int(rec.size),
+        "mtime": float(rec.mtime),
+    }
+
+
+def name_group_title(display_name: str, count: int, same_size: bool, size: int) -> str:
+    if same_size:
+        return f"同名 · {display_name} · {count} 个 · 大小一致 {_fmt_size(size)}"
+    return f"同名 · {display_name} · {count} 个 · 大小不同"
+
+
+def suspect_group_title(size: int, count: int) -> str:
+    return f"疑似同一文件 · {_fmt_size(size)} · {count} 个 · 名字不同"
+
+
+def prepare_roots(paths) -> list:
+    """去重，并丢掉已经落在另一个所选目录里面的路径。"""
+    items = []
+    seen = set()
+    for raw in paths or []:
+        p = (raw or "").strip()
+        if not p or not os.path.isdir(p):
+            continue
+        abs_p = os.path.abspath(p)
+        key = os.path.normcase(abs_p)
+        if key in seen:
+            continue
+        seen.add(key)
+        items.append(abs_p)
+    items.sort(key=lambda p: (len(os.path.normcase(p)), os.path.normcase(p)))
+    kept = []
+    kept_keys = []
+    for p in items:
+        key = os.path.normcase(p)
+        nested = False
+        for parent in kept_keys:
+            if key == parent or key.startswith(parent + os.sep):
+                nested = True
+                break
+        if nested:
+            continue
+        kept.append(p)
+        kept_keys.append(key)
+    return kept
+
+
+class MultiIndex:
+    """跨目录查重的内存索引。同名凑满 2 个就出组；不同名且大小相同（不含 0 字节）出疑似组。"""
+
+    def __init__(self):
+        self.by_name = defaultdict(list)
+        self.by_size = defaultdict(list)
+        self._name_live = set()
+        self._size_live = set()
+        self.name_groups = 0
+        self.suspect_groups = 0
+
+    def add(self, rec: FileRec) -> list:
+        events = []
+        nk = _name_key(rec.name)
+        named = self.by_name[nk]
+        named.append(rec)
+        if len(named) >= 2:
+            first = nk not in self._name_live
+            if first:
+                self._name_live.add(nk)
+                self.name_groups += 1
+                chunk = list(named)
+            else:
+                chunk = [rec]
+            sizes = {int(r.size) for r in named}
+            same = len(sizes) == 1
+            events.append({
+                "kind": "name",
+                "key": "n:" + nk,
+                "title": name_group_title(named[0].name, len(named), same, int(named[0].size)),
+                "files": [_pack_file(r) for r in chunk],
+            })
+        if int(rec.size) > 0:
+            sized = self.by_size[int(rec.size)]
+            sized.append(rec)
+            names = {_name_key(r.name) for r in sized}
+            if len(names) >= 2:
+                first = int(rec.size) not in self._size_live
+                if first:
+                    self._size_live.add(int(rec.size))
+                    self.suspect_groups += 1
+                    chunk = list(sized)
+                else:
+                    chunk = [rec]
+                events.append({
+                    "kind": "suspect",
+                    "key": "s:" + str(int(rec.size)),
+                    "title": suspect_group_title(int(rec.size), len(sized)),
+                    "files": [_pack_file(r) for r in chunk],
+                })
+        return events
+
+
+def _ext_filt(ext_filter):
+    return _as_ext_filt(ext_filter)
+
+
+def walk_files(roots, filt, should_stop, visitor):
+    """遍历这些根目录下的普通文件。返回 (文件数, 文件夹数, 错误数, 是否取消)。"""
+    files = 0
+    folders = 0
+    errors = 0
+    seen_dir = set()
+    for root in roots:
+        if should_stop and should_stop():
+            return files, folders, errors, True
+        stack = [root]
+        while stack:
+            if should_stop and should_stop():
+                return files, folders, errors, True
+            current = stack.pop()
+            key = os.path.normcase(os.path.abspath(current))
+            if key in seen_dir:
+                continue
+            seen_dir.add(key)
+            folders += 1
+            try:
+                iterator = os.scandir(current)
+            except OSError:
+                errors += 1
+                continue
+            with iterator:
+                for entry in iterator:
+                    if should_stop and should_stop():
+                        return files, folders, errors, True
+                    if _skip_entry(entry):
+                        continue
+                    try:
+                        is_dir = entry.is_dir(follow_symlinks=False)
+                    except OSError:
+                        errors += 1
+                        continue
+                    if is_dir:
+                        stack.append(entry.path)
+                        continue
+                    try:
+                        if not entry.is_file(follow_symlinks=False):
+                            continue
+                    except OSError:
+                        errors += 1
+                        continue
+                    if _ext_blocked(filt, entry.name):
+                        continue
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        errors += 1
+                        continue
+                    files += 1
+                    if visitor is not None:
+                        visitor(entry.path, entry.name, st)
+    return files, folders, errors, False
+
+
+class _MultiScanWorker(QThread):
+    progress = pyqtSignal(int, int, str)
+    group = pyqtSignal(object)
+    finished_scan = pyqtSignal(object)
+
+    def __init__(self, roots, ext_filter=None, parent=None):
+        super().__init__(parent)
+        self._roots = list(roots or [])
+        self._ext_filter = False if ext_filter is False else (tuple(ext_filter) if ext_filter else ())
+        self._stop = False
+
+    def stop(self):
+        self._stop = True
+
+    def _halt(self) -> bool:
+        return bool(self._stop or self.isInterruptionRequested())
+
+    def run(self):
+        try:
+            self._run()
+        except Exception as e:
+            log.exception("多目录查重失败")
+            self.finished_scan.emit({
+                "cancelled": True,
+                "error": str(e),
+                "files": 0,
+                "total": 0,
+                "errors": 1,
+                "name_groups": 0,
+                "suspect_groups": 0,
+            })
+
+    def _run(self):
+        roots = prepare_roots(self._roots)
+        filt = _ext_filt(self._ext_filter)
+        if not roots:
+            self.progress.emit(0, 0, "")
+            self.finished_scan.emit({
+                "cancelled": False,
+                "empty": True,
+                "files": 0,
+                "total": 0,
+                "errors": 0,
+                "name_groups": 0,
+                "suspect_groups": 0,
+            })
+            return
+
+        self.progress.emit(0, -1, "")
+        last = [0.0]
+
+        def _tick_count(_path, _name, _st):
+            now = time.monotonic()
+            if now - last[0] >= 0.12:
+                last[0] = now
+                self.progress.emit(0, -1, "")
+
+        _total, _folders, errors, cancelled = walk_files(roots, filt, self._halt, _tick_count)
+        if cancelled or self._halt():
+            self.finished_scan.emit({
+                "cancelled": True,
+                "files": 0,
+                "total": -1,
+                "errors": int(errors),
+                "name_groups": 0,
+                "suspect_groups": 0,
+            })
+            return
+
+        total = int(_total)
+        self.progress.emit(0, total, "")
+        index = MultiIndex()
+        seen = set()
+        checked = [0]
+        last[0] = 0.0
+
+        def _on_file(path, name, st):
+            checked[0] += 1
+            fkey = os.path.normcase(os.path.abspath(path))
+            if fkey not in seen:
+                seen.add(fkey)
+                rec = FileRec(
+                    path,
+                    name,
+                    int(st.st_size),
+                    float(st.st_mtime),
+                    float(getattr(st, "st_ctime", st.st_mtime) or st.st_mtime),
+                )
+                for ev in index.add(rec):
+                    self.group.emit(ev)
+            now = time.monotonic()
+            if checked[0] == total or (now - last[0]) >= 0.12:
+                last[0] = now
+                self.progress.emit(checked[0], total, path)
+
+        _files, _folders2, errors2, cancelled = walk_files(roots, filt, self._halt, _on_file)
+        done_n = int(checked[0])
+        done_total = total if done_n <= total else done_n
+        self.progress.emit(done_n, done_total, "")
+        self.finished_scan.emit({
+            "cancelled": bool(cancelled or self._halt()),
+            "files": done_n,
+            "total": done_total,
+            "errors": int(errors2),
+            "name_groups": int(index.name_groups),
+            "suspect_groups": int(index.suspect_groups),
+        })
+
+
+class _DupGroupBlock(QWidget):
+    def __init__(self, kind: str, parent=None):
+        super().__init__(parent)
+        self.kind = kind
+        self._paths = set()
+        self._files = []
+        self._row_widgets = {}
+        self._capped = False
+        self._same_size = True
+        self.setStyleSheet("background:transparent;")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(0, 8, 0, 2)
+        lay.setSpacing(2)
+        self.header = QLabel("")
+        self.header.setWordWrap(True)
+        self.header.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lay.addWidget(self.header)
+        self._rows = QVBoxLayout()
+        self._rows.setContentsMargins(0, 0, 0, 0)
+        self._rows.setSpacing(2)
+        lay.addLayout(self._rows)
+        self._apply_header_color()
+
+    def _apply_header_color(self):
+        # 同名且一样大：红色，要处理。同名但大小不同：绿色。疑似：蓝色，可处理。
+        if self.kind == "suspect":
+            color = "#3b82f6"
+        elif not self._same_size:
+            color = "#22c55e"
+        else:
+            color = "#ef4444"
+        self.header.setStyleSheet(
+            f"color:{color};background:transparent;font-size:13px;font-weight:600;"
+        )
+
+    def set_title(self, text: str):
+        self.header.setText(text or "")
+
+    def file_count(self) -> int:
+        return len(self._files)
+
+    def _refresh_title(self):
+        files = self._files
+        if not files:
+            return
+        if self.kind == "suspect":
+            self.set_title(suspect_group_title(int(files[0].get("size") or 0), len(files)))
+            return
+        sizes = {int(f.get("size") or 0) for f in files}
+        same = len(sizes) == 1
+        size = next(iter(sizes)) if same else 0
+        self._same_size = same
+        self.set_title(name_group_title(files[0].get("name") or "", len(files), same, size))
+        self._apply_header_color()
+
+    def add_files(self, files) -> bool:
+        added = False
+        for info in files or []:
+            path = (info or {}).get("path") or ""
+            if not path or path in self._paths:
+                continue
+            if len(self._paths) >= _MULTI_ROW_CAP:
+                if not self._capped:
+                    self._capped = True
+                    note = QLabel(f"这一组只列出前 {_MULTI_ROW_CAP} 个")
+                    note.setStyleSheet(
+                        f"color:{tk('text_mut')};background:transparent;font-size:12px;"
+                    )
+                    self._rows.addWidget(note)
+                continue
+            self._paths.add(path)
+            self._files.append(dict(info))
+            row = self._file_row(info)
+            self._row_widgets[path] = row
+            self._rows.addWidget(row)
+            added = True
+        if added:
+            self._refresh_title()
+        return added
+
+    def drop_path(self, path: str) -> int:
+        path = path or ""
+        self._files = [f for f in self._files if (f.get("path") or "") != path]
+        self._paths.discard(path)
+        row = self._row_widgets.pop(path, None)
+        if row is not None:
+            self._rows.removeWidget(row)
+            row.setParent(None)
+            row.deleteLater()
+        if self._files:
+            self._refresh_title()
+        return len(self._files)
+
+    def _file_row(self, info: dict) -> QWidget:
+        path = info.get("path") or ""
+        row = QWidget()
+        row.setStyleSheet("background:transparent;")
+        hl = QHBoxLayout(row)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(6)
+        btn = apply_mini_button(QPushButton("打开"))
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setToolTip("在资源管理器中定位到这个文件，并把该窗口带到最前")
+        btn.clicked.connect(lambda _=False, p=path: _reveal_in_explorer(p))
+        hl.addWidget(btn, 0, Qt.AlignVCenter)
+        btn_del = QPushButton("✕")
+        btn_del.setObjectName("DupMultiRowDel")
+        btn_del.setCursor(Qt.PointingHandCursor)
+        btn_del.setFocusPolicy(Qt.NoFocus)
+        btn_del.setFixedSize(22, 22)
+        btn_del.setToolTip("把这个文件移入回收站")
+        btn_del.setStyleSheet(
+            "QPushButton#DupMultiRowDel{background:transparent;border:none;"
+            "color:#ef4444;font-size:14px;font-weight:700;padding:0;}"
+            "QPushButton#DupMultiRowDel:hover{color:#b91c1c;}"
+        )
+        btn_del.clicked.connect(lambda _=False, p=path: self._ask_delete(p))
+        hl.addWidget(btn_del, 0, Qt.AlignVCenter)
+        lab = QLabel(
+            f"{_fmt_size(info.get('size') or 0)}  {_fmt_time(info.get('mtime') or 0)}  {path}"
+        )
+        lab.setWordWrap(True)
+        lab.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        lab.setStyleSheet(
+            f"color:{tk('text')};background:transparent;font-size:12px;"
+        )
+        hl.addWidget(lab, 1)
+        return row
+
+    def _ask_delete(self, path: str):
+        host = self.parent()
+        while host is not None and not isinstance(host, MultiDupDialog):
+            host = host.parent()
+        if host is not None:
+            host.delete_listed_file(path)
+
+    def restyle(self):
+        self._apply_header_color()
+        for row in self.findChildren(QWidget):
+            for lab in row.findChildren(QLabel):
+                if lab is self.header:
+                    continue
+                text = lab.text() or ""
+                if text.startswith("这一组只列出"):
+                    lab.setStyleSheet(
+                        f"color:{tk('text_mut')};background:transparent;font-size:12px;"
+                    )
+                else:
+                    lab.setStyleSheet(
+                        f"color:{tk('text')};background:transparent;font-size:12px;"
+                    )
+
+
+class MultiDupDialog(QDialog):
+    """多目录查重进度窗：一打开就显示 N/M，判定出一条就列一条。"""
+
+    def __init__(self, parent, roots, ext_filter=None):
+        super().__init__(parent)
+        self.setWindowTitle("多目录同时查重")
+        self.setWindowFlags(Qt.Dialog | Qt.WindowTitleHint | Qt.WindowCloseButtonHint)
+        self.setMinimumSize(640, 460)
+        self.resize(760, 540)
+        self.setModal(True)
+        self._roots = list(roots or [])
+        self._ext_filter = False if ext_filter is False else list(ext_filter or [])
+        self._worker = None
+        self._blocks = {}
+        self._deleted = set()
+        self._closing = False
+        self._running = False
+        self._build()
+        try:
+            theme.changed.connect(self._restyle)
+        except Exception:
+            pass
+
+    def _build(self):
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        root.setSpacing(8)
+
+        self.lbl_count = QLabel("被检查的文件数：0/统计中")
+        self.lbl_count.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        root.addWidget(self.lbl_count)
+
+        self.lbl_detail = QLabel("正在统计文件总数…")
+        self.lbl_detail.setWordWrap(True)
+        self.lbl_detail.setProperty("typo", "muted")
+        root.addWidget(self.lbl_detail)
+
+        self.body = QScrollArea()
+        self.body.setObjectName("DupMultiScroll")
+        self.body.setWidgetResizable(True)
+        self.body.setFrameShape(QFrame.NoFrame)
+        self.body.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._host = QWidget()
+        self._host.setObjectName("DupMultiHost")
+        self._host_lay = QVBoxLayout(self._host)
+        self._host_lay.setContentsMargins(8, 8, 8, 8)
+        self._host_lay.setSpacing(2)
+        self._host_lay.addStretch(1)
+        self.body.setWidget(self._host)
+        root.addWidget(self.body, 1)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+        self.btn_cancel = apply_medium_button(QPushButton("取消"))
+        self.btn_cancel.setCursor(Qt.PointingHandCursor)
+        self.btn_cancel.clicked.connect(self._on_cancel)
+        self.btn_close = apply_medium_button(QPushButton("关闭"))
+        self.btn_close.setCursor(Qt.PointingHandCursor)
+        self.btn_close.clicked.connect(self.close)
+        row.addWidget(self.btn_cancel, 0)
+        row.addStretch(1)
+        row.addWidget(self.btn_close, 0)
+        root.addLayout(row)
+        self._restyle()
+
+    def _restyle(self, *_):
+        bg = tk("panel")
+        text = tk("text")
+        mut = tk("text_mut")
+        self.setStyleSheet(f"QDialog{{background:{bg};color:{text};}}")
+        self.lbl_count.setStyleSheet(
+            f"color:{text};background:transparent;font-size:15px;font-weight:700;"
+        )
+        self.lbl_detail.setStyleSheet(f"color:{mut};background:transparent;font-size:12px;")
+        self.body.setStyleSheet(
+            f"QScrollArea#DupMultiScroll{{background:{tk('input_bg')};"
+            f"border:1px solid {tk('border')};border-radius:8px;}}"
+            f"QWidget#DupMultiHost{{background:transparent;}}"
+        )
+        for block in self._blocks.values():
+            block.restyle()
+        apply_medium_button(self.btn_cancel)
+        apply_medium_button(self.btn_close)
+
+    def start(self):
+        if self._worker is not None:
+            return
+        self._running = True
+        self._worker = _MultiScanWorker(self._roots, self._ext_filter, self)
+        self._worker.progress.connect(self._on_progress)
+        self._worker.group.connect(self._on_group)
+        self._worker.finished_scan.connect(self._on_finished)
+        self._worker.start()
+
+    def _on_progress(self, done: int, total: int, current: str):
+        if self._closing:
+            return
+        if int(total) < 0:
+            self.lbl_count.setText("被检查的文件数：0/统计中")
+            self.lbl_detail.setText("正在统计文件总数…")
+            return
+        self.lbl_count.setText(f"被检查的文件数：{int(done)}/{int(total)}")
+        name = os.path.basename(current) if current else ""
+        if name and int(done) < int(total):
+            self.lbl_detail.setText(f"正在检查  {name}")
+        elif int(total) == 0:
+            self.lbl_detail.setText("没有可检查的文件。")
+
+    def _on_group(self, ev):
+        if self._closing or not ev:
+            return
+        key = ev.get("key") or ""
+        files = [
+            f for f in (ev.get("files") or [])
+            if (f.get("path") or "") not in self._deleted
+        ]
+        block = self._blocks.get(key)
+        if block is None:
+            if len(files) < 2:
+                return
+            block = _DupGroupBlock(ev.get("kind") or "name", self._host)
+            self._blocks[key] = block
+            self._host_lay.insertWidget(max(0, self._host_lay.count() - 1), block)
+        if not files:
+            return
+        if block.add_files(files):
+            self.body.ensureWidgetVisible(block.header)
+
+    def delete_listed_file(self, path: str):
+        path = path or ""
+        if not path or path in self._deleted:
+            return
+        try:
+            if os.path.isfile(path):
+                _send_to_recycle(path)
+            elif os.path.exists(path):
+                self.lbl_detail.setText("无法删除：不是文件。")
+                return
+        except Exception as e:
+            self.lbl_detail.setText(f"删除失败：{e}")
+            return
+        self._deleted.add(path)
+        gone = []
+        for key, block in self._blocks.items():
+            if block.drop_path(path) < 2:
+                gone.append(key)
+        for key in gone:
+            block = self._blocks.pop(key, None)
+            if block is None:
+                continue
+            self._host_lay.removeWidget(block)
+            block.setParent(None)
+            block.deleteLater()
+        self.lbl_detail.setText("已移入回收站。")
+
+    def _on_finished(self, info):
+        self._running = False
+        if self._closing:
+            return
+        info = info or {}
+        self.btn_cancel.setVisible(False)
+        done = int(info.get("files") or 0)
+        total = int(info.get("total") or 0)
+        if total >= 0:
+            self.lbl_count.setText(f"被检查的文件数：{done}/{total}")
+        name_n = int(info.get("name_groups") or 0)
+        sus_n = int(info.get("suspect_groups") or 0)
+        if info.get("empty"):
+            self.lbl_detail.setText("没有可检查的目录。")
+            return
+        if info.get("error") and done == 0 and not self._blocks:
+            self.lbl_detail.setText("检查失败。")
+            return
+        if info.get("cancelled") and not self._blocks:
+            extra = ""
+            err_n = int(info.get("errors") or 0)
+            if err_n:
+                extra = f"有 {err_n} 处无法访问，已跳过。"
+            self.lbl_detail.setText("已取消。" + extra)
+            return
+        head = "已取消。" if info.get("cancelled") else "检查完成。"
+        extra = ""
+        err_n = int(info.get("errors") or 0)
+        if err_n:
+            extra = f" 有 {err_n} 处无法访问，已跳过。"
+        if name_n == 0 and sus_n == 0:
+            self.lbl_detail.setText(head + "没有发现同名或疑似重复。" + extra)
+        else:
+            self.lbl_detail.setText(f"{head}同名 {name_n} 组，疑似 {sus_n} 组。{extra}")
+
+    def _on_cancel(self):
+        w = self._worker
+        if w is not None:
+            w.stop()
+        self.lbl_detail.setText("正在取消…")
+        self.btn_cancel.setEnabled(False)
+
+    def closeEvent(self, event):
+        self.shutdown()
+        super().closeEvent(event)
+
+    def shutdown(self):
+        self._closing = True
+        stop_qthread(self._worker, name="dup_multi_scan")
+
+
+def _dir_paths_from_mime(md) -> list:
+    if md is None or not md.hasUrls():
+        return []
+    out = []
+    for url in md.urls():
+        try:
+            if not url.isLocalFile():
+                continue
+            p = url.toLocalFile()
+        except Exception:
+            continue
+        if p and os.path.isdir(p):
+            out.append(os.path.normpath(p))
+    return out
+
+
+def _mime_may_have_local(md) -> bool:
+    if md is None:
+        return False
+    try:
+        if md.hasUrls():
+            return True
+    except Exception:
+        pass
+    try:
+        if md.hasFormat("text/uri-list"):
+            return True
+    except Exception:
+        pass
+    return False
+
+
+class MultiDirDrop(QFrame):
+    """多目录查重的拖放区：只收文件夹。"""
+
+    paths_changed = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("DupMultiDrop")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setAcceptDrops(True)
+        self.setMinimumHeight(72)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self._paths = []
+        self._keys = set()
+        self._hover = False
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(6, 6, 6, 6)
+        lay.setSpacing(0)
+
+        self.empty = QLabel("把文件夹拖到这里\n或点击选择目录")
+        self.empty.setAlignment(Qt.AlignCenter)
+        self.empty.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        lay.addWidget(self.empty, 1)
+
+        self.scroll = QScrollArea()
+        self.scroll.setObjectName("DupMultiDropScroll")
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.host = QWidget()
+        self.host.setObjectName("DupMultiDropHost")
+        self.flow = QVBoxLayout(self.host)
+        self.flow.setContentsMargins(0, 0, 0, 0)
+        self.flow.setSpacing(4)
+        self.flow.addStretch(1)
+        self.scroll.setWidget(self.host)
+        self.scroll.setVisible(False)
+        lay.addWidget(self.scroll, 1)
+
+        for w in (self.empty, self.scroll, self.scroll.viewport(), self.host):
+            self._watch(w)
+        self.refresh_theme()
+        try:
+            theme.changed.connect(self.refresh_theme)
+        except Exception:
+            pass
+
+    def mousePressEvent(self, e):
+        # 空列表时点击打开选目录；有文件夹时不拦截，避免抢掉移除按钮等交互
+        if (
+            e is not None
+            and e.button() == Qt.LeftButton
+            and not self._paths
+        ):
+            self._pick_directory()
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def _pick_directory(self):
+        path = QFileDialog.getExistingDirectory(self, "选择要统计的目录", "")
+        if not path:
+            return
+        self.add_paths([os.path.normpath(path)])
+
+    def paths(self) -> list:
+        return list(self._paths)
+
+    def _watch(self, w):
+        if w is None:
+            return
+        try:
+            w.setAcceptDrops(True)
+            w.installEventFilter(self)
+        except Exception:
+            pass
+
+    def eventFilter(self, obj, ev):
+        t = ev.type() if ev is not None else None
+        if t == QEvent.DragEnter:
+            self.dragEnterEvent(ev)
+            return bool(ev.isAccepted())
+        if t == QEvent.DragMove:
+            self.dragMoveEvent(ev)
+            return bool(ev.isAccepted())
+        if t == QEvent.DragLeave:
+            self.dragLeaveEvent(ev)
+            return False
+        if t == QEvent.Drop:
+            self.dropEvent(ev)
+            return bool(ev.isAccepted())
+        return super().eventFilter(obj, ev)
+
+    def dragEnterEvent(self, e):
+        if _mime_may_have_local(e.mimeData()):
+            e.acceptProposedAction()
+            self._set_hover(True)
+        else:
+            e.ignore()
+
+    def dragMoveEvent(self, e):
+        if _mime_may_have_local(e.mimeData()):
+            e.acceptProposedAction()
+        else:
+            e.ignore()
+
+    def dragLeaveEvent(self, e):
+        self._set_hover(False)
+        try:
+            e.accept()
+        except Exception:
+            pass
+
+    def dropEvent(self, e):
+        self._set_hover(False)
+        paths = _dir_paths_from_mime(e.mimeData())
+        if not paths:
+            e.ignore()
+            return
+        e.acceptProposedAction()
+        self.add_paths(paths)
+
+    def add_paths(self, paths):
+        changed = False
+        for raw in paths or []:
+            if not raw or not os.path.isdir(raw):
+                continue
+            abs_p = os.path.abspath(raw)
+            key = os.path.normcase(abs_p)
+            if key in self._keys:
+                continue
+            self._keys.add(key)
+            self._paths.append(abs_p)
+            changed = True
+        if changed:
+            self._rebuild()
+            self.paths_changed.emit()
+
+    def _remove(self, key: str):
+        self._paths = [
+            p for p in self._paths
+            if os.path.normcase(os.path.abspath(p)) != key
+        ]
+        self._keys.discard(key)
+        self._rebuild()
+        self.paths_changed.emit()
+
+    def _leaf(self, path: str) -> str:
+        base = os.path.basename(path.rstrip("\\/")) or path
+        leaves = [
+            os.path.basename(p.rstrip("\\/")) or p
+            for p in self._paths
+        ]
+        if leaves.count(base) > 1:
+            parent = os.path.basename(os.path.dirname(path.rstrip("\\/"))) or ""
+            if parent:
+                return f"{base}  ({parent})"
+        return base
+
+    def _rebuild(self):
+        lay = self.flow
+        while lay.count():
+            item = lay.takeAt(0)
+            w = item.widget() if item else None
+            if w is not None:
+                w.setParent(None)
+                w.deleteLater()
+        has = bool(self._paths)
+        self.empty.setVisible(not has)
+        self.scroll.setVisible(has)
+        try:
+            self.setCursor(Qt.PointingHandCursor if not has else Qt.ArrowCursor)
+        except Exception:
+            pass
+        for path in self._paths:
+            lay.addWidget(self._row(path))
+        lay.addStretch(1)
+
+    def _row(self, path: str) -> QWidget:
+        key = os.path.normcase(os.path.abspath(path))
+        row = QWidget()
+        row.setObjectName("DupMultiDropRow")
+        row.setAttribute(Qt.WA_StyledBackground, True)
+        row.setStyleSheet(
+            f"#DupMultiDropRow{{background:{tk('panel_2')};border-radius:6px;}}"
+        )
+        hl = QHBoxLayout(row)
+        hl.setContentsMargins(8, 2, 4, 2)
+        hl.setSpacing(4)
+        lab = QLabel(self._leaf(path))
+        lab.setToolTip(path)
+        lab.setStyleSheet(
+            f"background:transparent;color:{tk('text')};font-size:12px;"
+        )
+        hl.addWidget(lab, 1)
+        btn = QPushButton("✕")
+        btn.setObjectName("DupMultiDropDel")
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setFocusPolicy(Qt.NoFocus)
+        btn.setFixedSize(18, 18)
+        btn.setToolTip("从列表移除")
+        btn.setStyleSheet(
+            "QPushButton#DupMultiDropDel{background:transparent;border:none;"
+            f"color:{tk('text_mut')};font-size:12px;font-weight:700;padding:0;}}"
+            "QPushButton#DupMultiDropDel:hover{color:#ef4444;}"
+        )
+        btn.clicked.connect(lambda _=False, k=key: self._remove(k))
+        hl.addWidget(btn, 0)
+        self._watch(row)
+        self._watch(lab)
+        return row
+
+    def _set_hover(self, hover: bool):
+        hover = bool(hover)
+        if hover == self._hover:
+            return
+        self._hover = hover
+        self._apply_frame()
+
+    def _apply_frame(self):
+        bd = tk("accent") if self._hover else tk("border")
+        self.setStyleSheet(
+            f"#DupMultiDrop{{background:{tk('input_bg')};"
+            f"border:1px dashed {bd};border-radius:8px;}}"
+        )
+        self.empty.setStyleSheet(
+            f"background:transparent;color:{tk('text_mut')};font-size:12px;"
+        )
+        self.scroll.setStyleSheet(
+            "#DupMultiDropScroll{background:transparent;border:none;}"
+            "#DupMultiDropHost{background:transparent;}"
+        )
+
+    def refresh_theme(self, *_):
+        self._apply_frame()
+        self._rebuild()
 
 
 class PageDupClean(QWidget):

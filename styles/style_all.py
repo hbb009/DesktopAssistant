@@ -368,7 +368,7 @@ def fmt(template: str) -> str:
 def sp(px) -> int:
     """设计像素 → int。
 
-    整站缩放改由启动时 QT_SCALE_FACTOR 完成（见 mainv917），此处固定按 1×
+    整站缩放改由启动时 QT_SCALE_FACTOR 完成（见 mainv918），此处固定按 1×
     返回，避免与全局缩放叠乘。保留 sp() 仅为兼容旧调用。
     """
     try:

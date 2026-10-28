@@ -175,7 +175,7 @@ def install_hint_text() -> str:
         "-i https://www.paddlepaddle.org.cn/packages/stable/cu126/\n"
         f'  "{py}" -m pip install -U "paddleocr[doc-parser]>=3.6.0"\n\n'
         "CPU 可改装 paddlepaddle==3.2.1（无 -gpu）。\n"
-        "装好后回「系统总览 → 截图 OCR」点「检测」。未就绪时点「安装教程」。"
+        "装好后回「系统总览」：权重看「模型」，运行库看「截图 OCR」，再点「检测」。"
     )
 
 
@@ -183,7 +183,7 @@ def missing_local_ocr_message() -> str:
     if not has_vl_weights():
         return (
             "未找到 PaddleOCR-VL-1.6 权重。\n\n"
-            "请把模型放到：\n"
+            "请到「系统总览 → 模型」查看 PaddleOCR-VL-1.6，或放到：\n"
             f"  {find_vl_model_dir()}"
         )
     if not has_paddleocr_runtime():

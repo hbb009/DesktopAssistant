@@ -5,7 +5,7 @@
 # 会与 PyTorch、onnxruntime 抢 DLL，表现为闪退或空 ImportError。
 #
 # 开发：python -m utils.cosyvoice_job <meta.json>
-# 打包：mainv917.exe --cosyvoice-job <meta.json>
+# 打包：mainv918.exe --cosyvoice-job <meta.json>
 # meta.json:
 #   {
 #     "action": "probe" | "synth",

@@ -10,6 +10,10 @@ page_paste.py  —  粘贴助手（提示词仓库）
   · 剪贴板实时显示：复制后标题变绿色「已复制」，内容框同步文本
   · 白名单命中：右侧提示实时反馈（命中抖音 / B站 等）
   · Ctrl+Alt+1 把选中文本加入复制；Ctrl+Alt+2 从复制减去选中；Ctrl+Alt+3 互换
+    用法直接写在三个按钮上。这三个操作发生在其它窗口，不靠悬停说明
+  · 辅助粘贴滑动开关：关掉时三个按钮和 Ctrl+Alt+1/2/3 都不可用。
+    打开后才注册热键，并强制关闭侧栏三个粘贴归属、临时冻结仓库卡片，
+    标题固定为「系统剪贴板」，内容框只同步系统剪贴板
   · 仓库：彩色主题卡片（流式排列，可拖拽改序）
   · 单击卡片：复制内容 + 选中 + 进入修改（填回录入区）
   · 再点同一张：只复制，不重刷表单（避免抖动）
@@ -34,7 +38,7 @@ if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 
 from styles.style_all import (
-    theme, tk, install_card_title, apply_btn_download, apply_medium_button, make_card,
+    theme, tk, install_card_title, apply_btn_download, make_card,
     restyle_card_title, sp, CARD_TITLE_FONT_SIZE, CARD_TITLE_FONT_WEIGHT,
     CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP,
 )
@@ -42,16 +46,18 @@ from utils.logger import get_logger
 
 from PyQt5.QtCore import (
     Qt, QTimer, QPoint, QRect, QRectF, QSize, QMimeData, QEvent, QPointF,
-    QAbstractNativeEventFilter, QCoreApplication, QObject, pyqtSignal,
+    QAbstractNativeEventFilter, QCoreApplication, QObject, pyqtSignal, pyqtProperty,
+    QPropertyAnimation, QEasingCurve,
 )
 from PyQt5.QtGui import (
     QFont, QFontMetrics, QColor, QDrag, QPixmap, QPainter, QPen, QBrush, QPolygonF,
-    QIcon, QCursor,
+    QIcon, QCursor, QLinearGradient, QRadialGradient,
 )
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QAbstractButton,
     QLineEdit, QTextEdit, QScrollArea, QFrame, QMessageBox,
     QSizePolicy, QApplication, QLayout, QButtonGroup, QAbstractScrollArea,
+    QGraphicsOpacityEffect,
 )
 
 log = get_logger(__name__)
@@ -138,6 +144,12 @@ _MOD_CONTROL = 0x0002
 _MOD_NOREPEAT = 0x4000
 _PASTE_HK_MODS = _MOD_CONTROL | _MOD_ALT | _MOD_NOREPEAT
 _PASTE_HK_KEY_LABELS = {1: "Ctrl+Alt+1", 2: "Ctrl+Alt+2", 3: "Ctrl+Alt+3"}
+# 用法写在按钮上。悬停说明已去掉：这三个操作不在本页里做。
+_ASSIST_BTN_TEXT = {
+    1: "加入  Ctrl+Alt+1\n接到后面，无空行则换行",
+    2: "减去  Ctrl+Alt+2\n从剪贴板去掉",
+    3: "互换  Ctrl+Alt+3\n和剪贴板对调",
+}
 _VK_CONTROL, _VK_C, _VK_V = 0x11, 0x43, 0x56
 _VK_SHIFT, _VK_LSHIFT, _VK_RSHIFT = 0x10, 0xA0, 0xA1
 _VK_MENU = 0x12
@@ -1199,6 +1211,20 @@ class ThemeCard(QFrame):
         lay.addWidget(self.lbl_theme, 1)
 
         self._apply_style(record.get("color") or DEFAULT_COLOR, selected=False)
+        self._watch_frozen = False
+
+    def set_watch_frozen(self, frozen: bool):
+        """辅助粘贴查看中：卡片还在，但不能点、拖、删。"""
+        frozen = bool(frozen)
+        self._watch_frozen = frozen
+        if frozen:
+            effect = QGraphicsOpacityEffect(self)
+            effect.setOpacity(0.4)
+            self.setGraphicsEffect(effect)
+            self.setCursor(Qt.ForbiddenCursor)
+        else:
+            self.setGraphicsEffect(None)
+            self.setCursor(Qt.OpenHandCursor)
 
     def record_id(self):
         return self._record.get("id")
@@ -1238,6 +1264,9 @@ class ThemeCard(QFrame):
             self.lbl_theme.set_color("#ffffff")
 
     def mousePressEvent(self, e):
+        if getattr(self, "_watch_frozen", False):
+            e.accept()
+            return
         if e.button() == Qt.LeftButton:
             self._press_pos = e.pos()
             self._dragging = False
@@ -1249,6 +1278,8 @@ class ThemeCard(QFrame):
         super().mousePressEvent(e)
 
     def mouseMoveEvent(self, e):
+        if getattr(self, "_watch_frozen", False):
+            return
         if not (e.buttons() & Qt.LeftButton) or self._press_pos is None:
             return
         if (e.pos() - self._press_pos).manhattanLength() < DRAG_THRESHOLD:
@@ -1257,6 +1288,9 @@ class ThemeCard(QFrame):
         self._start_drag()
 
     def mouseReleaseEvent(self, e):
+        if getattr(self, "_watch_frozen", False):
+            e.accept()
+            return
         self.setCursor(Qt.OpenHandCursor)
         if e.button() == Qt.LeftButton and not self._dragging:
             # 单击：复制 + 选中 + 进入录入区编辑
@@ -1287,12 +1321,18 @@ class ThemeCard(QFrame):
         self._dragging = True
 
     def dragEnterEvent(self, e):
+        if getattr(self, "_watch_frozen", False):
+            e.ignore()
+            return
         if e.mimeData().hasFormat(MIME_CARD_ID):
             e.acceptProposedAction()
         else:
             e.ignore()
 
     def dragMoveEvent(self, e):
+        if getattr(self, "_watch_frozen", False):
+            e.ignore()
+            return
         if e.mimeData().hasFormat(MIME_CARD_ID):
             e.acceptProposedAction()
             try:
@@ -1309,6 +1349,9 @@ class ThemeCard(QFrame):
             e.ignore()
 
     def dropEvent(self, e):
+        if getattr(self, "_watch_frozen", False):
+            e.ignore()
+            return
         if not e.mimeData().hasFormat(MIME_CARD_ID):
             e.ignore()
             return
@@ -1440,18 +1483,27 @@ class CardsDropHost(QWidget):
         p.end()
 
     def mousePressEvent(self, e):
-        # 仓库空白处左键 = 取消选中
+        # 仓库空白处左键 = 取消选中。查看系统剪贴板时仓库是冻住的。
+        if getattr(self._page, "_assist_watch", False):
+            e.accept()
+            return
         if e.button() == Qt.LeftButton and self._card_at(e.pos()) is None:
             self._page._cancel_edit()
         super().mousePressEvent(e)
 
     def dragEnterEvent(self, e):
+        if getattr(self._page, "_assist_watch", False):
+            e.ignore()
+            return
         if e.mimeData().hasFormat(MIME_CARD_ID):
             e.acceptProposedAction()
         else:
             e.ignore()
 
     def dragMoveEvent(self, e):
+        if getattr(self._page, "_assist_watch", False):
+            e.ignore()
+            return
         if e.mimeData().hasFormat(MIME_CARD_ID):
             e.acceptProposedAction()
             src_id = bytes(e.mimeData().data(MIME_CARD_ID)).decode("utf-8")
@@ -1464,6 +1516,9 @@ class CardsDropHost(QWidget):
         super().dragLeaveEvent(e)
 
     def dropEvent(self, e):
+        if getattr(self._page, "_assist_watch", False):
+            e.ignore()
+            return
         if not e.mimeData().hasFormat(MIME_CARD_ID):
             e.ignore()
             return
@@ -1476,6 +1531,114 @@ class CardsDropHost(QWidget):
             self._page._reorder_to_end(src_id)
         self.clear_drop_line()
         e.acceptProposedAction()
+
+
+class _AssistWatchButton(QAbstractButton):
+    """辅助粘贴标题右侧：滑动开关。开=查看系统剪贴板。外观对齐侧栏开关。"""
+
+    W, H = 36, 20
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setCheckable(True)
+        self.setFixedSize(self.W, self.H)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setObjectName("AssistWatchBtn")
+        on_color = "#22c55e"
+        try:
+            on_color = tk("ok") or on_color
+        except Exception:
+            pass
+        self._on_c0 = QColor(on_color)
+        self._on_c1 = QColor(on_color).darker(112)
+        self._knob = 0.0
+        self._anim = QPropertyAnimation(self, b"knobPos", self)
+        self._anim.setDuration(150)
+        self._anim.setEasingCurve(QEasingCurve.OutCubic)
+        self.toggled.connect(self._slide)
+        try:
+            theme.changed.connect(self.update)
+        except Exception:
+            pass
+
+    def getKnobPos(self):
+        return self._knob
+
+    def setKnobPos(self, v):
+        self._knob = max(0.0, min(1.0, float(v)))
+        self.update()
+
+    knobPos = pyqtProperty(float, fget=getKnobPos, fset=setKnobPos)
+
+    def _slide(self, on: bool):
+        self._anim.stop()
+        self._anim.setStartValue(self._knob)
+        self._anim.setEndValue(1.0 if on else 0.0)
+        self._anim.start()
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        w, h = float(self.width()), float(self.height())
+        t = self._knob
+        dark = True
+        try:
+            dark = bool(theme.is_dark)
+        except Exception:
+            pass
+        track = QRectF(1.0, 2.0, w - 2.0, h - 4.0)
+        radius = track.height() / 2.0
+        if t < 0.02:
+            if dark:
+                base = QColor(255, 255, 255, 28)
+                rim = QColor(255, 255, 255, 48)
+            else:
+                base = QColor(148, 163, 184, 90)
+                rim = QColor(148, 163, 184, 140)
+            p.setPen(QPen(rim, 1.0))
+            p.setBrush(QBrush(base))
+            p.drawRoundedRect(track, radius, radius)
+        else:
+            g = QLinearGradient(track.topLeft(), track.topRight())
+            c0 = QColor(self._on_c0)
+            c1 = QColor(self._on_c1)
+            if t < 1.0:
+                c0.setAlpha(int(80 + 175 * t))
+                c1.setAlpha(int(80 + 175 * t))
+            g.setColorAt(0, c0)
+            g.setColorAt(1, c1)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QBrush(g))
+            p.drawRoundedRect(track, radius, radius)
+            hi = QLinearGradient(track.topLeft(), QPointF(track.left(), track.center().y()))
+            hi.setColorAt(0, QColor(255, 255, 255, int(50 * t)))
+            hi.setColorAt(1, QColor(255, 255, 255, 0))
+            p.setBrush(QBrush(hi))
+            p.drawRoundedRect(track.adjusted(0.5, 0.5, -0.5, -track.height() * 0.35), radius, radius)
+
+        pad = 3.0
+        kn = h - 2.0 * pad
+        x0 = pad
+        x1 = w - pad - kn
+        kx = x0 + (x1 - x0) * t
+        knob = QRectF(kx, pad, kn, kn)
+        sh = QRadialGradient(knob.center() + QPointF(0, 1), kn * 0.7)
+        sh.setColorAt(0, QColor(0, 0, 0, 50))
+        sh.setColorAt(1, QColor(0, 0, 0, 0))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(sh))
+        p.drawEllipse(knob.adjusted(-1, 0, 1, 2))
+        kg = QLinearGradient(knob.topLeft(), knob.bottomLeft())
+        kg.setColorAt(0, QColor("#FFFFFF"))
+        kg.setColorAt(1, QColor("#F1F5F9"))
+        p.setBrush(QBrush(kg))
+        p.setPen(QPen(QColor(0, 0, 0, 28), 1.0))
+        p.drawEllipse(knob)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(QColor(255, 255, 255, 160)))
+        p.drawEllipse(QRectF(kx + kn * 0.22, pad + kn * 0.15, kn * 0.45, kn * 0.28))
+        p.end()
 
 
 # ── 主页面 ───────────────────────────────────────────────────────────────────
@@ -1505,6 +1668,7 @@ class PagePaste(QWidget):
         self._hotkey_bound_ids = ()
         self._clip_watch_connected = False
         self._clipboard_capture_enabled = False  # 侧栏剪贴板归属；默认关
+        self._assist_watch = False  # 辅助粘贴开关：只看系统剪贴板
         self._entry_title_tone = "idle"
         self._entry_title_text = "录入"
         self._theme_mode = "draft"
@@ -1516,7 +1680,7 @@ class PagePaste(QWidget):
         self._install_blank_click_filter()
         self._reload()
         self._bind_clipboard_watch()
-        self._bind_hotkeys()
+        # 辅助粘贴默认关：热键等开关打开再注册，避免空占 Ctrl+Alt+1/2/3
         try:
             theme.changed.connect(self.restyle_theme)
         except Exception:
@@ -1680,39 +1844,195 @@ class PagePaste(QWidget):
         return box
 
     def _build_assist_paste_panel(self) -> QWidget:
-        """保存下方：辅助粘贴（按钮 + 热键）。"""
+        """保存下方：滑动开关 + 三个热键按钮。用法写在按钮上。"""
         box = _transparent_bg(QWidget())
         box.setObjectName("PasteAssistBox")
         lay = QVBoxLayout(box)
         lay.setContentsMargins(0, 2, 0, 0)
         lay.setSpacing(6)
 
+        head = _transparent_bg(QWidget())
+        head_l = QHBoxLayout(head)
+        head_l.setContentsMargins(0, 0, 0, 0)
+        head_l.setSpacing(6)
         self.lbl_assist_title = QLabel("辅助粘贴")
         self.lbl_assist_title.setObjectName("PasteAssistTitle")
-        lay.addWidget(self.lbl_assist_title)
+        head_l.addWidget(self.lbl_assist_title, 1)
+        self.btn_assist_watch = _AssistWatchButton()
+        self.btn_assist_watch.toggled.connect(self._on_assist_watch_toggled)
+        head_l.addWidget(self.btn_assist_watch, 0, Qt.AlignVCenter)
+        lay.addWidget(head)
 
         self._assist_btns = []
-        h = getattr(self, "_row_btn_h", 28)
-        for op, name in (
-            (1, "加入选中"),
-            (2, "减去选中"),
-            (3, "互换选中"),
-        ):
-            key = _PASTE_HK_KEY_LABELS[op]
-            btn = QPushButton(f"{name}  {key}")
+        for op in (1, 2, 3):
+            btn = QPushButton(_ASSIST_BTN_TEXT[op])
             btn.setObjectName("PasteAssistBtn")
-            btn.setFixedHeight(h)
+            btn.setFixedHeight(46)
             btn.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
             btn.setCursor(Qt.PointingHandCursor)
             btn.setFocusPolicy(Qt.NoFocus)
-            btn.setToolTip(f"{key}  {name}")
-            apply_medium_button(btn)
             btn.clicked.connect(lambda _=False, n=op: self._on_clip_hotkey(n))
             self._assist_btns.append(btn)
             lay.addWidget(btn)
 
         self._restyle_assist_panel()
+        self._set_assist_ops_enabled(False)
         return box
+
+    def _on_assist_watch_toggled(self, on: bool):
+        if on:
+            self._enter_assist_watch()
+        else:
+            self._leave_assist_watch()
+
+    def _enter_assist_watch(self):
+        """打开开关：侧栏粘贴归属关掉，卡片冻住，录入区变成系统剪贴板查看。"""
+        if getattr(self, "_assist_watch", False):
+            return
+        theme_w = getattr(self, "inp_theme", None)
+        content_w = getattr(self, "inp_content", None)
+        self._assist_watch_snap = {
+            "content": content_w.toPlainText() if content_w is not None else "",
+            "theme": theme_w.text() if theme_w is not None else "",
+            "title": getattr(self, "_entry_title_text", "录入"),
+            "tone": getattr(self, "_entry_title_tone", "idle"),
+            "theme_mode": getattr(self, "_theme_mode", "draft"),
+            "frame": getattr(self, "_entry_frame_color", ""),
+            "capture": bool(getattr(self, "_capture_pending", False)),
+            "replace": bool(getattr(self, "_replace_armed", False)),
+            "editing": getattr(self, "_editing_id", None),
+            "selected": getattr(self, "_selected_id", None),
+            "copied": bool(getattr(self, "_copied_live", False)),
+        }
+        self._assist_watch = True
+        self._replace_armed = False
+        if content_w is not None:
+            content_w.setReadOnly(True)
+        if theme_w is not None:
+            theme_w.setReadOnly(True)
+        save = getattr(self, "btn_save", None)
+        if save is not None:
+            save.setEnabled(False)
+        bar = getattr(self, "color_bar", None)
+        if bar is not None:
+            bar.setEnabled(False)
+        self._set_selection_actions_frozen(True)
+        self._set_cards_watch_frozen(True)
+        self._apply_entry_title_style()
+        self._set_assist_ops_enabled(True)
+        self._bind_hotkeys()
+        mw = self._main_window()
+        if mw is not None and hasattr(mw, "set_assist_watch_lock"):
+            try:
+                mw.set_assist_watch_lock(True)
+            except Exception:
+                log.exception("开启辅助粘贴时关闭剪贴板归属失败")
+        self._show_system_clipboard_now()
+
+    def _leave_assist_watch(self):
+        """关掉开关：录入区和卡片回到打开前，侧栏粘贴归属按打开前恢复。"""
+        if not getattr(self, "_assist_watch", False):
+            return
+        snap = getattr(self, "_assist_watch_snap", None) or {}
+        self._assist_watch = False
+        self._set_assist_ops_enabled(False)
+        self._unbind_hotkeys(keep_filter=True)
+        theme_w = getattr(self, "inp_theme", None)
+        content_w = getattr(self, "inp_content", None)
+        if content_w is not None:
+            content_w.setReadOnly(False)
+        if theme_w is not None:
+            theme_w.setReadOnly(False)
+        save = getattr(self, "btn_save", None)
+        if save is not None:
+            save.setEnabled(True)
+        bar = getattr(self, "color_bar", None)
+        if bar is not None:
+            bar.setEnabled(True)
+        self._set_cards_watch_frozen(False)
+        self._capture_pending = bool(snap.get("capture"))
+        self._editing_id = snap.get("editing")
+        self._selected_id = snap.get("selected")
+        self._copied_live = bool(snap.get("copied"))
+        self._entry_title_text = snap.get("title") or "录入"
+        self._entry_title_tone = snap.get("tone") or "idle"
+        mode = snap.get("theme_mode") or "draft"
+        self._set_theme_mode(
+            mode,
+            color=snap.get("frame") or "",
+            theme_text=snap.get("theme") if mode != "clip" else None,
+        )
+        if mode == "clip" and theme_w is not None:
+            theme_w.blockSignals(True)
+            try:
+                theme_w.setText(snap.get("theme") or "")
+            finally:
+                theme_w.blockSignals(False)
+        self._replace_armed = bool(snap.get("replace"))
+        if content_w is not None:
+            self._applying_clip = True
+            try:
+                content_w.setPlainText(snap.get("content") or "")
+            finally:
+                self._applying_clip = False
+        self._apply_entry_title_style()
+        self._mark_selected()
+        self._sync_save_button()
+        has_card = self._editing_id is not None or self._selected_id is not None
+        self._set_selection_actions_frozen(not has_card)
+        mw = self._main_window()
+        if mw is not None and hasattr(mw, "set_assist_watch_lock"):
+            try:
+                mw.set_assist_watch_lock(False)
+            except Exception:
+                log.exception("关闭辅助粘贴时恢复剪贴板归属失败")
+
+    def _set_cards_watch_frozen(self, frozen: bool):
+        for card in (getattr(self, "_card_widgets", {}) or {}).values():
+            try:
+                card.set_watch_frozen(frozen)
+            except Exception:
+                pass
+
+    def _show_system_clipboard_now(self):
+        if not getattr(self, "_assist_watch", False):
+            return
+        try:
+            text = _read_clipboard_text()
+        except Exception:
+            log.exception("读取系统剪贴板失败")
+            return
+        self._show_system_clipboard(text)
+
+    def _show_system_clipboard(self, text: str):
+        """查看模式下内容框只跟系统剪贴板，标题保持「系统剪贴板」。"""
+        if not getattr(self, "_assist_watch", False):
+            return
+        text = text or ""
+        self._last_clip_text = text
+        edit = getattr(self, "inp_content", None)
+        if edit is None:
+            return
+        self._applying_clip = True
+        try:
+            if edit.toPlainText() != text:
+                edit.setPlainText(text)
+        finally:
+            self._applying_clip = False
+        self._apply_entry_title_style()
+
+    def _set_assist_ops_enabled(self, on: bool):
+        """开关关掉时三个操作按钮冻结：变淡、禁止光标、点了无效。"""
+        on = bool(on)
+        for btn in getattr(self, "_assist_btns", []) or []:
+            btn.setEnabled(on)
+            btn.setCursor(Qt.ForbiddenCursor if not on else Qt.PointingHandCursor)
+            if on:
+                btn.setGraphicsEffect(None)
+            else:
+                effect = QGraphicsOpacityEffect(btn)
+                effect.setOpacity(0.4)
+                btn.setGraphicsEffect(effect)
 
     def _restyle_assist_panel(self):
         title = getattr(self, "lbl_assist_title", None)
@@ -1727,8 +2047,32 @@ class PagePaste(QWidget):
                 f"QLabel{{background:transparent;color:{mut};"
                 f"font-size:{size}px;font-weight:600;}}"
             )
+        dark = True
+        try:
+            dark = bool(theme.is_dark)
+        except Exception:
+            pass
+        if dark:
+            bg, border, fg = "rgba(255,255,255,0.06)", "rgba(255,255,255,0.22)", "#cfe0ff"
+            hover, pressed = "rgba(255,255,255,0.10)", "rgba(255,255,255,0.14)"
+            dis_fg, dis_bg, dis_bd = "rgba(207,224,255,0.38)", "rgba(255,255,255,0.03)", "rgba(255,255,255,0.10)"
+        else:
+            bg, border, fg = "#f8fafc", "#e2e8f0", "#334155"
+            hover, pressed = "rgba(0,0,0,0.06)", "rgba(0,0,0,0.10)"
+            dis_fg, dis_bg, dis_bd = "#94a3b8", "#f8fafc", "#e2e8f0"
+        qss = (
+            f"QPushButton{{background:{bg};border:1px solid {border};color:{fg};"
+            f"border-radius:7px;padding:4px 8px;font-size:12px;font-weight:600;"
+            f"text-align:left;}}"
+            f"QPushButton:hover{{background:{hover};}}"
+            f"QPushButton:pressed{{background:{pressed};}}"
+            f"QPushButton:disabled{{color:{dis_fg};background:{dis_bg};border-color:{dis_bd};}}"
+        )
         for btn in getattr(self, "_assist_btns", []) or []:
-            apply_medium_button(btn)
+            btn.setStyleSheet(qss)
+        watch = getattr(self, "btn_assist_watch", None)
+        if watch is not None:
+            watch.update()
 
     def _build_warehouse_panel(self) -> QWidget:
         box = make_card("CardPasteWarehouse")
@@ -1872,6 +2216,8 @@ class PagePaste(QWidget):
             card = ThemeCard(record, page=self, parent=self.cards_host)
             if self._selected_id is not None and str(record.get("id")) == str(self._selected_id):
                 card.set_selected(True)
+            if getattr(self, "_assist_watch", False):
+                card.set_watch_frozen(True)
             self.cards_layout.addWidget(card)
             self._card_widgets[str(record.get("id"))] = card
             # 新建卡片也挂上空白点击过滤器（卡片本身会被排除，不影响选中）
@@ -1911,7 +2257,8 @@ class PagePaste(QWidget):
 
     def eventFilter(self, obj, event):
         if (
-            event.type() == QEvent.MouseButtonPress
+            not getattr(self, "_assist_watch", False)
+            and event.type() == QEvent.MouseButtonPress
             and event.button() == Qt.LeftButton
             and (self._selected_id or self._editing_id or self._replace_armed)
             and not self._press_hits_card()
@@ -2007,6 +2354,9 @@ class PagePaste(QWidget):
         return a
 
     def _set_entry_status(self, text: str, tone: str = "idle"):
+        if getattr(self, "_assist_watch", False):
+            self._apply_entry_title_style()
+            return
         self._entry_title_text = text or "录入"
         self._entry_title_tone = tone or "idle"
         self._apply_entry_title_style()
@@ -2014,6 +2364,10 @@ class PagePaste(QWidget):
     def _apply_entry_title_style(self):
         lbl = getattr(self, "lbl_entry_title", None)
         if lbl is None:
+            return
+        if getattr(self, "_assist_watch", False):
+            lbl.setText("系统剪贴板")
+            restyle_card_title(lbl)
             return
         tone = getattr(self, "_entry_title_tone", "idle")
         text = getattr(self, "_entry_title_text", None) or "录入"
@@ -2182,7 +2536,8 @@ class PagePaste(QWidget):
         self._clip_timer.timeout.connect(self._on_clipboard_settled)
 
     def _on_clipboard_changed(self):
-        if not getattr(self, "_clipboard_capture_enabled", False):
+        watching = bool(getattr(self, "_assist_watch", False))
+        if not watching and not getattr(self, "_clipboard_capture_enabled", False):
             return
         if self._ignore_clip > 0 or self._clip_op_busy:
             return
@@ -2191,6 +2546,9 @@ class PagePaste(QWidget):
             timer.start()
 
     def _sync_clipboard_now(self):
+        if getattr(self, "_assist_watch", False):
+            self._show_system_clipboard_now()
+            return
         if not getattr(self, "_clipboard_capture_enabled", False):
             return
         if self._ignore_clip > 0 or self._clip_op_busy:
@@ -2198,6 +2556,11 @@ class PagePaste(QWidget):
         self._on_clipboard_settled()
 
     def _on_clipboard_settled(self):
+        if getattr(self, "_assist_watch", False):
+            if self._ignore_clip > 0 or self._clip_op_busy:
+                return
+            self._show_system_clipboard_now()
+            return
         if not getattr(self, "_clipboard_capture_enabled", False):
             return
         if self._ignore_clip > 0 or self._clip_op_busy:
@@ -2231,6 +2594,9 @@ class PagePaste(QWidget):
         self._ignore_clip = max(0, int(getattr(self, "_ignore_clip", 0) or 0) - 1)
 
     def _apply_clipboard_text(self, text: str):
+        if getattr(self, "_assist_watch", False):
+            self._show_system_clipboard(text)
+            return
         text = text or ""
         self._last_clip_text = text
         if not text.strip():
@@ -2345,6 +2711,9 @@ class PagePaste(QWidget):
 
     # ── 全局热键 Ctrl+Alt+1/2/3 ───────────────────────────────────────────
     def _bind_hotkeys(self, _attempt: int = 0):
+        if not getattr(self, "_assist_watch", False):
+            self._unbind_hotkeys(keep_filter=True)
+            return False
         if not sys.platform.startswith("win"):
             self._hotkeys_ok = False
             return False
@@ -2386,7 +2755,10 @@ class PagePaste(QWidget):
         # 过滤器可留：Qt 没有廉价的对称卸载，重绑时复用
 
     def hotkey_inventory(self):
-        st = "ok" if self._hotkeys_ok else "busy"
+        if not getattr(self, "_assist_watch", False):
+            st = "off"
+        else:
+            st = "ok" if self._hotkeys_ok else "busy"
         return [
             {"group": "粘贴助手", "name": "选中加入复制", "key": _PASTE_HK_KEY_LABELS[1], "state": st},
             {"group": "粘贴助手", "name": "从复制减去选中", "key": _PASTE_HK_KEY_LABELS[2], "state": st},
@@ -2394,7 +2766,11 @@ class PagePaste(QWidget):
         ]
 
     def rebind_hotkeys(self):
-        ok = bool(self._bind_hotkeys())
+        if not getattr(self, "_assist_watch", False):
+            self._unbind_hotkeys(keep_filter=True)
+            ok = False
+        else:
+            ok = bool(self._bind_hotkeys())
         return [
             ("选中加入复制", _PASTE_HK_KEY_LABELS[1], ok),
             ("从复制减去选中", _PASTE_HK_KEY_LABELS[2], ok),
@@ -2421,6 +2797,8 @@ class PagePaste(QWidget):
             self._clip_watch_connected = False
 
     def _on_clip_hotkey(self, op: int):
+        if not getattr(self, "_assist_watch", False):
+            return
         if self._clip_op_busy:
             return
         op = int(op or 0)
@@ -2714,6 +3092,8 @@ class PagePaste(QWidget):
 
         「替换中……」时：不打开这张卡，只把它的内容换成当前内容框里的文字。
         """
+        if getattr(self, "_assist_watch", False):
+            return
         if self._replace_armed:
             self._commit_replace(record)
             return
@@ -2778,6 +3158,8 @@ class PagePaste(QWidget):
 
     def _on_save_clicked(self):
         """保存 / 替换内容。替换要先点按钮，再点下面的卡。"""
+        if getattr(self, "_assist_watch", False):
+            return
         if self._replace_armed:
             self._replace_armed = False
             self._sync_save_button()
@@ -2900,6 +3282,8 @@ class PagePaste(QWidget):
 
     def _cancel_edit(self):
         """空白处：取消选中。替换中或外部复制还在时，不清内容框。"""
+        if getattr(self, "_assist_watch", False):
+            return
         if self._replace_armed or (self._capture_pending and self._editing_id is None):
             self._replace_armed = False
             self._selected_id = None
@@ -3024,6 +3408,8 @@ class PagePaste(QWidget):
         self._delete(record)
 
     def _delete(self, record):
+        if getattr(self, "_assist_watch", False):
+            return
         theme = record.get("theme") or record.get("title") or "此卡片"
         ret = QMessageBox.question(
             self, "删除",
@@ -3043,6 +3429,8 @@ class PagePaste(QWidget):
         self._refresh_cards()
 
     def _reorder_cards(self, src_id: str, tgt_id: str, insert_after: bool = False):
+        if getattr(self, "_assist_watch", False):
+            return
         records = _sorted_by_order(_load_records())
         src = next((r for r in records if str(r.get("id")) == str(src_id)), None)
         if src is None:
@@ -3060,6 +3448,8 @@ class PagePaste(QWidget):
         self._refresh_cards()
 
     def _reorder_to_end(self, src_id: str):
+        if getattr(self, "_assist_watch", False):
+            return
         records = _sorted_by_order(_load_records())
         src = next((r for r in records if str(r.get("id")) == str(src_id)), None)
         if src is None:

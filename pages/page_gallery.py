@@ -56,7 +56,9 @@ from utils.gallery_records import (
     parse_record_text, save_records,
     is_record_sep, split_suspect_record_lines, format_records_with_suspects,
     read_record_file_lines, merge_record_lines,
+    records_path as _gallery_records_path,
 )
+from utils.records_dialog_ui import RecordsTotalBar
 
 try:
     import requests as req_lib
@@ -4168,12 +4170,8 @@ def _open_gallery_records_dialog(page):
     _gallery_reload_record_editor(page, preview)
     v.addWidget(preview, 1)
 
-    lbl_total = QLabel("")
-    lbl_total.setObjectName("GalleryRecordTotal")
-    lbl_total.setStyleSheet(
-        f"QLabel#GalleryRecordTotal{{color:{tk('text_mut')};font-size:12px;"
-        f"background:transparent;border:none;padding:0 2px;}}"
-    )
+    _rec_file = _gallery_records_path(key)
+    lbl_total = RecordsTotalBar(_rec_file, dlg, object_name="GalleryRecordTotal")
     v.addWidget(lbl_total)
 
     def _editor_count() -> int:
@@ -4184,7 +4182,7 @@ def _open_gallery_records_dialog(page):
         )
 
     def _set_total_text():
-        lbl_total.setText(f"共 {_editor_count()} 条")
+        lbl_total.set_count_text(f"共 {_editor_count()} 条")
 
     def _on_editor_changed():
         _set_total_text()
@@ -4298,7 +4296,7 @@ def _open_gallery_records_dialog(page):
                     pass
             _set_total_text()
             extra = f" · 本次新增 {len(added)} 条，跳过 {skipped} 条已有"
-            lbl_total.setText(f"共 {_editor_count()} 条{extra}")
+            lbl_total.set_count_text(f"共 {_editor_count()} 条{extra}")
             _tell(
                 f"已读 {len(incoming)} 条\n"
                 f"新增 {len(added)} 条\n"
@@ -5615,13 +5613,19 @@ class _GalleryEHentaiPage(QWidget):
                 mw = None
             if mw is not None:
                 try:
-                    pf = mw.page_fast
-                    if hasattr(mw, "btn_fast") and hasattr(mw, "stack"):
+                    if hasattr(mw, "_ensure_page"):
+                        try:
+                            mw._ensure_page("text_edit")
+                        except Exception:
+                            pass
+                    pf = getattr(mw, "page_text_editor", None) or getattr(mw, "page_fast", None)
+                    btn = getattr(mw, "btn_text_edit", None) or getattr(mw, "btn_fast", None)
+                    if pf is not None and btn is not None and hasattr(mw, "stack"):
                         if hasattr(mw, "_auto_switch"):
-                            mw._auto_switch(mw.stack.indexOf(pf), mw.btn_fast)
+                            mw._auto_switch(mw.stack.indexOf(pf), btn)
                         else:
-                            mw._switch(mw.stack.indexOf(pf), mw.btn_fast)
-                    if hasattr(pf, "on_sequence_fill_done"):
+                            mw._switch(mw.stack.indexOf(pf), btn)
+                    if pf is not None and hasattr(pf, "on_sequence_fill_done"):
                         pf.on_sequence_fill_done(
                             ok=bool(ok),
                             summary=head,
@@ -9431,6 +9435,7 @@ class PageGallery(QWidget):
                 )
                 page.sw_record_skip = sw
                 bar.setTabButton(index, QTabBar.LeftSide, sw)
+                sw.bind_owner_tab(bar, index)
                 bar_sw = getattr(page, "sw_record_skip_bar", None)
                 if bar_sw is not None:
                     bar_sw.setChecked(True)

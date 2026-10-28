@@ -31,9 +31,9 @@ QPushButton {
     border: 1px solid #d97f1e;
     color: #241300;
     font-weight: 700;
-    font-size: 11px;
-    border-radius: 5px;
-    padding: 0 6px;
+    font-size: 12px;
+    border-radius: 6px;
+    padding: 0 10px;
 }
 QPushButton:hover {
     background: qlineargradient(x1:0,y1:0,x2:0,y2:1,
@@ -55,8 +55,9 @@ QPushButton:disabled {
 """
 from utils.pre_download import PLAT_LABEL, normalize_line
 try:
-    from utils.pre_download import FAILED_PLAT, SECTION_KEYS
+    from utils.pre_download import FAILED_PLAT, SECTION_KEYS, reclassify_failed
 except ImportError:
+    reclassify_failed = None  # type: ignore
     # 主进程若仍是改分类前加载的 utils.pre_download，按字面补齐，避免弹窗直接起不来
     FAILED_PLAT = "failed"
     SECTION_KEYS = (
@@ -66,6 +67,8 @@ except ImportError:
     if FAILED_PLAT not in PLAT_LABEL:
         PLAT_LABEL = dict(PLAT_LABEL)
         PLAT_LABEL[FAILED_PLAT] = "无法处理"
+from utils.flow_layout import FlowLayout
+from utils.records_dialog_ui import RecordsTotalBar
 from utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -315,7 +318,7 @@ def _new_export_card_path(label: str) -> str:
         rec_dir = cards_dir()
     except Exception:
         rec_dir = os.path.normpath(
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "userdata")
         )
     try:
         os.makedirs(rec_dir, exist_ok=True)
@@ -354,6 +357,7 @@ def open_pre_process_file_dialog(
     parent=None,
     *,
     on_changed: Optional[Callable] = None,
+    detect_platform: Optional[Callable[[str], str]] = None,
 ) -> None:
     """打开「预处理文件」弹窗：编辑队列；可「转出」某平台到 F6 记录卡。"""
     dlg = QDialog(parent)
@@ -375,10 +379,7 @@ def open_pre_process_file_dialog(
     lay.setSpacing(10)
 
     tip = QLabel(
-        "按「# 平台名」分段编辑，每行一条。"
-        "解析不了或无法下载的记录会自动进入「无法处理」，不再自动重试。"
-        "「转出 xx」：把该平台记录写成速存「记录卡」并清空本侧该段，"
-        "可到速存图文点记录卡做批处理。"
+        "按「# 平台名」分段，每行一条。「转出」写入速存记录卡并清空该段。"
     )
     tip.setWordWrap(True)
     tip.setStyleSheet(
@@ -401,13 +402,39 @@ def open_pre_process_file_dialog(
         preview.setPlainText("（无法读取预处理文件）")
     lay.addWidget(preview, 1)
 
+    try:
+        from utils.app_paths import records_file as _records_file
+        _rec_file = _records_file("pre_download.txt")
+    except Exception:
+        _rec_file = os.path.normpath(
+            os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                "..", "userdata", "pre_download.txt",
+            )
+        )
+    lbl_total = RecordsTotalBar(_rec_file, dlg)
+    lay.addWidget(lbl_total)
+
+    def _editor_count() -> int:
+        try:
+            queues = parse_pre_process_text(preview.toPlainText())
+        except Exception:
+            return 0
+        return sum(len(v or []) for v in queues.values())
+
+    def _set_total_text(extra: str = ""):
+        lbl_total.set_count_text(f"共 {_editor_count()} 条" + (extra or ""))
+
+    preview.textChanged.connect(lambda: _set_total_text())
+    _set_total_text()
+
     def _make_btn(text, bg=None, fg=None, bd=None, hover_bg=None, *, compact=False):
         b = QPushButton(text)
-        b.setFixedHeight(26 if compact else 34)
+        b.setFixedHeight(30 if compact else 34)
         b.setCursor(Qt.PointingHandCursor)
-        fs = "11px" if compact else "13px"
-        br = "5px" if compact else "6px"
-        pad = "padding:0 6px;" if compact else ""
+        fs = "12px" if compact else "13px"
+        br = "6px" if compact else "6px"
+        pad = "padding:0 10px;" if compact else ""
         if compact:
             # 可点 = 图集「预下载」同款橙；不可点走 :disabled 灰
             from PyQt5.QtGui import QColor, QPalette
@@ -471,6 +498,7 @@ def open_pre_process_file_dialog(
         preview.blockSignals(True)
         preview.setPlainText("\n".join(lines).rstrip() + "\n")
         preview.blockSignals(False)
+        _set_total_text()
 
     export_btns: Dict[str, QPushButton] = {}
 
@@ -557,32 +585,146 @@ def open_pre_process_file_dialog(
             log.exception("转出记录卡失败 plat=%s", plat)
             message_box_warn(dlg, "转出失败", str(e))
 
-    # ── 七平台「转出」：单行紧凑（无法处理不转出）──────────────
-    # 短文案省宽度：e-hentai→EH，hitomi.la→hitomi
+    # ── 各平台「转出」：流式换行（无法处理不转出）──────────────
+    # 可读短名；窄窗自动换行，避免单行挤扁（对齐 settings FlowLayout 习惯）
     _EXPORT_SHORT = {
         "douyin": "抖音",
+        "qishui": "汽水",
         "bilibili": "B站",
-        "youtube": "YT",
-        "xvideos": "XV",
-        "pornhub": "PH",
+        "youtube": "YouTube",
+        "jimeng": "即梦",
+        "liblib": "LibTV",
+        "xvideos": "XVideos",
+        "pornhub": "Pornhub",
         "ehentai": "EH",
         "pixiv": "Pixiv",
         "hitomi": "hitomi",
     }
-    export_row = QHBoxLayout()
-    export_row.setSpacing(4)
+    export_host = QWidget()
+    export_host.setMinimumWidth(0)
+    export_host.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Maximum)
+    export_flow = FlowLayout(export_host, margin=0, h_spacing=8, v_spacing=6)
     for plat in SECTION_KEYS:
         if plat == FAILED_PLAT:
             continue
         short = _EXPORT_SHORT.get(plat, PLAT_LABEL.get(plat, plat))
         b = _make_btn(f"转出 {short}", compact=True)
-        b.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        b.setMinimumWidth(0)
+        b.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
         b.clicked.connect(lambda checked=False, p=plat: _export_to_record_card(p))
         export_btns[plat] = b
-        export_row.addWidget(b, 1)
-    lay.addLayout(export_row)
+        export_flow.addWidget(b)
+    lay.addWidget(export_host)
     preview.textChanged.connect(_refresh_export_btn_states)
     _refresh_export_btn_states()
+
+    def _resolve_detect():
+        """Prefer caller-provided detect; else main window _detect_pre_download_platform."""
+        if callable(detect_platform):
+            return detect_platform
+        candidates = []
+        hint = parent if parent is not None else dlg
+        if hint is not None:
+            candidates.append(hint)
+            try:
+                w = hint.window() if hasattr(hint, "window") else None
+                if w is not None and w not in candidates:
+                    candidates.append(w)
+            except Exception:
+                pass
+        try:
+            from PyQt5.QtWidgets import QApplication
+            app = QApplication.instance()
+            if app is not None:
+                for tl in app.topLevelWidgets():
+                    if tl not in candidates:
+                        candidates.append(tl)
+        except Exception:
+            pass
+        for w in candidates:
+            fn = getattr(w, "_detect_pre_download_platform", None)
+            if callable(fn):
+                return fn
+        return None
+
+    def _do_reprocess():
+        """Re-detect each FAILED_PLAT URL; move matches into platform queues and persist."""
+        detect = _resolve_detect()
+        if not callable(detect):
+            message_box_warn(dlg, "重新处理失败", "无法获取平台识别（主窗口未就绪）。")
+            return
+        try:
+            queues = parse_pre_process_text(preview.toPlainText())
+            failed = list(queues.get(FAILED_PLAT) or [])
+            if not failed:
+                _refresh_reprocess_btn_state()
+                return
+            rf = reclassify_failed
+            if not callable(rf):
+                from utils.pre_download import PLATFORMS as _PLATS
+                still = []
+                moved = 0
+                for raw in failed:
+                    line = normalize_line(str(raw))
+                    if not line:
+                        continue
+                    try:
+                        plat = (detect(line) or "").strip()
+                    except Exception:
+                        plat = ""
+                    if plat and plat in _PLATS:
+                        q = queues.setdefault(plat, [])
+                        if line not in q:
+                            q.append(line)
+                        moved += 1
+                    else:
+                        still.append(line)
+                queues[FAILED_PLAT] = still
+                still_n = len(still)
+            else:
+                moved, still_n = rf(queues, detect)
+            if not _apply_queues_to_store(queues):
+                return
+            _sync_preview_from_queues(queues)
+            _refresh_export_btn_states()
+            _refresh_reprocess_btn_state()
+            log.info(
+                "pre-process reclassify moved=%s still=%s",
+                moved, still_n,
+            )
+            if moved:
+                message_box_info(
+                    dlg,
+                    "重新处理",
+                    f"已移入平台队列 {moved} 条；仍无法处理 {still_n} 条。",
+                )
+            else:
+                message_box_info(
+                    dlg,
+                    "重新处理",
+                    f"未匹配到平台；仍无法处理 {still_n} 条。",
+                )
+        except Exception as e:
+            log.exception("reprocess failed")
+            message_box_warn(dlg, "重新处理失败", str(e))
+
+    def _refresh_reprocess_btn_state(*_args):
+        try:
+            queues = parse_pre_process_text(preview.toPlainText())
+        except Exception:
+            queues = {FAILED_PLAT: []}
+        n = len(queues.get(FAILED_PLAT) or [])
+        has = n > 0
+        btn_reprocess.setEnabled(has)
+        if has:
+            btn_reprocess.setCursor(Qt.PointingHandCursor)
+            btn_reprocess.setToolTip(
+                f"对「无法处理」{n} 条用当前剪贴板白名单重新识别平台"
+            )
+        else:
+            btn_reprocess.setCursor(Qt.ForbiddenCursor)
+            btn_reprocess.setToolTip("「无法处理」列表为空")
+
 
     # ── 底栏：保存并关闭 + 关闭 ───────────────────────────────
     btn_row = QHBoxLayout()
@@ -592,6 +734,9 @@ def open_pre_process_file_dialog(
         acc = tk("accent")
     except Exception:
         acc = "#2563eb"
+    btn_reprocess = _make_btn("重新处理")
+    btn_reprocess.clicked.connect(_do_reprocess)
+    btn_row.addWidget(btn_reprocess)
     btn_ok = _make_btn("保存并关闭", bg=acc, fg="#ffffff", bd=acc, hover_bg=acc)
     btn_ok.clicked.connect(_do_save_and_close)
     btn_row.addWidget(btn_ok)
@@ -599,5 +744,8 @@ def open_pre_process_file_dialog(
     btn_close.clicked.connect(dlg.reject)
     btn_row.addWidget(btn_close)
     lay.addLayout(btn_row)
+
+    preview.textChanged.connect(_refresh_reprocess_btn_state)
+    _refresh_reprocess_btn_state()
 
     dlg.exec_()

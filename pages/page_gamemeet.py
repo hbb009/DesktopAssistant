@@ -800,10 +800,11 @@ class PageGameMeet(QWidget):
     # ----- history -----
     def _history_file_path(self) -> str:
         try:
-            from utils.app_paths import data_dir
-            return os.path.join(data_dir(), "gamemeet_history.json")
+            from utils.app_paths import userdata_dir
+            return os.path.join(userdata_dir(), "gamemeet_history.txt")
         except Exception:
-            return os.path.join("data", "gamemeet_history.json")
+            return os.path.join("userdata", "gamemeet_history.txt")
+
 
     def _normalize_history_items(self, items) -> list:
         cleaned = []

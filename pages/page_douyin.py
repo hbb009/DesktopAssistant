@@ -1670,7 +1670,8 @@ class MediaItem:
     extract_audio：地址是视频流，下载后用 ffmpeg 抽出音频。
     """
     __slots__ = ("kind", "label", "url", "ext", "thumb_url", "index",
-                 "default_checked", "live_url", "url_alts", "extract_audio")
+                 "default_checked", "live_url", "url_alts", "extract_audio",
+                 "_record_name")
 
     def __init__(self, kind, label, url, ext, thumb_url="", index=0,
                  default_checked=True, live_url="", url_alts=None,
@@ -1686,6 +1687,7 @@ class MediaItem:
         # 备选地址（同一内容的其它 CDN / 码率），首选失败时逐个回退
         self.url_alts        = [u for u in (url_alts or []) if u and u != url]
         self.extract_audio   = bool(extract_audio)
+        self._record_name    = ""
 
 
 def parse_media(item: dict) -> list:
@@ -2165,6 +2167,8 @@ class DownloadWorker(QThread):
         self._cancel          = cancel_flag
         self._video_info_ref  = video_info or {}
         self._overwrite       = bool(overwrite)  # True=覆盖同名；False=自动改名 _1/_2
+        # 汽水页会在条目上写下计划文件名；成功后收进这里，抖音页留空。
+        self._saved_records   = []
 
     def run(self):
         wd = self._wd = DownloadWatchdog()
@@ -2347,6 +2351,9 @@ class DownloadWorker(QThread):
 
                 if ok:
                     _bump()
+                    rec_name = (getattr(item, "_record_name", "") or "").strip()
+                    if rec_name:
+                        self._saved_records.append(rec_name)
                 return ok, item, info
             finally:
                 wd.end(key)

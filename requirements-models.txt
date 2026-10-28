@@ -1,4 +1,4 @@
-# Desktop Assistant v9.17 - model-related dependencies
+# Desktop Assistant v9.18 - model-related dependencies
 # (screenshot OCR / speech-to-text / voice cloning / image matting)
 # Python 3.10 / 3.11 only.
 # 1) pip install -r requirements.txt
@@ -40,3 +40,9 @@ onnxruntime>=1.16,<1.19
 #   BiRefNet-general -> model/BiRefNet-general/*.onnx (image matting)
 #   Upscayl          -> model/upscayl/upscayl-bin.exe + models (image upscaling)
 # Note: AuK expects transformers 4.57, while CosyVoice pins transformers==4.51.3.
+
+# ---- Translation (Helsinki opus-MT Marian) ----
+sacremoses>=0.0.53
+# MarianTokenizer (opus-MT) needs sentencepiece
+sentencepiece>=0.1.99
+

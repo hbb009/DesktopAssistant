@@ -1,6 +1,6 @@
 # utils/logger.py
 # ---------------------------------------------------------------------------
-# 全站日志：写到 data/app.log（滚动备份），方便用户反馈与本地排错。
+# 全站日志：写到 log/app.log（滚动备份），方便用户反馈与本地排错。
 # 用法：
 #   from utils.logger import get_logger
 #   log = get_logger(__name__)
@@ -27,16 +27,16 @@ _LOG_DIR: Optional[str] = None
 
 
 def _records_dir() -> str:
+    """Log directory (log/). Name kept for call-site compatibility."""
     global _LOG_DIR
     if _LOG_DIR:
         return _LOG_DIR
     try:
-        from utils.app_paths import data_dir
-        d = data_dir()
+        from utils.app_paths import log_dir
+        d = log_dir()
     except Exception:
-        # 兜底：utils 上一级 / data
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        d = os.path.join(root, "data")
+        d = os.path.join(root, "log")
         try:
             os.makedirs(d, exist_ok=True)
         except Exception:

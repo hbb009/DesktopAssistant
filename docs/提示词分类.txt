@@ -1,0 +1,670 @@
+# 提示词分类（单层）
+# 编辑说明：
+#   【分类名】         — 与界面字段对应，如【人物】【镜头】
+#   序号. 标题 | 内容  — 一条预设
+#   界面规则：每栏前 15 条直接显示为 chip；超过 15 条时，其余折进蓝色「H3 ▸」溢出区
+#
+【基础】
+1. 竖屏角色短片 | 竖屏 9:16 构图，聚焦单人角色表演，时长约 8–15 秒，整体像游戏角色展示片而非风景片
+2. 横屏电影短片 | 横屏 16:9 构图，电影感单场戏，时长约 10–15 秒，主体始终可读、环境做陪衬
+3. 连续单镜头 | 单一连续镜头一镜到底，中途不切镜，动作与表情在同一条时间轴上完成
+4. 定格海报瞬间 | 静止定格画面瞬间，像游戏角色海报关键帧，姿态与光影一次成型，不做连续动作
+5. 电影24帧 | 24fps 电影帧率，运动略带胶片感拖影，节奏偏沉稳，适合角色登场与对戏
+6. 流畅动画24帧 | 流畅的 24fps，动作衔接干净，肢体与衣料跟帧自然，适合走位展示
+7. 写实角色展示 | 以可辨认的游戏角色为主体，写实摄影美学打底，背景服务人物不抢戏
+8. 霓虹夜城基底 | 夜城霓虹与湿街作为基础气质，角色高对比可读，整体偏赛博短片开场
+9. 神殿奇幻基底 | 奇幻神殿/魔法空间作为基础场域气质，角色被体积光托起，神秘但五官清楚
+10. 机能工业基底 | 机库/工业冷光作为基础气质，金属与警示色点缀，角色像任务简报封面
+
+【镜头】
+1. 牛仔镜头锁机 | 牛仔镜头构图（大腿以上），平视机位，人物约占画面 70–80%，机位全程锁定不漂移
+2. 严格牛仔中近 | 严格牛仔到中近景之间，取景从大腿中部到略高于头顶，主体大而突出，禁止远景定场
+3. 胸高近机位 | 摄像机约胸部高度、离主体较近，面部与上身细节清晰，背景适度虚化
+4. 固定构图禁运镜 | 固定构图与固定拍摄距离，摄像机完全静止，不变焦、不推轨、不横摇、不俯仰、无抖动
+5. 禁远景禁全身 | 禁止远景与全景，禁止全身远距离取景，禁止环境定场大远景，主体始终近中景可读
+6. 浅景深人像 | 浅景深人像：眼睛焦平面清晰，背景柔焦成光斑，主体与环境分离
+7. 电影景深分层 | 电影感景深分层，前景轻微虚、中景角色实、远景再虚，纵深可读但不散焦五官
+8. 跟随前行运镜 | 流畅电影感运镜跟随角色向前移动，机位与步伐同速，构图比例基本保持
+9. 后退推近 | 角色走近时摄像机平稳后退同时微推近，主体占比缓慢升高，景别从中景过渡到更近
+10. 环绕四分之三 | 缓慢环绕至四分之三侧面，保持人物在画面优势位置，不出现极端仰俯
+11. 微仰英雄机位 | 轻微仰角英雄机位，肩线抬高、下颌轮廓更锋利，仍能看清眼睛
+12. 微俯压迫机位 | 轻微俯角，强调空间压迫或审视感，主体仍占画面主导
+13. 过肩对峙 | 过肩镜头感：前景肩背虚化，焦点落在对视的面部，适合对峙/对话
+14. 侧面剪影轮廓 | 偏侧面取景，强调剪影轮廓与发丝边缘光，面部仍保留可读的三点光信息
+15. 柔和镜头光晕 | 柔和镜头光晕点缀高光，不糊脸，增加电影光学气质
+16. 手持微抖克制 | 极轻手持微抖增加现场感，幅度克制，不破坏面部稳定与焦点
+17. 面部特写 | 面部特写：取景从下颌到发际，五官占满画面，背景完全虚化，近到能看清瞳孔与皮肤纹理
+
+【人物】
+1. 外科医生 | 一名女性外科医生。黑发全部拢到脑后，露出整个额头；窄眼深褐，眼皮薄，眉短而直，鼻尖略勾；眉间有淡竖纹
+2. 记者 | 一名女性调查记者。黑棕狼尾短发；圆眼亮褐，双眼皮，眉扬，鼻直；笑时露出一点犬齿，左颊酒窝
+3. 武术教练 | 一名女性武术教练。墨发高马尾扎得很紧，发际线略高；凤眼近黑，眉锋利，颧骨高，唇薄；鼻梁一道旧疤
+4. 调酒师 | 一名女性调酒师。黑短发里夹一缕酒红，刘海不对称；琥珀圆瞳，眉挑，鼻小，唇色偏深；右眼下泪痣
+5. 春丽 | 以《街头霸王》春丽为灵感的女性。黑发在头顶两侧梳成圆髻，额前厚刘海；大眼深棕，浓眉，颧骨圆，鼻小，唇丰满
+6. 蒂法 | 以蒂法·洛克哈特为灵感的女性。长黑棕发，发尾微卷，刘海偏分；大眼红褐，脸型偏长，眉清，鼻直，唇丰
+7. 萨姆斯 | 以萨姆斯·阿兰为灵感的女性。金色长发高马尾；蓝眼，金色眉毛，椭圆脸，鼻直，唇薄，下巴略方
+8. 明日香 | 以明日香·兰格雷为灵感的女性。橘红长发分成双马尾，齐刘海；蓝瞳大眼，眉挑，鼻小，脸偏圆；左颊一颗浅痣
+9. 绫波丽 | 以绫波丽为灵感的女性。短蓝发齐耳，刘海平；红瞳细长，脸色很白，眉淡，鼻小，唇薄，面部几乎不动
+10. 莫莉卡 | 以莫莉卡为灵感的女性。棕黑长直发，一侧别到耳后；棕绿瞳，脸型柔和，鼻秀，唇自然；右颊一颗痣
+11. 贝优妮塔 | 以贝优妮塔为灵感的女性。黑发极长，大波浪，一侧头发遮住半边眼；灰瞳狭长，眉高，鼻高，唇厚，下颌尖
+12. 黑寡妇 | 以黑寡妇为灵感的女性。红棕波浪发及颈；绿瞳杏眼，眉弓清晰，鼻直，唇丰；左眉尾一道浅疤
+13. 帕瓦 | 以《电锯人》帕瓦为灵感的女性。浅金短发乱翘，头顶两只短角；红瞳，尖牙，脸小，眉挑，鼻短
+14. 约尔 | 以约尔·福杰为灵感的女性。黑长直发侧分，发丝贴着面颊；红瞳，眼尾上挑，脸型尖，鼻秀，唇色深
+15. 人造人18号 | 以人造人18号为灵感的女性。金发齐颈内扣；蓝眼，金色淡眉，圆脸，鼻小，唇薄
+16. 汉库克 | 以波雅·汉库克为灵感的女性。黑长直发，刘海很长；细长深瞳，眉高挑，鼻秀，唇薄，脸型极长；左眼下美人痣
+17. 菲 | 以菲·瓦伦坦为灵感的女性。蓬松紫短发；暖褐瞳，脸小，左眉上挑，鼻小，唇丰
+18. 艾斯德斯 | 以艾斯德斯为灵感的女性。蓝长直发，刘海厚；蓝瞳，脸型冷，鼻高，唇薄；右眼角一道短疤
+19. 草薙素子 | 以草薙素子为灵感的女性。紫黑短发；紫灰窄瞳，脸瘦，下颌尖，眉淡，鼻直，唇薄
+20. 2B | 以《尼尔：机械纪元》2B为灵感的女性。银白短发内扣；灰瞳，脸色瓷白，眉淡，鼻小，唇薄，椭圆脸
+21. A2 | 以《尼尔：机械纪元》A2为灵感的女性。短白发凌乱；灰蓝瞳，脸瘦，颧骨高，唇薄；左颊一道旧伤疤
+22. 纲手 | 以纲手为灵感的女性。深棕长直发中分；褐瞳，脸型方圆，眉浓，鼻翼略宽；额心一枚菱形浅印，眼角有细纹，下唇一颗痣
+23. 劳拉 | 以劳拉·克劳馥为灵感的女性。棕发高马尾；褐瞳，眉浓，鼻直，颧骨高，下颌有力，唇偏薄；眉骨一道浅疤，面部肤色偏暖
+24. 水冰月 | 以美少女战士水冰月为灵感的女性。金发在头顶两侧盘成圆髻，再垂下两束长发，额发齐；蓝瞳大眼，圆脸，鼻小，唇小
+25. 玛奇玛 | 以《电锯人》玛奇玛为灵感的女性。浅杏长发编成辫，环在头顶；黄环瞳，眼型细长，唇薄，面部很静，几乎不笑
+26. 三笠 | 以三笠·阿克曼为灵感的女性。黑发短波波，刚过耳下；灰瞳，眉直，瘦长脸，鼻直，唇薄
+27. 妮可罗宾 | 以《海贼王》妮可·罗宾为灵感的女性。黑长直发中分；蓝瞳细长，鼻高，唇薄，长脸，眉尾上扬
+28. 艾露莎 | 以艾露莎·斯卡蕾特为灵感的女性。猩红长发披在一侧；褐瞳，脸型偏硬，眉浓，鼻直，唇线清楚
+29. 神奇女侠 | 以神奇女侠为灵感的女性。黑长波浪发；蓝瞳，浓眉，鼻直，下颌清晰，唇丰，椭圆脸
+30. 绯红女巫 | 以绯红女巫为灵感的女性。深棕波浪长发；褐瞳杏眼，瘦脸，眉形柔，鼻秀，唇薄
+31. 毒藤女 | 以毒藤女为灵感的女性。红发长卷；绿瞳，眼尾上挑，面部肤色偏浅叶绿，眉高，颧骨高，唇丰
+32. 阿索卡 | 以阿索卡·塔诺为灵感的女性。没有头发，头顶两条示力者，脑后蒙脱拉；面部有对称白色纹路，蓝瞳，面部肤色暖橘
+33. 金克丝 | 以金克丝为灵感的女性。蓝色极长双辫；粉瞳，瘦小脸，眉挑，鼻小，唇薄；右眉一道缺口
+34. D.Va | 以《守望先锋》D.Va为灵感的女性。棕长发，一侧编成细辫；褐瞳大眼，圆脸，鼻小，颊饱满；左眼下泪痣
+35. 莱薇 | 以《黑礁》莱薇为灵感的女性。黑短发；棕瞳，瘦脸，眼下有淡青，眉淡，唇薄，眼型细
+36. 嘉米 | 以《街头霸王》嘉米为灵感的女性。深棕长发高马尾；褐瞳，圆润脸，浓眉，鼻小；笑时露齿，两颊雀斑
+37. 艾达王 | 以艾达·王为灵感的女性。黑短波波头；棕瞳细长，眉挑，鼻高，唇色深；左颊美人痣
+38. 渡鸦 | 以渡鸦为灵感的女性。紫短发；紫瞳，面部肤色冷灰，眉压低，瘦脸，鼻直，唇薄
+39. 人造人21号 | 以人造人21号为灵感的女性。蓬松棕发；金褐瞳，圆脸，鼻小，犬齿略尖，眉软
+40. 杰西卡兔 | 以杰西卡·兔为灵感的女性。红长波浪发盖住一只眼；紫瞳，尖脸，唇丰；左颊美人痣
+41. 峰不二子 | 以峰不二子为灵感的女性。黑长直发；细长眼，瘦长脸，眉很细，唇薄，笑意只到眼尾
+42. 姬塔娜 | 以姬塔娜为灵感的女性。黑发高马尾，额前不留刘海；褐瞳，瘦脸，颧骨高，浓眉，唇薄
+43. 米蕾娜 | 以米蕾娜为灵感的女性。红发编成辫；金瞳，脸色苍白，面部有浅红纹路，眉淡，鼻秀，唇薄
+44. 不知火舞 | 以不知火舞为灵感的女性。棕长发高马尾；褐瞳，圆脸，眉弯，鼻小，唇丰
+45. 叶奈法 | 以叶奈法为灵感的女性。黑卷发；紫瞳，瘦脸，颧骨高，鼻直，唇薄，下颌尖
+46. 希里 | 以希里为灵感的女性。灰白长发不对称，一侧更短；绿瞳，瘦脸，眉直，唇薄；鼻梁一道疤
+47. 迪米特雷斯库 | 以迪米特雷斯库夫人为灵感的女性。黑发大波浪盘起；深瞳，长脸，眉高，鼻高，唇薄，下颌长，脸色苍白
+48. 玛利亚 | 以《血源诅咒》玛利亚女士为灵感的女性。浅金短发内扣；灰瞳，脸色苍白，眼下有阴影，眉淡，唇薄，窄脸
+49. 猎空 | 以《守望先锋》猎空为灵感的女性。棕短发向后抓，额前一撮翘起；褐瞳，圆脸，短眉，鼻小，满脸雀斑，笑起来眼弯
+50. 尤菲 | 以尤菲·如月为灵感的女性。黑短发；深色大眼，圆脸，眉弯，鼻小，颊边自然泛红
+51. 霍克爱 | 以莉莎·霍克爱为灵感的女性。金发侧分长波浪；蓝瞳，瘦脸，眉高，鼻直，唇薄，下颌尖
+52. 塞尔达 | 以塞尔达公主为灵感的女性。金发，耳尖明显；蓝瞳，椭圆脸，眉软，鼻秀，唇自然
+53. 亚马逊战士 | 以神话亚马逊女战士为灵感的女性。深棕卷发束在脑后；褐瞳，浓眉，鼻直，颧骨高，下颌有力；左颊一道短疤
+54. 赏金猎人 | 一名女性赏金猎人。沙金短发凌乱；灰绿瞳，眼窝深，眉有一处断开，鼻梁曾歪过，唇薄；下巴一道浅疤
+55. 科学家 | 一名女性研究科学家。黑发里夹着银丝，中长发；灰蓝圆瞳，眉淡，鼻尖圆，唇厚；右太阳穴一块浅胎记
+56. 赛车工程师 | 一名女性赛车工程师。黑发贴头皮的超短发；深棕瞳，眉直，鼻窄，唇薄；两侧发际线不对称
+57. 地质学家 | 一名女性地质学家。褐卷短发；榛色瞳，满脸淡雀斑，鼻梁上更密，眉疏，唇自然
+58. 乘务长 | 一名女性乘务长。黑发低髻，发丝服帖；细眼黑褐，眉弯，鼻直，唇薄，表情纹很少；耳垂小
+59. 采矿工程师 | 一名女性采矿工程师。深棕寸头；小眼深褐，浓眉几乎连到鼻根，鼻宽，唇厚；左眉骨有旧伤凸起
+60. 景观师 | 一名女性园林景观师。茶棕中发微卷；绿褐瞳，圆脸，淡雀斑，眉淡，鼻短，唇色自然
+61. 修复师 | 一名女性艺术品修复师。黑发中分及颈；细长眼灰棕，眉淡，鼻秀，唇薄，眼睑略低；右颊一块淡褐斑
+62. 特技演员 | 一名女性特技演员。超短黑发；亮褐瞳，眉骨高，鼻直，唇薄；下颌一处淡疤
+63. 天文学家 | 一名女性天文学家。黑长直发，刘海遮住半边眉；深色大眼，脸色白，眉淡，鼻小，唇薄；左眼下泪痣
+64. 骑手 | 一名女性马术运动员。黑棕发编成一条辫贴在脑后；深瞳，颧骨高，浓眉，唇薄；鼻梁有晒斑，面部肤色偏暖
+65. 潜水教练 | 一名女性潜水教练。黑发极短；深褐瞳，眼白清，眉淡，鼻小，唇厚；两颊各一颗对称小痣
+66. 编舞家 | 一名女性芭蕾编舞家。黑发紧贴头皮梳成发髻；丹凤眼深棕，眉长，鼻窄，下颌尖，额头高
+67. 卡珊德拉 | 以《刺客信条》卡珊德拉为灵感的女性。深棕长发半束；褐瞳，浓眉，颧骨高，下颌有力；鼻梁高，上面有一道疤
+68. 罗刹女 | 以罗刹女为灵感的女性。黑长发中分；金瞳细长，眉高，鼻秀，唇薄，长脸；左眉一道短红痕
+69. 急救员 | 一名女性急救医护员。深棕马尾偏低；圆眼暖褐，短眉，鼻头圆；左额一颗痣，唇上有细纹
+70. 暴风女 | 以暴风女为灵感的女性。白长直发；蓝瞳，深棕肤色，眉清楚，鼻翼宽，唇饱满，颧骨高
+71. 布尔玛 | 以布尔玛为灵感的女性。亮蓝短发，发尾微翘；蓝瞳大眼，小脸，鼻尖略翘，眉淡
+72. 女浩克 | 以女浩克为灵感的女性。深棕卷发及颈；绿色虹膜，面部肤色呈均匀的绿色，眉浓，颧骨高，下颌宽，唇饱满
+73. 阿丽塔 | 以阿丽塔为灵感的女性。深棕短发；特大的圆眼，褐瞳，瞳孔大而清楚，小脸，鼻小，眉淡
+74. 四枫院夜一 | 以四枫院夜一为灵感的女性。黑长直发；深色细长瞳，脸色白，眉淡，唇薄，窄脸
+75. 露西 | 以《赛博朋克：边缘行者》露西为灵感的女性。粉白短发不对称，一侧头发盖住一只眼；浅色虹膜，瞳孔边缘有细环，脸小，下颌尖，鼻窄
+76. 船长 | 一名女性远洋邮轮船长。黑发里掺着花白，向后梳，露出额头；灰瞳，眼尾纹深，浓眉，鼻高，唇薄，下颌方
+77. 驯兽师 | 一名女性驯兽师。蜜棕长发松松扎成低马尾，碎发多；琥珀瞳，眉软且右眉更高，鼻宽；笑时眼尾纹深
+78. 急诊护士 | 一名女性急诊科护士。黑发低马尾，耳际留几缕碎发；圆眼深棕，眉平而清，鼻梁直，唇薄；左眼下一颗小痣
+79. 刺客 | 一名女性刺客。墨黑长发半束，一侧别到耳后；细长上挑眼，瞳色近黑，眉锋利，鼻梁高；右眉尾一道浅疤
+80. 法师 | 一名女性奥术法师。银白长发中分，发梢微卷；浅灰紫瞳，眼型偏长，眉淡，鼻窄，唇色冷；额心一粒浅痣
+81. 网球教练 | 一名女性职业网球教练。栗棕头发扎成齐颈马尾；暖棕瞳，眉浓，眼角微扬，鼻头圆；笑时右颊有酒窝
+82. 航天工程师 | 一名女性航天工程师。深棕波波头齐下颌；灰绿瞳，内双，眉直；鼻梁略有驼峰，左太阳穴一颗痣
+83. 厨师 | 一名女性厨师。蜜金短发向后梳，露出额头；琥珀瞳，眼角微垂，眉软，唇饱满；鼻翼两侧淡雀斑
+84. 建筑师 | 一名女性建筑师。黑发低髻，鬓角干净；窄长眼深褐，眉骨高，鼻直，下颌线清晰；右颊一小块浅褐斑
+85. 摄影师 | 一名女性野生动物摄影师。亚麻色中长发侧分，发尾外翻；榛色瞳，双眼皮宽，眉疏，唇峰明显；鼻梁一排浅雀斑
+86. 指挥家 | 一名女性管弦乐团指挥。鸦黑头发盘成紧髻，发际线整齐；椭圆眼深棕，眉高挑，鼻长，唇薄而平；耳上缘略尖
+87. 机械师 | 一名女性航天机械师。铜棕寸头偏长，头顶略蓬；铁灰瞳，眼窝深，浓眉中间断开，鼻宽；下唇左侧一小疤
+88. 警探 | 一名女性警探。黑发侧分及颈，一边塞到耳后；冷棕瞳，眼尾下垂，眉压低，鼻梁直；左眉有一道断眉
+89. 科学家 | 一名女性科学家。灰棕长直发，薄刘海；淡褐瞳，眼距略宽，眉淡，鼻小，唇色浅；右眼角一颗泪痣
+90. 兽医 | 一名女性兽医。焦糖色波浪中发；圆眼暖棕，卧蚕明显，眉软，鼻短，唇厚；两颊均匀雀斑
+91. 空乘 | 一名女性空乘人员。深栗发低髻，鬓角服帖；杏眼黑褐，眉弯，鼻秀，唇形清楚；下巴一颗小痣
+92. 舞蹈教练 | 一名女性舞蹈教练。亮黑头发全部梳进高发髻，额发不留；丹凤眼深棕，眉长，鼻梁窄，下颌尖
+93. 律师 | 一名女性律师。深棕齐肩内扣；细眼灰棕，眉平，鼻高，唇线清晰；右嘴角一颗痣
+
+【体型】
+1. 运动员反差体 | 精英女运动员体格：大腿粗壮有力、股四头肌与腘绳肌发达；腰部纤细形成上下反差；上身轮廓优雅；胸部丰满有重量感但完全被衣物覆盖；整体比例写实稳定
+2. 健美雕琢体 | 线条雕琢的健美体格：肩背清晰、腹肌与腹斜肌可见；四肢肌肉紧致不臃肿；腰线收束；皮肤光滑无夸张青筋；姿态挺拔
+3. 丰满强健体 | 强健而丰满的健美轮廓：宽肩宽胯、腿部结实；胸部圆润饱满自然；腰肢相对纤细；衣料下体积感明确但不色情暴露
+4. 高挑力量体 | 身材格外高挑：腿长占比偏高，躯干修长；力量感来自紧致肌肉而非臃肿；站姿骨盆中立、肩线打开
+5. 曲线力量体 | 曲线玲珑但带力量：胸腰臀起伏明显；大腿与臀部饱满有密度；腹部平坦紧致；整体像能跑能打的角色体型
+6. 窄腰宽胯体 | 纤细腰线对比宽阔健美臀胯与粗壮大腿；下盘稳定感强；上身相对轻盈；侧面剪影起伏清楚
+7. 宽肩窄腰体 | 肩部宽平有力、锁骨清晰；腰部收束；髋部适中；像装甲/战术角色的倒三角剪影
+8. 腹肌可见体 | 腹肌清晰可见（约六块）并带腹斜肌轮廓；核心收紧；呼吸时起伏克制；与强健四肢匹配
+9. 粗腿支撑体 | 大腿极粗、肌肉密度高；膝踝有力；站立时下肢像承重柱；上身保持女性优雅轮廓以免头重脚轻
+10. 匀称写实体 | 均衡写实人体比例：头身比自然；四肢长短协调；无明显畸变；适合长期人设稳定出图
+11. 柔韧舞者体 | 修长肢体、柔韧感强；肩开胯稳；肌肉线条薄而清晰；适合武术/舞蹈架势的角色体型
+12. 厚实装甲体 | 略偏厚实的力量体：胸背厚度够扛装甲；颈肩衔接有力；腿部粗壮；仍保持女性腰线与比例可读
+
+【服装】
+1. 黑色赛博 | glossy-black cyber cloth with mixed matte panels one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, an asymmetric visor over one eye and a data jack at the temple, a data-channel shoulder and mixed matte-gloss sleeves, a magnetic clasp beside the cleavage, a data buckle belt with a short cable loop, a port band at mid-thigh only, a small knee plate, calf data channels, cyber boots
+2. 白色黑饰 | white cloth with black trim one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, black-rim glasses and a small black ear clip, a black shoulder outline and white sleeves with black cuffs, black trim around the neckline that leaves the cleavage visible, a black-edge belt with a square buckle, a black outline band around the mid-thigh only, a knee band, a calf cuff, white service shoes
+3. 绿白医战 | emerald and white medical-combat cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, field-medic visor and a white-green headlamp, white-green shoulder plates and soft protective sleeves, a medical cross set above the cleavage, waist med-kit mounts and a tourniquet loop, a green strap buckled at mid-thigh, knee pads, calf wraps, combat-medic boots
+4. 深青战术 | deep-teal tactical cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, teal night visor and a short comm bead, matte shoulder pads and abrasion-resistant sleeves, a pouch strap beside the cleavage that does not cover it, a multi-pouch belt with quiet snaps, a teal strap at mid-thigh only, reinforced knees, calf wraps, sealed boots
+5. 白海军蓝 | white cloth with navy blocks one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, navy hair ribbon and a small harbor pin, navy shoulder blocks and white sleeves with navy cuffs, navy blocks beside the cleavage, a navy belt with a brass buckle, a navy band around the mid-thigh only, a knee band, a calf band, harbor shoes
+6. 酒红仿皮 | wine-red velvet and black faux leather one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, wine ear cuff and a small velvet hair jewel, black faux-leather shoulder plates and velvet sleeves with leather elbows, a leather frame around the cleavage, the center left open, a leather belt with a wine buckle, a wine leather band at mid-thigh only, leather knee caps, a leather calf panel, night heels
+7. 炭灰绯红 | charcoal cloth with a crimson waist band one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, charcoal press glasses and a small crimson clip, a crimson shoulder stripe and charcoal sleeves, a crimson line beside the cleavage that does not cover it, a waist band with a short cloth end, a charcoal strap buckled at mid-thigh, a knee seam, a calf wrap, reporter boots
+8. 紫罗兰黑金 | deep-violet velvet with black and gold one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, gold-violet circlet and one gold ear drop, black-gold shoulder blocks and velvet sleeves, gold corners framing the cleavage, gold waist buckles on a dark cord, mid-thigh band, a gold knee stud, a dark calf panel, mage boots
+9. 绯红魔法装甲 | crimson and silver rune-plate cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, an open-face crimson crest helm with a silver rune at the brow, silver shoulder caps and crimson sleeves with silver cuff plates, a silver chest panel windowed around the cleavage so the plunge stays open, a plate buckle etched with one rune, mid-thigh band, silver knee cops, short calf plates, closed boots
+10. 珍珠演出 | pearl-white performance cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, pearl face gems at the outer corners of the eyes and a small pearl hair pin, luminous shoulder lines and pearl sleeves with soft cuffs, pearl strands draped beside the cleavage, not across it, a pearl chain belt, a pearl band around the mid-thigh only, a sparkle knee dot, a pearl calf line, stage heels
+11. 钴蓝缎面战 | cobalt satin combat cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, cobalt hair pin and a small matte brow clip, structured satin shoulders and cobalt sleeves with reinforced elbows, a clean chest seam around the cleavage, a tight waist-seal belt with a hidden buckle, mid-thigh band, reinforced knees, calf pleats, warrior boots
+12. 宝蓝红金装甲 | royal-blue one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, crimson and gold panels, gold-and-crimson crest that leaves the face clear, shoulder caps and blue sleeves with gold cuff rings, a crimson-gold chest panel, waist lock buckles and a short crimson tassel, mid-thigh band, knee plates, short calf plates, heavy boots
+13. 深紫白弹力 | deep-purple and white high-stretch cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, white sport ribbon and a small purple clip, purple-white shoulder blocks and high-stretch sleeves, white lines framing the cleavage, an elastic belt with a flat buckle, mid-thigh band, knee sleeves, calf sleeves, dance sneakers
+14. 绯黑魔纹 | crimson and black cloth with faint magic traces one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, small curse mark on the forehead and a black hair spike, patterned shoulders and sleeves with faintly luminous traces, a geometric pattern circling the cleavage, the center left open, a trace belt with one glowing stitch, a luminous band at mid-thigh only, a knee mark, calf traces, ceremonial boots
+15. 祖母绿有机 | emerald organic cloth with leaf and bark texture one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, leaf circlet and a tiny seed jewel at the temple, biomimetic shoulder shells and leaf-vein sleeves, a vine frame around the cleavage that does not cover it, a bark-texture belt with a living clasp, an emerald band around the mid-thigh only, a soft knee wrap, a calf vine wrap, root-texture boots
+16. 深灰白橙战 | deep-grey cloth with white-orange marks one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, strike headset and a small orange tick at the temple, white-orange dots on the shoulders and grey sleeves, a strap beside the cleavage, a pouch belt with orange tabs, a grey strap buckled at mid-thigh, knee pads with orange marks, calf wraps, assault boots
+17. 黑钴蓝青光 | black and cobalt cloth with cyan lights one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, cyan-node glasses and a short antenna clip, cobalt shoulder lights and black sleeves with guide wires, light nodes beside the cleavage that do not cover it, a wire belt with a cyan coupler, a black band with cyan nodes at mid-thigh only, a knee node, calf wires, hacker boots
+18. 黑绿战术 | black and metallic-green tactical cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, green-black headband and a small leaf-shaped comm bead, metallic-green shoulder edges and black sleeves, straps around the cleavage, the center left open, a magazine belt with quiet snaps, mid-thigh band, knee pads, calf wraps, jungle boots
+19. 粉蓝亮面 | pink and navy glossy idol cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, pink face gems and a navy hair clip, large pink-blue shoulder blocks and glossy sleeves, a color split framing the cleavage, a gloss belt with a star buckle, a pink band around the mid-thigh only, gloss knee caps, calf panels, idol heels
+20. 紫罗兰绿纹 | deep-violet velvet with emerald lines one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, an emerald-line circlet and a small violet ear stud, violet shoulders with emerald seams and velvet sleeves, emerald lines around the cleavage that do not cover it, a waist cord with an emerald bead, mid-thigh band, a thin knee line, an emerald calf line, scholar boots
+21. 绯黑插接 | crimson and black modular cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, red module clip at the temple and a black status cap, shoulder plates and elbow ports, a block frame around the cleavage, waist port lights and a lock ring, a crimson module band at mid-thigh only, knee ports, calf blocks, assembly boots
+22. 金黄深蓝 | golden-yellow cloth with deep-blue plates one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, sun-disc hair ornament and a small blue ear drop, deep-blue shoulder plates and gold sleeves, a blue inset beside the cleavage that does not cover it, a gold belt with a sun buckle, a gold band around the mid-thigh only, a blue knee plate, a gold calf edge, sun-knight boots
+23. 深青黑战术 | deep-teal and black tactical cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, teal night visor and a black comm cap, black shoulder pads and teal sleeves, a flat guard set above the cleavage, a multi-pouch belt, a teal strap buckled at mid-thigh, knee pads, calf wraps, infiltration boots
+24. 绯紫皇家 | crimson and deep-violet royal velvet one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, gold hair comb and a small violet jewel at the temple, gold-trimmed shoulders and velvet sleeves with gold cuffs, gold embroidery framing the cleavage, the center left open, a gold chain belt, a gold band at mid-thigh only, a gold knee stitch, a gold calf stitch, palace boots
+25. 祖母绿哑光战 | emerald matte combat cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, matte emerald brow band that leaves the face clear, soft shoulder pads and matte sleeves with quiet cuffs, a flat guard above the cleavage that does not cover it, a waist weapon-mount belt, an emerald strap at mid-thigh only, knee pads, calf wraps, ranger boots
+26. 午夜紫能纹 | midnight-purple energy cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, slim headband with an energy trace and a temple node, energy branches on the shoulders and pulse-line sleeves, an energy fork around the cleavage that does not cover it, a pulse belt with one bright coupler, an energy band at mid-thigh only, a knee node, calf pulse lines, runner boots
+27. 松石宝蓝 | turquoise and sapphire gem-set cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, sapphire ear drops and a turquoise hair pin, gem shoulder plates and turquoise sleeves with silver edges, sapphire plaques framing the cleavage, the center left open, a gem belt with a silver clasp, a turquoise band around the mid-thigh only, a knee gem, a gem calf line, mage heels
+28. 品红黑亮面 | magenta and black glossy cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, magenta jewel stripe on the cheek and a black hair clip, high-gloss shoulder blocks and magenta-black sleeves, a sharp color boundary around the cleavage, a gloss belt with a magenta buckle, a magenta band at mid-thigh only, gloss knee caps, calf panels, stage boots
+29. 黑白点绯战 | black-white cloth with crimson ticks one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, small crimson mark at the temple and a black comm clip, black-white shoulder blocks and combat sleeves, crimson tick marks beside the cleavage that do not cover it, a pouch belt with a crimson tab, mid-thigh strap, knee pads, calf wraps, urban boots
+30. 钴蓝橙线 | cobalt cloth with orange energy lines one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, orange-filament glasses and a small power node at the temple, cobalt shoulders and sleeves with orange energy lines, a power node set above the cleavage, an energy belt with an orange coupler, mid-thigh band, a knee node, calf energy lines, tech boots
+31. 黑银绯纹 | glossy black cloth with silver and crimson patterns one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, silver-crimson forehead ornament and a small ear stud, patterned shoulders and gloss-black sleeves, a silver-crimson pattern around the cleavage, the center left open, a relief belt, a patterned band around the mid-thigh only, a knee ornament, patterned calf panels, fashion boots
+32. 白宝蓝橙 | white, royal-blue, and orange aide cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, an orange rank pin and a white hair clip, white-blue shoulder blocks and white sleeves with orange cuff ticks, orange accents framing the cleavage, a blue belt with an orange keeper, mid-thigh band, an orange knee tick, a calf band, aide shoes
+33. 宝石蓝东方 | sapphire cloth with eastern cloud patterns one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, silver cloud hairpin and a small jade-tone ear drop, cloud-pattern shoulders and sapphire sleeves with a silver edge, a wave-pattern frame around the cleavage that does not cover it, a structured belt with a cloud buckle, a sapphire band around the mid-thigh only, reinforced knees, cloud-pattern calf wraps, warrior boots
+34. 深紫黑甲 | deep-purple one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, black plate-shaped panels, an open-face dark helm with a purple inner band, black shoulder caps and purple sleeves with short cuff plates, a black chest panel, a lock belt with a dark buckle, mid-thigh band, knee cops, short calf plates, closed boots
+35. 绯白日式战 | crimson and white Japanese-style combat cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, white hachimaki with a crimson center mark, crimson-white shoulder blocks and combat sleeves with wrapped cuffs, a sharp color split around the cleavage, a waist cord tied in a small knot, mid-thigh band, knee guards, calf wraps, split-toe soft boots, not a gi or hakama
+36. 黑紫银纹 | black and violet cloth with silver traces one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, silver brow clip and a small violet ear stud, black-violet shoulders and sleeves with silver lines, a silver trace around the cleavage that does not cover it, a slim belt with a silver buckle, a silver band around the mid-thigh only, a knee line, a calf trace, courier boots
+37. 白银绿纹 | silver-white cloth with green circuits one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, green-circuit glasses and a tiny node clip, silver shoulders and sleeves with green traces, micro-nodes set above the cleavage, a cable belt with a green coupler, a silver band at mid-thigh only, a knee node, calf traces, researcher boots
+38. 象牙黑点绯 | ivory and black cloth with crimson dots one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, small crimson cheek jewel and an ivory hair pin, an ivory-black shoulder outline and ivory sleeves with black cuffs, crimson dots beside the cleavage that do not cover it, a slim belt with a black buckle, an ivory band around the mid-thigh only, a knee dot, a calf cuff, court shoes
+39. 深蓝希腊 | deep-blue cloth with bronze geometry one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, bronze laurel in the hair and a small geometric ear cuff, bronze geometric shoulders and deep-blue sleeves, a meander border around the cleavage, the center left open, a structured belt with a bronze buckle, mid-thigh band, a bronze knee corner, a calf band, ankle-strap sandal boots
+40. 午夜蓝银甲 | midnight-blue one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, thin silver panels, thin silver brow band and a small blue ear clip, silver shoulder panels and midnight sleeves, thin silver panels that leave the cleavage open, waist buckles in a short silver row, mid-thigh band, a silver knee edge, a short calf plate that stops below the bare thigh root, sentinel boots
+41. 橙白灰科技 | orange, white, and grey tech cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, grey engineer glasses and an orange earpiece, three-tone shoulder panels and tech sleeves with tool cuffs, a pocket flap set above the cleavage, a tool belt with a grey carabiner, a grey strap buckled at mid-thigh, knee pads, calf wraps, engineer boots
+42. 绿黑点黄 | emerald and black cloth with yellow warnings one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, headband with a yellow warning clip, emerald-black shoulders with yellow stripes and matching sleeves, a yellow chevron beside the cleavage that does not cover it, a stripe belt with a warning buckle, mid-thigh band, a yellow knee tick, a calf stripe, hazard boots
+43. 黑银电蓝 | black cloth with silver traces and electric-blue nodes one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, an electric-blue node at the temple and a silver brow clip, silver traces on the shoulders and black sleeves with blue nodes, a node line beside the cleavage, a node belt with one bright coupler, mid-thigh band, a knee node, calf nodes, runner boots
+44. 黑绯不对称战 | asymmetric black and crimson cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, one-sided crimson face guard, the other side of the face bare, one shoulder cap and one sleeve with a plate bonded onto the same bodysuit, the other sleeve plain cloth of that bodysuit, an asymmetric panel that leaves the cleavage open, an offset belt with the buckle to one side, one plate band on the mid-thigh only, one knee cop
+45. 海军蓝军装 | navy parade-cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, peaked naval cap with a gold device, small silver shoulder tabs on the bodysuit and navy sleeves with parade cuffs, a short button row on the bodysuit above the cleavage, a parade belt with a polished buckle, a navy band around the mid-thigh only, a knee seam, a clean calf, parade boots
+46. 白蓝金远古 | white, royal-blue, and gold relic cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, gold geometric hair piece and a small blue stone at the temple, three-tone shoulders and sleeves with gold inlays, gold geometry around the cleavage, the center left open, a structured gold belt with a relic buckle, mid-thigh band, a gold knee corner, a gold calf inlay, relic boots
+47. 石墨赛车工程 | graphite racing-engineer cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, crimson-and-blue engineer headset and a small pit-board clip, graphite shoulders with racing accents and heat-resistant sleeves, a strap beside the cleavage, a multi-tool belt with a torque-wrench loop, a graphite strap buckled at mid-thigh, knee pads, calf wraps, pit boots
+48. 酒红编舞 | wine-red and black choreography stretch one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, wine hair ribbon and a small black ear cuff, black-wine shoulder blocks and high-stretch sleeves, a color block around the cleavage that does not cover it, an elastic belt with a flat buckle, a wine band around the mid-thigh only, knee sleeves, calf sleeves, dance shoes
+49. 炭灰焦橙外勤 | charcoal and burnt-orange field canvas one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, burnt-orange field cap and a small charcoal clip, charcoal shoulder blocks and canvas sleeves with orange cuff tabs, a strap beside the cleavage that does not cover it, a pocket belt with a burnt-orange flap, mid-thigh band, knee pads, calf wraps, outdoor boots
+50. 钴蓝航空 | cobalt and ivory aviation cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, an ivory-cobalt headset with a short boom, cobalt shoulders and ivory sleeves with rank ticks at the cuffs, a panel set above the cleavage, a belt with wrist straps and a slim oxygen clip, mid-thigh band, a knee seam, a calf band, flight boots
+51. 海军蓝急救 | deep-navy emergency cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, white-red headlamp band and a small cross pin, navy shoulders with reflective stripes and matching sleeves, a red cross set above the cleavage, waist med-kit mounts and a glove loop, a navy strap buckled at mid-thigh, a knee band, a reflective calf stripe, responder boots
+52. 炭灰酒红记者 | charcoal reporter-cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, a wine waist band, press glasses and a small wine hair clip, a wine shoulder stripe and charcoal sleeves with notebook cuffs, a wine line beside the cleavage that does not cover it, a waist band with a short press badge, mid-thigh band, a knee seam, a calf wrap, field boots
+53. 黑色骑术 | black one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, emerald trim, low helmet with emerald trim, the face left clear, black shoulders and sleeves edged in emerald, with grip cuffs, an emerald edge around the cleavage, a belt with a crop loop, mid-thigh band, knee patches, calf panels, tall boots
+54. 钴蓝潜水 | deep-cobalt diving cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, dive mask pushed up onto the forehead and a small cobalt ear clip, cobalt shoulders and water-shedding sleeves with seal cuffs, slate blocks beside the cleavage, a belt with gear loops and a small knife sheath, mid-thigh band, a knee seal, a calf seal, dive boots
+55. 青绿手术 | white and teal surgical cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, teal surgical cap with a lamp and a clear face shield pushed up, white-teal shoulders and soft sleeves with sterile cuffs, a teal seam around the cleavage that does not cover it, a slim belt with a sterile clip, a teal band at mid-thigh only, a knee band, a calf cuff, surgical clogs
+56. 黑绯红调酒 | black lounge cloth with crimson trim one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, crimson ear cuff and a small black hair jewel, black shoulders edged in crimson and matching sleeves, crimson trim around the cleavage, a slim belt with a crimson buckle, mid-thigh band, a crimson knee line, a calf line, lounge heels
+57. 橄榄绿驯兽 | deep-olive beast-handler canvas one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, an olive handler cap and a small whistle clip, reinforced shoulders and canvas sleeves with grip cuffs, a strap beside the cleavage that does not cover it, a strap-mount belt with a lead ring, an olive strap buckled at mid-thigh, knee pads, calf wraps, field boots
+58. 海军蓝船长 | deep-navy captain-cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, captain cap with a gold device, navy shoulders and silver cuff accents, no separate shirt, rank bars set above the cleavage, a captain belt with a polished buckle, a navy band at mid-thigh only, a knee seam, a clean calf, captain boots
+59. 炭灰橙采矿 | charcoal mining cloth with burnt-orange stripes one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, an orange hard hat with a lamp and a dust clip, charcoal shoulders and warning-stripe sleeves with reinforced cuffs, a warning stripe beside the cleavage that does not cover it, a tool-loop belt with a lamp battery pouch, mid-thigh band, knee pads, calf guards, mine boots
+60. 深绿园艺 | deep-green gardening cloth with ivory plates one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, leaf hair clip and a small ivory sun pin, green shoulders and breathable sleeves with ivory cuffs, an ivory inset beside the cleavage, a pocket belt with a pruner loop, mid-thigh band, knee patches, ivory calf cuffs, garden boots
+61. 象牙白修复 | ivory restoration cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, charcoal tool glasses resting on the head and a small ivory clip, ivory shoulders and splash-proof sleeves with tool cuffs, a tool strap beside the cleavage that does not cover it, a belt with a wrist buckle and a brush loop, an ivory band at mid-thigh only, a knee patch, a calf cuff, restorer shoes
+62. 哑光黑特技 | matte-black stunt cloth with crimson piping one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, crimson-piped headband and a small black ear guard, matte shoulders and high-stretch sleeves with grip palms, crimson piping around the cleavage that does not cover it, a stunt belt with a hidden pad, mid-thigh band, reinforced knees, calf wraps, stunt boots
+63. 午夜蓝天文 | midnight-blue astronomy cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, silver star hair pins and a tiny lens clip at the temple, midnight shoulders dotted like constellations and matching sleeves, a star-map frame around the cleavage that does not cover it, a slim silver belt with a star buckle, a star-dot band at mid-thigh only, a silver knee dot, a calf star line, observatory shoes
+64. 高领园艺 | green gardening cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, leaf hairpin and a small ivory clip, a tall standing collar only at the back and sides, the front remaining a deep plunge, green sleeves and ivory cuffs with a soil-guard edge, an ivory inset beside the cleavage, a pocket belt with a pruner loop, mid-thigh band, knee patches, ivory calf cuffs, garden boots
+65. 黑金战斗 | black and gold combat cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, gold brow ornament and a small gold ear clip, gold-trimmed shoulders and black sleeves with gold fasteners, gold lines framing the cleavage, a gold belt with a black keeper, a black band edged in gold at mid-thigh only, gold knee caps, a gold calf edge, elite guard boots
+66. 海军蓝法务 | deep-navy legal-cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, thin silver glasses and a small navy hair pin, a navy shoulder line and black-navy sleeves with quiet cuffs, a silver pin set above the cleavage, a clean seam belt with a hidden buckle, a navy band around the mid-thigh only, a knee seam, a calf seam, formal court shoes
+67. 绯红黑拼 | crimson cloth with black inset plates one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, black hair-spike clip and a small crimson stud, black shoulder blocks and crimson sleeves, black blocks beside the cleavage, a side-zipper belt, mid-thigh band, a black knee cap, a calf panel, dancer boots
+68. 白钴蓝机甲 | white and cobalt bio-mecha cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, cobalt head filaments and a soft white node at the brow, white-cobalt shoulder shells and membrane sleeves, filaments circling the cleavage, a living waist ring, mid-thigh band, knee membranes, calf shells, pilot boots
+69. 黑绯仿皮 | black and deep-crimson faux leather one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, crimson ear cuff and a black hair spike, faux-leather shoulder plates and black sleeves with leather elbows, a leather frame around the cleavage, the center left open, a leather belt with a crimson buckle, a black leather band at mid-thigh only, leather knee caps, a leather calf panel, underground boots
+70. 黑绿忍者 | black and emerald ninja cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, forehead guard and a small cheek mask that leaves the eyes clear, emerald-edge shoulders and silent sleeves with wrapped wrists, flat straps that still leave the cleavage visible, a pouch belt with a quiet cord, mid-thigh band, soft knee pads, calf wraps, split-sole ninja boots, not a gi
+71. 高领医疗 | white medical cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, white medical glasses and a slim headband lamp, a tall standing collar only at the back and sides, the front remaining a deep plunge, white shoulder plates and glossy medical sleeves with sterile cuffs, a cross set above the cleavage, a white belt with an ID slot and a sterile pouch, mid-thigh band, a knee wrap, a calf cuff, clinic shoes
+72. 白红武术 | white martial-arts cloth with red and black trim one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, red-and-black hachimaki, white shoulders with red trim and mobility sleeves with wrapped wrists, red-black trim around the cleavage, a waist cord tied at the side, mid-thigh band, a knee guard, a calf wrap, martial shoes, not a gi
+73. 白银科研 | silver-white and cobalt research cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, cobalt lab glasses and a small silver hair clip, silver-white shoulders and splash-proof sleeves, an instrument strap beside the cleavage that does not cover it, a belt with a wrist-matching buckle and a pen loop, a silver band at mid-thigh only, a knee band, a calf cuff, lab shoes
+74. 黑色碎甲战 | black one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, fragment-shaped plates, broken-plate brow guard that leaves the face clear, fragment-shaped metal bonded onto the shoulders and black sleeves, shattered panels around the cleavage, a fragment buckle, mid-thigh band, knee fragments, short calf fragments, ruin boots
+75. 绯红缎金 | crimson satin with gold trim one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, gold hair pin and a small crimson ear cuff, gold-trimmed shoulders and crimson sleeves with gold cuff buttons, a gold edge around the cleavage, gold waist trim and a slim gold buckle, mid-thigh band, a gold knee line, a gold calf line, duel boots
+76. 钴蓝医疗 | cobalt-blue glossy medical latex one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, white-rim surgical glasses, a slim cobalt headband lamp, and a sterile ear clip, rounded cobalt shoulder caps joined to white latex sleeves that end in snug exam cuffs with a thin pulse strap, a raised silver medical cross and two short instrument loops set above the cleavage, a white belt with a clipped ID badge
+77. 哑光黑战术 | matte-black tactical stretch one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, matte comms headset with a short boom and a low night-vision clip pushed up, low-profile shoulder caps and black forearm guards with velcro ID patches, crimson straps, a tactical belt with two slim side pouches and a quiet holster loop, mid-thigh strap, hard black knee pads, tight calf wraps, black combat boots with subdued laces
+78. 深紫奥术 | deep-purple velvet arcane cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, silver circlet with a small forehead rune and a dangling rune earring on one side, violet rune-etched shoulder caps and long velvet sleeves ending in silver rune cuffs, silver filigree that frames the cleavage on both sides a dark cord belt with a rune buckle and a tiny charm at the hip, a violet rune band around the mid-thigh only
+79. 白绿运动 | white and court-green athletic mesh one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, white sport visor and a thin sweatband with a green court stripe, green shoulder stripes and white compression sleeves with green wristbands, green piping that traces around the cleavage, a slim white belt with a small score clip, mid-thigh band, white knee sleeves with green ticks, calf bands, white court sneakers with green soles
+80. 炭灰橙航天 | charcoal and warning-orange aerospace fabric one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, charcoal helmet with the visor lifted and an orange comm bead at the ear, orange shoulder bars and charcoal sleeves with warning stripes and sealed wrist rings, a chest ID plate and a short hose clip set above the cleavage, an orange tool belt with a tether ring and a compact gauge pouch
+81. 炭灰象牙白厨务 | charcoal and ivory culinary cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, an ivory chef headband with a charcoal clip and a small tasting-spoon pin, ivory shoulder seams and charcoal sleeves with heat-guard cuffs, ivory piping around the neckline that leaves the cleavage visible, a narrow waist band, plus a slim knife loop on one hip, a charcoal band around the mid-thigh only, low knee stays
+82. 象牙白石墨外勤 | ivory and graphite field canvas one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, graphite field glasses on a retainer cord and a small ivory sun clip, ivory shoulder tabs and graphite sleeves with map-pocket cuffs, a narrow strap and a compass pin framing the cleavage, a gear belt with a rolled map tube and a slim canteen hook, an ivory strap at mid-thigh only, scuffed knee pads, graphite calf wraps
+83. 橄榄绿炭灰摄影 | olive and charcoal photography cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, an olive cap with glasses pushed up and a small light meter clipped at the brim, charcoal shoulder pads and olive sleeves with lens-cloth cuffs, camera straps that do not cover it, a belt with one small film pouch and a strap ring, an olive strap buckled at mid-thigh, soft kneeling knee pads, calf wraps, treaded boots
+84. 黑色正装 | black formal-cloth stretch with a quiet sheen one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, thin black glasses and one silver ear cuff, a sharp shoulder line and long black sleeves with single-button cuffs, a fine silver chain laid on the upper chest, clear of the visible cleavage, a narrow patent belt with a small rectangular buckle, a black band sitting at mid-thigh, a thin knee band, a clean unbroken calf line
+85. 钴蓝橙维修 | cobalt and warning-orange repair canvas one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, orange goggles resting on the forehead and a grease pencil tucked at the temple, cobalt shoulder guards and orange elbow pads over work sleeves, a tool strap and a small wrench loop beside the cleavage, not covering it, a heavy tool belt with two wrenches and a coil of orange cord, mid-thigh band, scuffed knee pads, calf guards
+86. 宝蓝金装甲 | royal-blue and gold cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, gold half-crest helmet that leaves the face clear, with a short blue plume, gold shoulder caps over blue sleeves and engraved gold cuff plates, a gold chest panel, a gold lock buckle with a short blue cloth tab, mid-thigh band
+87. 蓝色未来 | blue futurist cloth with a clean luminous edge one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, slim blue visor glasses and a tiny temple node, an asymmetric shoulder fin and luminous sleeves with a single seam, a geometric inlay framing the cleavage, the center left open, a magnetic waist buckle with one status light, a blue channel band at mid-thigh only, smooth knee caps, fine calf lines, clean futurist boots
+88. 橙色生物机甲 | orange bio-mechanical cloth, grown rather than sewn one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, small organic head fins and a soft node at the temple, grown-on shoulder shells and filament arm membranes with pulse veins, node lights circling the cleavage, a living waist ring that cinches over the muscle lines, an orange growth band around the mid-thigh only, flexible knee membranes, segmented calf shells
+89. 深蓝亮面 | deep-blue high-gloss latex one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, glossy blue hair jewel and a small mirror stud at one temple, lacquered shoulder spikes and glossy sleeves with patent cuffs, a mirror pendant hung above the cleavage, not covering it, a patent belt with a mirror buckle, a gloss band sitting at mid-thigh, shiny knee caps, calf sheen panels, deep-blue platform boots
+90. 红色插接 | red modular cloth with opaque snap plates one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, red module clip at the temple and a tiny status light, shoulder plates and elbow plate ports with sealed pins, block ports framing the cleavage, waist energy-port lights and a lock ring, a red module band at mid-thigh only, knee plate ports, calf blocks, sealed modular boots
+91. 白色点蓝 | white cloth with pale-blue dots one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, pale-blue glasses and a dotted hair clip, white shoulder tabs and sleeves with pale-blue cuffs and a dotted stripe, a small blue badge set above the cleavage, a white belt with a pale-blue buckle, a pale-blue dotted band around the mid-thigh only, a white knee band, a short calf cuff, white low shoes
+92. 深祖母绿 | deep-emerald velvet court cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, an emerald hairpin and a small temple face jewel, velvet shoulder caps and long emerald sleeves with dark inner cuffs, a carved motif framing the cleavage on both sides, a dark waist cord with an emerald bead, an emerald band at mid-thigh only, a soft knee wrap, calf ribbons, dark palace boots
+93. 黑色运动战术 | black athletic-tactical stretch one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, black sport headset with a short mic, reflective shoulder stripes and stretch sleeves with grip cuffs, a training strap that leaves it visible, a training belt with a small timer clip, a black mount at mid-thigh only, soft knee pads, calf sleeves, training boots
+94. 黑色亮面纹饰 | glossy-black cloth with raised relief patterns one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, gloss forehead ornament and a small patterned ear cuff, relief-pattern shoulders and patterned sleeves with lacquer cuffs, geometric relief around the cleavage that does not cover it, a relief belt with a carved buckle, a patterned band around the mid-thigh only, a knee ornament, patterned calf panels, stage heels
+95. 哑光黑作战 | matte-black combat cloth that drinks light one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, stealth headset with the mic folded flat, soft shoulder pads and light-absorbing sleeves with quiet cuffs, a flat panel set above the cleavage, a quiet belt with covered buckles, mid-thigh strap, soft knee pads, calf wraps, silent split-sole boots
+96. 白色点红 | white field-medic cloth with red marks one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, white cap with a red-cross pin and a slim lamp clip, white sleeves with red cuff stripes and a medic armband, a red mark set above the cleavage, a white belt with a small med pouch, a red pinstripe band at mid-thigh only, a white knee wrap, a calf band, white medic shoes
+97. 黑色刺客 | black assassin cloth with hidden seams one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, cheek-only half mask, eyes and mouth clear, no hood and no cloak, crossed shoulder straps and sleeves with wrist blade slots, straps, a belt of concealed pouches and a quiet blade loop, mid-thigh band, soft knee pads, calf wraps, split-sole soft boots
+98. 蓝黑极简 | blue-black minimalist cloth with almost no trim one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, only a thin blue-black hair clip, clean color-block shoulders and plain sleeves with hidden cuffs, a single seam framing the cleavage, nothing else on the chest, a hidden waist zipper with no visible buckle, a plain seam at mid-thigh only, a thin knee band, a calf color block, simple boots
+99. 深紫金饰 | deep-purple velvet with gold jewelry one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, gold circlet and one gold drop at the ear, gold-trimmed shoulders and velvet sleeves with gold cuff buttons, gold filigree around the cleavage, the center left open, a gold chain belt with a small pendant at the hip, a gold band around the mid-thigh only, a small gold knee stud, a gold calf line, ceremonial boots
+100. 黄黑亮面 | yellow-black glossy racing cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, yellow racing visor and a small sponsor mark at the temple, black-yellow shoulder panels and racing sleeves with grip cuffs, warning chevrons beside the cleavage, a racing belt that cinches over the waist, a yellow stripe band at mid-thigh only, knee sliders, calf panels, racing boots
+101. 白色蓝电路 | white cloth traced with blue circuits one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, blue-light glasses and a tiny node at the temple, sleeves traced with blue circuits from shoulder to wrist, a node light set above the cleavage, a cable belt with one glowing coupler, a circuit band around the mid-thigh only, a knee node, calf circuit traces, lab boots
+102. 宝蓝军装 | royal-blue military-cloth one-piece thong-cut jumpsuit/bodysuit, deep cleavage, cinched waist with abs, thong back, high-cut hips with bare thigh roots, naval cap with a small gold device, small silver shoulder tabs on the bodysuit and royal-blue sleeves with silver cuffs, a short button row on the bodysuit above the cleavage, an officer belt with a polished buckle, mid-thigh band, a tailored knee seam, a clean calf, polished officer boots
+【装备】
+1. 医疗扫描仪组 | 手持小巧医疗扫描仪贴合掌心，胸前或腰带挂专业身份识别牌，表面亚光医用白与浅蓝指示灯
+2. 消音枪套组 | 腰侧贴合枪套收纳消音手枪，另一侧夜视镜折叠固定，织带与金属扣件哑光不反光乱跳
+3. 法杖符咒组 | 单手握施法聚能法杖，杖头微光；肩侧或腰间漂浮小型符文护符，金属与水晶材质对比清晰
+4. 球拍平板组 | 肩背球拍包轮廓利落，另一手持数字训练平板亮着界面，运动尼龙与触控玻璃并存
+5. 工程护目组 | 面罩式诊断护目镜推上额头或戴好，便携工程扫描仪挂于大腿或胸挂，线缆收纳干净
+6. 厨刀温度计 | 腰侧小刀套收专业厨刀，胸袋或腕侧夹精密温度计，不锈钢与深色皮革点缀
+7. 全息测距组 | 手持全息蓝图平板展开半透明图层，另一手激光测距仪贴身，工程塑料与金属边框
+8. 长焦航拍组 | 胸前或肩挂配长焦的专业相机，另一手小巧无人机遥控器，黑色机身抗刮涂层
+9. 指挥监听组 | 右手轻指挥棒，左耳隐蔽入耳监听耳机几乎不可见，正装金属小件克制反光
+10. 磁力工具组 | 前臂多功能工具护臂手套，腰侧磁吸零件袋吸附小型金属件，工业灰与警示橙细节
+11. 飞行员墨镜 | 黑色飞行员墨镜架于鼻梁，细金属镜腿贴合头型，镜面轻微环境反射但不遮死眼神
+12. 战术腰带组 | 未来感战术腰带环腰，模块袋左右平衡，快拆扣与织带纹理清晰，颜色贴近服装主色
+13. 双枪套一体 | 一体化双枪套贴合胯侧与后腰，高级科技面料缝线精确，抽枪动线干净不挡腿
+14. 考古图腾件 | 低调金色考古图腾挂件贴胸或腕，流线型实用小工具别在腰带，复古金与哑光黑对比
+15. 水晶耳饰组 | 精致水晶耳饰与颈侧细链，折射环境色，体量小而不抢面部，适合法师/贵族角色
+16. 金属腕甲组 | 优雅金属腕甲或臂环贴合前臂，抛光与拉丝分区，接缝精密像高定机能件
+17. 医疗臂章组 | 上臂贴合防护层与先进医疗配件模块，状态灯微亮，白/钴蓝标识可读
+18. 能量光翼 | 身后半透明魔法能量翼缓缓展开，翼膜自发光并随能量轻脉动，不遮挡躯干主轮廓
+
+【环境】
+1. 音乐厅 | 开演前的宏伟音乐厅：天鹅绒座椅空置，乐池灯暖黄，高穹顶与金色雕饰在暗处微微反光
+2. 航天机库 | 巨型航天器维修机库：船体脚手架层层叠叠，起重臂与检修灯笼罩在深色舱体上，地面有反光油迹与警示线
+3. 霓虹街 | 深夜赛博朋克街道：两侧霓虹招牌与全息广告层层叠叠，湿沥青反光，蒸汽从地铁井盖涌出，人群轮廓被彩光切开
+4. 东京屋顶 | 未来东京夜屋顶：脚下是密集楼群与游动全息牌，远处塔楼刺入有薄云的夜空，风里带着雨后的金属味
+5. 曼哈顿大道 | 未来曼哈顿大道：峡谷般摩天楼夹道，地面车流灯带不断，巨型全息屏贴在玻璃幕墙上
+6. 韩国全息城 | 未来感韩国大都市街区：巨大竖幅全息广告贴楼而立，地铁口蒸汽与行人光斑交错，街面干净却充满电子噪点感
+7. 地下大都市 | 多层未来地下城：高架步道与发光导视交织，穹顶人造天光微亮，深处传来列车与通风系统的低鸣
+8. 高架工业城 | 未来工业都市：高架公路盘旋，全息路牌与烟囱灯同框，下层是集装箱与蒸汽管道的巷道
+9. 雨中霓虹城 | 暴雨中的霓虹大都市：雨线被霓虹染成彩丝，积水成镜，远处塔楼轮廓在雨雾里断续闪现
+10. 欧洲夜街 | 奢华欧洲夜街：石板路反光，古典立面挂着现代灯带与全息店招，街角咖啡馆暖光溢出
+11. 未来伦敦 | 未来感伦敦街景：历史砖墙与全息广告并置，双层飞车轨道掠过，雾气里霓虹偏冷青
+12. 废墟超级都市 | 被植被吞没的未来废都：开裂高架长满藤蔓，残破全息屏仍微弱闪烁，阳光从断裂楼板洒下光柱
+13. 雷暴城市上空 | 猛烈雷暴下的未来城市上空：积雨云压境，闪电照亮玻璃幕墙，雨幕里楼群像沉入深海的礁石
+14. 玻璃舱实验室 | 高科技实验室：成排发光玻璃培养舱沿墙排列，柔和顶光映出冷凝水珠，地面洁净到能反出舱体轮廓
+15. 分子实验室 | 尖端科学实验室：全息分子结构在半空旋转拆解，仪器阵列发出细碎指示灯，空气近乎无菌的冷感
+16. 胶囊实验室 | 巨型胶囊科技实验厅：透明舱体成列，舱内液体微微起伏，四周环绕全息监测屏与机械臂轨道
+17. 情报总部 | 未来情报指挥大厅：环形全息战术墙同时刷新多战区画面，操作台呈阶梯状下沉，顶光偏暗、屏光主导
+18. 军事指挥中心 | 未来军事指挥中心：立体全息战场地图悬在中央，军官席位围成半环，警报指示灯在阴影里缓慢脉动
+19. 新闻编辑室 | 全球新闻编辑大厅：全息世界地图铺满主墙，工位屏成片亮着滚动字幕，咖啡蒸汽混着电子设备热气
+20. 未来手术室 | 未来手术室：手术灯与全息解剖层叠合，机械臂静候在床侧，地面反光干净，空气带着臭氧味
+21. 海底科研中心 | 海底科研穹顶：全景玻璃外是深蓝海水与光斑鱼群，内侧是仪器廊与潜水闸门，压力舱指示灯稳定闪烁
+22. 火山科考站 | 火山科考现场：黑色岩地冒着热气，远处熔岩河口橙红脉动，科考舱与传感器架固定在加固平台上
+23. 山顶天文台 | 山顶未来天文台：穹顶裂开露出巨型望远镜，窗外是稀薄冷空气与满天星云，地面有防滑金属格栅
+24. 水晶矿场 | 地下水晶采矿设施：岩壁嵌着巨大晶体脉，矿灯与切割机械反光刺眼，粉尘在光束里缓慢沉降
+25. 考古发掘场 | 未来考古发掘现场：探方网格铺开，全息扫描框住半出土文物，夜间作业灯把地层切成鲜明色块
+26. 哥特城堡 | 清冷月光照亮的古老哥特城堡内部：尖拱走廊悠长，彩色玻璃把月光染成碎片，石阶被岁月磨得凹陷
+27. 未来哥特堡 | 未来感哥特城堡：尖塔与能量导管共生，彩色玻璃旁叠着半透明数据纹，大厅中央有缓慢旋转的光核
+28. 古老大教堂 | 宏伟大教堂内殿：高耸石拱与彩色玫瑰窗，尘埃光柱斜切中殿，管风琴管在暗处泛着冷光
+29. 绿植大教堂 | 被繁茂绿植侵占的未来大教堂：藤蔓爬满飞扶壁，阳光从破损穹顶泻下，地面有积水与落叶
+30. 异次元教堂 | 被魔法撕裂的巨型哥特教堂：中殿漂浮着碎石与光裂隙，彩色玻璃碎片悬停半空，重力方向略显错乱
+31. 云端天界教堂 | 高悬云海之上的天界大教堂：白金立面刺入晴空，云层像潮水拍打基座，钟声似乎能在稀薄空气里传很远
+32. 希腊神殿 | 古希腊神殿之巅：风化石柱成列，远山淡青，大理石地面被烈日晒得发白，风从柱廊穿堂而过
+33. 希腊海神殿 | 临海古希腊神殿平台：身后是巨柱与三角楣，身前是深蓝色开阔海面，浪声与鸥鸟鸣被风撕碎
+34. 丛林水晶神殿 | 藤蔓缠绕的丛林神殿： 发光的松石绿水晶从地面刺出，雾气潮湿，远处有瀑布低鸣
+35. 外星水晶神殿 | 外星神殿大厅：紫罗兰色巨型水晶与绯红外焰共照，地面浮雕纹路缓慢亮灭，空气带静电感
+36. 皇家宫殿 | 古老皇家宫殿大厅：大理石柱成列，金箔天花与吊灯投下温暖光斑，红毯笔直通向远门
+37. 远古要塞 | 巨大远古奇幻要塞：黑石城墙厚重，角楼旗帜猎猎，护城河雾气升腾，远处山脉如锯齿
+38. 冰封要塞 | 冰封山地要塞：城墙结着厚霜，烽火台冷青，谷风卷起冰晶，远处冰川在阴天下泛蓝
+39. 云端古神殿 | 漂浮于云海的宏伟古神殿：基座下方云层翻涌，石阶通向无尽的虚空，铜铃在风中轻响
+40. 魔法石殿 | 远古石殿深处：漂浮的魔法碎片缓缓公转，地面符文阵微亮，空气干燥而带臭氧味
+41. 空间站 | 巨型未来空间站内部走廊：弧形舷窗外是地球弧线与星点，舱壁管路与手把整齐，微重力感由漂浮缆线暗示
+42. 复古太空港 | 复古未来主义太空港观景台：彩色外星都市铺满下方，着陆灯成排，飞船尾焰在暮色里拖出光痕
+43. 星舰机库 | 广阔星舰机库：舰体占据大半视野，检修架与牵引车如蚁群，顶部天窗漏下冷白光柱
+44. 福音发射库 | 巨型机甲弹射发射库：导轨延伸向敞开闸门，蒸汽与警示灯同步脉动，地面震感像远雷
+45. 空天飞机舱 | 豪华空天飞机客舱：全景舷窗外是弯曲的地球与稀薄大气辉光，座椅皮质反光，舱内安静得只剩空调声
+46. 邮轮舰桥 | 远洋邮轮舰桥：控制台与全息航线铺开，窗外是辽阔松石绿海面与远处风暴线
+47. 雨夜热带港 | 雨夜热带港口：起重机灯在雾雨里晕开，货轮轮廓沉在暗处，水面油膜映着码头霓虹
+48. 赛车维修房 | 方程式赛车维修间：成排未来赛车侧身闪着车漆高光，工具车与轮胎架整齐，空气里有燃油与橡胶味
+49. 演唱会舞台 | 巨型未来演唱会舞台：LED 墙海浪般滚动，追光切开烟雾，观众席光海如星河铺向远方
+50. 未来夜店 | 奢华未来夜店：装饰艺术立面与霓虹灯柱共生，舞池地板发光，吧台后酒瓶像一排冷宝石
+51. 日式道场 | 未来感日式道场：抛光木地板映出窗格光影，刀架与护具整齐，纸门外隐约有庭院白砂
+52. 豪华马术场 | 室内豪华马术场：沙地平整，看台灯柔和，一匹鞍具考究的骏马立在场地中央，空气干燥带草料味
+53. 动作片场 | 电影动作戏片场：实拍爆破点位与灭火设备待命，摄影机滑轨绕开，背景板画着半毁街区
+54. 紧急救援区 | 城市紧急救援集结点：救护车与无人机起降坪并排，临时指挥帐篷亮着冷白灯，地面反光条闪烁
+55. 冰封战场 | 广阔冰封战场：冻结的战壕与残旗半埋雪中，冷风卷起冰晶，远天铅灰，偶尔有信号弹拖尾
+56. 地中海悬崖 | 地中海悬崖观景点：脚下是断崖与碧海，远处海滨未来城贴岸延伸，午后光硬而清晰
+57. 宫殿海景阳台 | 未来宫殿高处阳台：日落把热带海面染成金红，栏杆投下长影，身后宫殿灯火刚开始点亮
+58. 植物温室 | 未来巨型植物温室：高湿空气里叶片滴水，透明穹顶外是阴天，内部灯补出一层翠绿光晕
+59. 未来植物园 | 未来植物园步道：奇花异草与发光植株夹道，玻璃廊桥跨越水景，远处瀑布贴着玻璃幕墙泻下
+60. 野生动物保护区 | 未来野生动物保护区观景台：远处有珍奇兽群轮廓，隔离力场微微发亮，草浪被风推成波纹
+61. 废弃钟楼 | 废弃哥特钟楼内部：齿轮与钟锤蒙尘，月光从破窗切入，温暖的应急灯照亮部分铜制机芯
+62. 霓虹战场学院 | 被改造成霓虹战场的未来学院：教室残垣挂着全息标靶，操场被改成障碍赛道，彩光与烟雾混杂
+63. 杂草石墟 | 被杂草漫过的石砌遗迹：开裂石阶与残墙，缝里长草，头顶垂着藤蔓，没有现代建筑
+64. 魔法图书馆 | 神秘大型图书馆：石砌穹顶下书架高不见顶，魔法书页自行翻飞，浮尘在符文灯光中缓慢起舞
+65. 海上平台 | 未来海上平台甲板：脚下是清澈热带海水，平台边缘有防波栏与信号灯，远处钻井架剪影
+66. 赛博实验室 | 广阔赛博朋克实验室：墙面全是发光界面与线缆束，中央实验台漂浮着半透明数据层，冷青环境光
+67. 科技古宫 | 被未来科技改造的古代宫殿：石雕龙纹旁嵌着全息屏，光纤沿梁游走，古典与赛博在同一视线里对撞
+68. 日本山城 | 未来感日本山城：石垣与发光樱花树并置，远处全息屋檐叠层亮起，薄雾贴着山脊流动
+69. 鸡尾酒吧 | 豪华鸡尾酒吧台后：发光酒柜层层透亮，调酒器反光，窗外城市灯火被磨砂玻璃柔化
+70. 未来法庭 | 宏伟未来法庭：高耸玻璃中庭透进冷光，全息法条屏立于两侧，旁听席静得只剩衣料摩擦声
+71. 日式樱花宫殿 | 日本传统宫殿庭院：木质回廊与纸门，樱花瓣在风里旋转飘落，池面倒映朱红柱与远山
+72. 外星飞船库 | 外星飞船机库：异形船体与人类脚手架混杂，巨型机械臂缓慢移动，舱门缝隙泄出别样光谱
+73. 歌剧院舞台 | 未来歌剧院舞台中央：厚重帷幕半开，乐池幽暗，穹顶吊灯像倒挂的星座
+74. 机甲机库 | 巨型机甲机库：直立机甲成列，肩部高过灯架，地面油污反光，广播声在金属穹顶里回荡
+75. 急诊医院 | 夜晚的未来感急诊医院大厅：自动门反复开合，监护仪与手术导航全息浮在半空，消毒灯光冷白，落地窗外是湿漉漉的霓虹街区
+76. 古代神殿 | 巨型远古魔法神殿内部：高耸石柱布满风化符文，中央祭坛漂浮着缓慢旋转的水晶，尘埃在彩色光柱里浮动
+77. 雨夜屋顶 | 被雨水浸透的城市屋顶：积水倒映霓虹与全息广告，铁梯与通风管道湿滑反光，远处天际线在雨幕中模糊成光斑
+78. 训练中心 | 高性能室内综合训练馆：橡胶地面与力量架成排，动作捕捉摄像头环绕，一侧玻璃墙外是空旷球场
+79. 高级厨房 | 米其林级未来厨房：悬浮菜谱全息、恒温料理台与锃亮出餐口，钢制台面映着暖色工作灯
+80. 建筑工地 | 灯火通明的未来城市工地夜景：塔吊灯扫过未完工的巨型骨架，全息蓝图叠在钢筋之上，尘土与焊接火花交织
+81. 野外保护区 | 黄金时刻的野外摄影保护区：长草被侧光拉出轮廓，远处山脊淡蓝，空气里有薄雾与虫鸣感
+
+【场景细节】
+1. 医疗全息屏 | 先进医疗全息影像、自主手术导航与成排发光监护屏，落地窗映着城市霓虹
+2. 神殿水晶符文 | 漂浮水晶、缓慢旋转的奥术符号，以及地面微亮的能量纹路
+3. 屋顶暗口 | 远处无人机航迹、积水反光，以及阴影里半开的地下通道舱盖
+4. 训练器械 | 负重架、动作捕捉摄像头阵列，以及一侧俯瞰球场的玻璃墙
+5. 厨房灶台 | 精密灶台、悬浮菜谱全息，以及锃亮不锈钢出餐台
+6. 工地蓝图 | 叠在钢筋上的全息蓝图、塔吊扫灯光，以及未完工的巨型骨架剪影
+7. 山雾营地 | 贴地薄雾、远山轮廓，以及一处灯火微弱的偏远装备营地
+8. 乐池座席 | 暖黄舞台灯、空荡天鹅绒座椅，以及整装待命的管弦乐手轮廓
+9. 机库核心 | 多轴机械臂、发光能量核心，以及悬浮诊断屏组成的检修岛
+10. 湿路霓虹倒影 | 湿漉漉路面映出青、品红、琥珀霓虹与全息招牌的破碎倒影
+11. 体积雨幕 | 有厚度的雨幕斜切画面，远光在雨帘里晕成光团
+12. 靴边溅雨 | 浅水洼被踏过时溅起细碎水花，沿靴边滑落
+13. 空中雨滴 | 近景可见的细小雨滴悬停或慢速飘过镜头前
+14. 湿金属蒸汽 | 湿润金属结构表面凝着水膜，缝隙里涌出淡淡蒸汽
+15. 金属流光 | 抛光金属表面上流过的高光条带，随角度缓慢滑动
+16. 彩玻光影 | 彩色玻璃把光切成色块，在地面与墙面缓慢移动
+17. 玻璃墙反光 | 玻璃幕墙与亮面地面叠出城市灯火的电影感重影
+18. 亮面地面反光 | 高光地面像浅镜一样拉长灯光与轮廓
+19. 街道蒸汽 | 从井盖与街缝涌出的淡蒸汽，被霓虹染成浅彩
+20. 工业体积烟雾 | 在高大工业空间里缓慢翻滚的体积感烟雾，遮住远端结构
+21. 舞台烟雾 | 舞台脚灯前的薄烟雾被追光切开，呈层状飘过
+22. 体积薄雾 | 贴地或半空的体积感薄雾，拉远景深并柔化远光
+23. 废墟烟柱 | 废墟建筑之间升起的烟柱，缓缓倾斜向天空
+24. 光束尘埃 | 体积尘埃在硬光柱里发亮、缓慢翻滚
+25. 魔法粒子 | 细碎魔法光粒在空中旋绕或沿符文轨迹漂移
+26. 雪花粒子 | 电影感雪花粒子斜飘，近亮远淡
+27. 能量粒子 | 祖母绿或冷青能量粒子在角色周围稀疏漂浮
+28. 碎片漂移 | 细小残骸碎片在失重感或冲击余波中缓缓漂移
+29. 漂浮全息界面 | 半透明操作界面在身侧缓缓漂浮、闪烁刷新
+30. 数字全息层 | 多层半透明数字图层与线框模型叠在空气中
+31. 环绕全息屏 | 弧形全息显示屏环绕站位，内容持续滚动
+32. 全息广告牌 | 楼面级巨型全息广告在背景周期亮灭、色彩过饱和
+33. 诊断显示屏 | 医疗/机械诊断屏显示波形与警示色块
+34. 监控屏幕墙 | 成墙监控画面同时播放多路画面，有轻微扫描线
+35. 法律全息屏 | 法庭两侧直立的全息法条屏，字迹冷白
+36. 神秘几何符 | 漂浮的几何神秘符号缓慢自转、明灭
+37. 手部能量 | 双手周围聚起的淡色能量晕（猩红或紫罗兰），不遮挡手型
+38. 能量轨迹 | 明亮的短促能量轨迹划过空气后余晖消散
+39. 绯红蜡烛 | 走道两侧绯红烛火摇曳，蜡泪与光斑落在石面
+40. 背景车流行人 | 远处行人与自动驾驶车辆自然穿行，不抢主体
+41. 背景机甲载具 | 巨型机器人或未来载具在远景缓慢经过
+42. 远处飞船着陆 | 远景巨型飞船喷口亮起并缓慢降落
+43. 远处闪电 | 暴风云中的闪电短暂照亮天际与楼影
+44. 巨浪拍击 | 岸边或平台外巨浪拍击，溅沫进入中景边缘
+45. 落地窗城景 | 落地玻璃外是被雨雾柔化的未来城市灯海
+46. 金属观察窗 | 厚框金属观察窗，窗外是舱外结构或星空
+47. 全景舷窗 | 弧形全景舷窗映出地球弧线或海平线
+48. 高耸石拱 | 层层高耸的石拱走廊，纵深被暗部吞没
+49. 彩色玻璃窗 | 巨型彩色玫瑰窗或条窗，投下碎裂色光
+50. 大理石柱列 | 成列大理石柱，柱身有细微反光与风化痕迹
+51. 古老石地面 | 磨损的古老石板地面，缝隙积尘或积水
+52. 高耸书架 | 高不见顶的书架隐入黑暗，部分书脊微光
+53. 管道管束 | 裸露的工业管道与线缆束沿墙天花延伸
+54. 龙门架 | 高耸龙门架与起重轨道占据背景上层
+55. 钢制集装箱 | 堆叠的钢制集装箱，漆面斑驳、角件反光
+56. 维修平台 | 带护栏的维修平台与脚手架，脚下有格栅缝
+57. 工业平台 | 多层工业平台与阶梯，脚下有油渍反光
+58. 涂鸦工业墙 | 工业墙面布满大幅涂鸦与旧警示贴纸
+59. 散落瓦砾 | 地面散落混凝土块、钢筋与碎玻璃
+60. 藤蔓残楼 | 残破未来建筑被蔓生藤蔓缠住，窗洞透光
+61. 人形机器人 | 体量过人的人形机器人静立或缓步，关节灯微亮
+62. 高耸机械 | 高耸机械结构与桁架占据纵向构图
+63. 发光机械 | 表面带能量纹或指示灯的巨型发光机械
+64. 机械能量核 | 暴露的发光能量核心，周围有散热雾与护栏
+65. 能量舱 | 透明能量舱内液体微涌，舱壁冷凝
+66. 玻璃培养舱 | 成排发光玻璃培养舱，内部有轮廓物与气泡
+67. 手术机器人 | 多臂手术机器人悬停床侧，末端工具反光
+68. 救援无人机 | 小型救援无人机悬停或掠过，旋翼下压薄雾
+69. 特技车辆 | 片场特技车与翻滚架停在布景边缘
+70. 巨大货轮 | 远景巨大货轮船体如墙，舷窗稀疏发光
+71. 港口起重机 | 港口起重机灯在雾雨中晕开，吊臂剪影明确
+72. 飞船面板 | 近景宇宙飞船外壳面板缝与状态灯
+73. 窗外飞船 | 透过窗户可见远处飞船与巨大机械剪影
+74. 飞船剪影 | 灯火通明的飞船在身后高耸成剪影
+75. 挖掘机械 | 矿坑或考古场边的巨型挖掘机械停机待命
+76. 发光灯笼 | 成串或成组的发光灯笼，暖光渗进雨雾
+77. 灯笼霓虹 | 传统灯笼与霓虹全息装饰交叠闪烁
+78. LED屏墙 | 场馆级 LED 巨幕滚动画面与能量波形
+79. 演唱会灯光 | 密集追光与光束阵列切开烟雾
+80. 片场灯架 | 悬挂灯具与摄影机架组成的片场天空
+81. 戏剧帷幕 | 厚重舞台帷幕半开，褶皱吃光
+82. 古典油画 | 墙上巨型古典油画，油彩高光隐约
+83. 古代雕塑 | 石质古代雕塑残件立于角落或中轴
+84. 考古文物 | 半出土的文物与编号标牌、扫描框
+85. 全息修复影 | 文物上叠加的全息修复投影与工具臂
+86. 松石水晶群 | 神殿深处巨大发光松石绿水晶簇
+87. 漂浮魔晶 | 悬空的巨大魔法水晶缓慢自转
+88. 冰体结构 | 晶莹冰体结构高耸，内部有裂纹折光
+89. 传送门 | 身后发光传送门框，门内异景微涌
+90. 黑色火山岩 | 锐利的黑色火山岩地表，缝隙冒热气
+91. 矿物结晶 | 岩壁上的发光矿物结晶脉
+92. 亮灯隧道 | 深隧里成排工灯向灭点延伸
+93. 珊瑚礁 | 色彩斑斓的珊瑚礁占据水下中景
+94. 热带鱼群 | 热带鱼群从玻璃外或开放水域掠过
+95. 水下荧光植 | 发光水下植物随水流轻摆
+96. 荧光植物 | 陆地生物荧光植株沿路散发冷光
+97. 奇花异草 | 夸张形态的奇花异草夹道，叶片滴水
+98. 雕塑树木 | 被修剪成雕塑感的树木剪影
+99. 瀑布水帘 | 贴建筑或崖壁泻下的瀑布水帘与水雾
+100. 神殿台缘 | 神殿平台临空的石板边缘，外侧空无一物，天光从边界外把石沿照亮
+101. 情报控制台 | 身侧的全息情报控制台：台面漂着半透明图层，台沿是可以碰到的实体边缘
+102. 云隙光柱 | 云层缝隙投下硬边阳光柱，柱内亮、柱外暗，边缘清楚
+103. 楼间光缝 | 摩天楼之间的竖向光缝，硬边光切过墙面与地面
+104. 树冠光斑 | 阳光透过树冠落下斑驳光斑，叶缘透出黄绿
+105. 霓虹色雾 | 青、品红与电蓝渗进雾气，雾中结成可见的色团
+106. 体积光柱 | 可见的体积光束穿过薄雾或烟尘，光柱本身有厚度
+107. 破顶金光 | 破碎屋顶泻下金色光柱，光柱之外仍然很暗
+
+【动作】
+1. 武术架势 | 放松的武术预备架势静立：双膝微屈，双手护于身前，重心可随时移动
+2. 备战架势 | 充满动感、随时进入交战的架势，前脚压实，肩线略低
+3. 英雄站姿 | 双脚开立，胸口微挺，双臂自然垂于身侧或一手握拳
+4. 定格奔跑 | 定格在奔跑瞬间的动感姿势：一脚离地，躯干前倾，手臂反向摆动
+5. 边缘站定 | 站在落脚处的边缘，脚尖靠近边界，重心沉稳
+6. 流畅行走 | 流畅自然的行走：步伐均匀，骨盆轻微左右摆动，手臂自然摆动
+7. 写实行走 | 写实行走动作：脚跟着地到脚尖离地清晰，肩部随步轻微反向摆
+8. 缓慢行走 | 缓慢行走，步伐偏大但不夸张
+9. 向前迈步 | 向前迈出几步，节奏克制，停顿干净
+10. 优雅迈步 | 优雅向前迈步，膝部伸展干脆，上身保持稳定
+11. 走近短停 | 走近过程中在镜头附近短暂停下，惯性收住干净
+12. 拨开前行 | 向前走，同时用一只手拨开挡在身前的垂物
+13. 抬腿跨过 | 抬腿跨过脚下的低矮障碍，支撑腿稳，落脚后迅速找回平衡
+14. 边走边转头 | 继续行走的同时微微转头，步伐不停顿
+15. 缓缓转头 | 头部缓缓转向一侧，肩线略跟随，动作连续无跳切感
+16. 短暂回头 | 短暂转头后收回，颈部转动幅度克制
+17. 停步转向 | 停下，微微将身体转向另一侧
+18. 短暂停下 | 短暂停步，重心落稳，随后可接下一动作
+19. 近处停下 | 在很近的距离停下
+20. 停步轻触 | 停下，一只手向身侧伸出并轻触后停住
+21. 举拳备战 | 缓缓举起双拳摆出备战姿势，肘部内收
+22. 微抬下巴 | 下颌微微上抬，颈前侧拉伸，不要仰到夸张
+23. 指尖拂过 | 行进时指尖沿身侧轻轻拂过，触感连贯
+24. 抬手走近 | 走近时短暂抬起一只手，随即放下
+25. 侧转后回身 | 先将头转向一侧，再将头与肩转回前方
+26. 停步歪头 | 停下后微微歪头，颈侧线条明确
+27. 走近摆架势 | 逐渐走近镜头，随即以武术架势刹停定住
+28. 身体微转 | 躯干短暂微转，髋部与肩同步小幅转动
+29. 稳步走近 | 以稳定步伐缓缓走近镜头，无多余晃动
+30. 摘下墨镜 | 双手或单手缓缓摘下墨镜，动作连贯，镜腿离耳过程清晰
+31. 抬手下令 | 轻轻抬起一只手，掌心略向外或向前，停在半空
+32. 缓步走近 | 缓缓走向镜头，脚步落地有重量感
+33. 拨开发丝 | 一只手把贴脸的发丝拨开，随后手落回身侧
+34. 稳步前行 | 稳步前行，肩背不塌
+35. 走向镜头 | 径直走向镜头，步幅稳定
+36. 双腿均衡站 | 站立，重心自然均匀落在双腿上，肩背打开但不僵硬
+37. 四分之三站姿 | 放松有力的四分之三侧身站姿，一条腿略微向前，髋部微转
+38. 强调大腿站 | 四分之三侧身站立，前腿承重更明显，大腿肌肉结构清晰可见
+39. 一手叉腰 | 站立时一只手搭在髋部，重心移到前腿，另一手自然下垂或轻握
+40. 回身过肩 | 控制得当的四分之三转身，越过肩膀回头，颈线延伸
+
+【表演】
+1. 沉思抿嘴 | 思考：目光略偏，眉头轻蹙，嘴唇抿住，表情安静
+2. 得意扬眉 | 得意：下巴微抬，眉毛上扬，嘴角勾起，眼神带着炫耀
+3. 无奈苦笑 | 无奈：眉毛松下来，嘴角一边抬起一边落下，轻轻吐气，笑意发虚
+4. 轻轻闭眼 | 闭眼：双眼轻轻合上，眉心松开，嘴唇自然闭合，表情安宁
+5. 单眼眨眼 | 眨眼：一只眼短促闭上再睁开，另一只眼保持睁开，嘴角可以微动
+6. 远眺安静 | 目光投向远处，头微抬，焦点不在镜头上，面部保持安静
+7. 开怀大笑 | 开怀大笑：嘴角大幅上扬并露齿，眼角挤出笑纹，脸颊抬起，笑意停在整张脸上
+8. 自信坏笑 | 自信坏笑：一侧嘴角上扬更明显，眼神戏谑
+9. 王者表情 | 自信高贵的王者表情：目光统御全场，下颌线清晰
+10. 惊讶睁眼 | 惊讶：双眼睁圆，眉毛上抬，嘴巴微张，表情停在刚受到刺激的瞬间
+11. 轻咬下唇 | 轻咬下唇：上齿轻轻咬住下唇，目光不躲，话压在嘴里
+12. 细微呼吸 | 可见的细微呼吸：胸肩极轻起伏，支撑表情真实感
+13. 专注同情 | 专注而富同情：眉心微蹙却不凶，目光柔软
+14. 厌恶皱鼻 | 厌恶：鼻翼微皱，上唇短促抬起，目光侧开，表情一闪而过
+15. 恐惧受惊 | 恐惧：眼睛睁大，眉峰上挑，嘴唇轻颤，呼吸变浅，面部绷紧
+16. 俏皮坏笑 | 俏皮自信的坏笑：鼻翼轻动，眼睛弯一点
+17. 冷静专注 | 冷静、专注的面部表情：眉心微紧，眼神稳定，嘴角放松
+18. 自信浅笑 | 自信的浅浅微笑：嘴角上扬克制，眼周轻柔，不露齿或微露
+19. 坚定凝视 | 严肃而坚定的凝视：目光锁定前方，下颌微收，几乎不眨眼
+20. 柔和克制 | 柔和沉着的表情：面部肌肉放松，情绪内收，仍有存在感
+21. 高度专注 | 全神贯注：瞳孔稳定，眉弓微压，嘴唇轻闭
+22. 自信冷酷 | 自信而偏冷酷：目光锐利，微笑极淡或没有，颧骨阴影更深
+23. 平静叛逆 | 平静自信中带一丝叛逆：眉梢轻挑，嘴角不对称浅弧
+24. 安详表情 | 安详的面部状态：眼睑略松，呼吸感缓慢，气质安定
+25. 优雅危险 | 细微表情透出优雅与危险：微笑礼貌，眼神却不肯退让
+26. 专注慑人 | 平静专注却令人生畏：直视时压迫感强，面部几乎静止
+27. 无畏俏皮 | 无所畏惧又带俏皮：眼睛微眯，嘴角快速一勾
+28. 平静神秘 | 平静而神秘：目光深，信息量少，像在隐瞒下一步
+29. 平静威严 | 平静威严：头微抬，目光下压看人，气场压场但不吼
+30. 平静忧郁 | 平静中略带忧郁：眼波偏沉，微笑几乎消失
+31. 英雄神情 | 自信的英雄神情：眉宇开阔，目光正向，嘴角坚定
+32. 无畏直视 | 自信无畏并直视镜头：眼睛完全睁向观众，不躲闪
+33. 迷人自信 | 迷人而自信：眼神柔中带钩，浅笑持续
+34. 略带挑衅 | 自信又略带挑衅：下巴微抬，目光像在等人先动手
+35. 凌厉优雅 | 凌厉而优雅：眼神锋利，面部线条干净，表情不过火
+36. 强烈神秘 | 强烈神秘感：目光深邃，光影在眼窝，情绪难读
+37. 聪慧坚定 | 聪慧而坚定：眼神清明，像在快速判断，下颌有力
+38. 渐露坏笑 | 从平静自信逐渐转为一丝无畏坏笑，过程连续可感知
+39. 凌厉叛逆 | 凌厉叛逆：目光斜扫，嘴角不屑的短弧
+40. 高贵自信 | 高贵自信：面部松弛却挺拔，微笑克制得体
+41. 威胁直视 | 平静中略带威胁地直视镜头：微笑消失，瞳孔稳定
+42. 活力自信 | 充满活力的自信：眼睛更亮，微笑幅度略大但仍自然
+43. 温暖自信 | 温暖自信：眼角柔和，笑意达眼，攻击性低
+44. 权威自信 | 带权威感的自信：表情少动，存在感强，像习惯发令
+45. 淡淡微笑 | 淡淡自信微笑：几乎不动声色，只给观众一个情绪钩子
+46. 对视浅笑 | 与镜头直接对视，逐渐露出一抹有魅力的浅笑
+47. 凝视镜头 | 直视镜头，面部其余部分保持安静，让眼神成为唯一事件
+48. 坚定对视 | 与镜头保持坚定眼神交流，眨眼少，焦点不漂
+49. 神秘目光 | 平静而神秘莫测的目光：像在看穿又像在掩饰
+50. 威严目光 | 平静威严的目光：从上视或平视压住对方气势
+51. 克制情绪 | 情绪明显但表演克制：变化小、节奏慢、不卡通化
+52. 口型同步 | 说话时口型与台词自然同步，唇齿动作清晰不过度
+53. 安静自信 | 安静的自信：少表情、强气场，靠眼神与静止完成表演
+54. 生气皱眉 | 生气：眉心锁紧，眉头下压，嘴唇抿成一线，下颌咬住，眼神发硬
+55. 悲伤含泪 | 悲伤：眼眶湿润，眉心向上蹙起，嘴角下垂，情绪明显但没有哭出声
+56. 害羞脸红 | 害羞：脸颊发红，目光下垂或躲开，嘴角小幅上扬，表情发软
+57. 痛苦咬牙 | 痛苦：眉心深锁，眼睛微眯，牙关咬紧，面部肌肉绷住
+58. 疑惑挑眉 | 疑惑：一侧眉毛上挑，眼睛微眯，嘴唇轻闭，像在确认自己没看错
+
+【台词】
+1. 看你本事 | 轻声说：“来吧，让我看看你的本事。”
+2. 追捕已久 | 说：“我追捕你已经很久了。”
+3. 你终于来了 | 轻声说：“你终于来了。”
+4. 准备好了吗 | 轻声说：“准备好了吗？”
+5. 我准备好了 | 轻声说：“我准备好了。”
+6. 不该来这里 | 说：“你不该来这里。”
+7. 未来已来临 | 轻声说：“未来已经来临。”
+8. 任务开始 | 说：“任务现在开始。”
+9. 世界值得守护 | 说：“这个世界值得守护。”
+10. 麻烦又来了 | 用低沉俏皮的声音说：“看来麻烦又找上我了。”
+11. 走还是留 | 轻声说：“你是跟我走，还是留下？”
+12. 不丢下任何人 | 低沉自信地说：“前进。不要丢下任何人。”
+13. 城市不眠 | 说：“这座城市从不入睡，我也一样。”
+14. 世界仍值得救 | 说：“也许这个世界仍值得拯救。”
+15. 越来越近 | 轻声说：“我们越来越近了。”
+16. 城市等英雄 | 说：“这座城市仍在等待一位英雄。”
+17. 别相信我 | 说：“你应该清楚，不该相信我。”
+18. 继续前进 | 低沉坚定地轻声说：“我会继续前进。”
+19. 秘密该遗忘 | 说：“有些秘密最好被遗忘。”
+20. 来挑战我 | 说：“想挑战我，那就来吧。”
+21. 迎接未来 | 说：“你准备好迎接未来了吗？”
+22. 本该远离 | 说：“你本该离得远远的。”
+23. 我在世界在 | 轻声说：“只要我还站着，这个世界就不会倒下。”
+24. 你迟到了 | 说：“你迟到了。”
+25. 你能阻止我 | 平静自信地轻声说：“你真以为你能阻止我？”
+26. 趁早离开 | 说：“你本该趁还有机会的时候离开。”
+27. 自然有出路 | 轻声说：“大自然总会找到出路。”
+28. 确定跟我吗 | 轻声说：“你确定要跟着我吗？”
+29. 非首批到访 | 说：“我们不是第一批找到这里的人。”
+30. 一起玩吧 | 轻声说：“准备好一起玩了吗？”
+31. 靠近点 | 说：“靠近点……我不会咬人的。”
+32. 来吧准备好 | 平静自信地说：“来吧，你准备好了吗？”
+33. 准备下一程 | 轻声说：“准备好下一程了吗？”
+34. 挑错夜晚 | 轻声说：“你挑错了夜晚。”
+35. 敢者统治 | 说：“这个世界属于敢于统治它的人。”
+36. 下一个是你 | 说：“下一个就是你。”
+37. 别跟着我 | 轻声说：“你不该跟着我。”
+38. 大海的力量 | 平静地说：“你走到了这一步……现在，见识大海的力量吧。”
+39. 目标锁定 | 平静地说：“目标锁定，我们来做个了结。”
+40. 天空无边 | 平静自信地轻声说：“天空也许无边无际，但我清楚自己要去哪里。”
+
+【色彩】
+1. 午后霓虹混光 | 橙暖底色上同时有霓虹粉、青、紫
+2. 实验室彩光 | 品红、青、紫罗兰与白同时出现，浅底上的高饱和色
+3. 工业橙蓝 | 暖橙与深蓝电光并置
+4. 绯蓝霓虹对撞 | 深绯红对冷蓝，互补张力强
+5. 赛博朋克色 | 主色电光青、品红、电光蓝，辅色深紫罗兰与绯红，整体高饱和、冷调
+6. 魔法奇幻色 | 主色紫罗兰、宝石蓝、祖母绿，辅色金色与品红，深暗底上跳色
+7. 高级职业色 | 主色海军蓝、象牙白、暖琥珀，辅色金色与祖母绿，饱和克制
+8. 科幻工业色 | 主色钴蓝、警示橙、金属银，辅色绯红与青色，冷硬对比
+9. 自然环境色 | 主色祖母绿、松石、深蓝，辅色金橙与绯红，空气色通透
+10. 酒红金华色 | 主色酒红、金色、宝石蓝，辅色暖琥珀与祖母绿
+11. 冰原冷银 | 主色冰蓝、银灰、青白，辅色极淡紫罗兰与冷琥珀，整体低饱和
+12. 丛林暖绿 | 主色浓绿、松石、暖金，辅色珊瑚橙与薄紫
+13. 废土锈蚀色 | 主色锈橙、烟灰、氧化绿，辅色冷青，脏旧对比
+14. 橙色夕阳 | 主色橙红，阴影色青灰，整体偏暖
+15. 高窗金紫 | 金色与淡紫罗兰混在同一画面
+16. 橙青对撞 | 暖橙与冷青并置，互补对比清楚
+17. 琥珀冷青 | 暖琥珀与冷青并置
+18. 紫晶魔法光 | 紫色自发光叠蓝色环境色，整体冷紫，亮边偏紫
+19. 警示红琥珀 | 警示红与琥珀为主，饱和高，其余颜色压暗
+20. 青品霓虹 | 霓虹青与品红为主，高饱和互补，亮面明显吃进这两种颜色
+21. 橙光蓝霓虹 | 暖橙与冷蓝霓虹分居主辅
+22. 暖金辅霓虹 | 暖金为主色，霓虹色只作小面积辅色
+23. 琥珀霓虹混光 | 暖琥珀为主，叠松石、品红、紫罗兰
+24. 电紫城光 | 电光紫、青与暖琥珀同框
+25. 湿面彩光 | 表面同时吃进青、绯、品红、琥珀，颜色更跳
+26. 红紫蓝能量 | 深红、紫罗兰、电蓝染色，暗底高对比
+27. 金属吃彩光 | 祖母绿、电蓝、绯红、紫罗兰反射在金属上
+28. 浓郁蓝调 | 海军蓝到电光蓝支配画面，其余颜色降饱和
+29. 低饱和电影 | 整体降低饱和，只留少数高光色
+30. 金色夕阳 | 主色金橙，环境色冷蓝，暖高光与冷色反射并置
+31. 午夜皇家色 | 主色午夜蓝、金箔、象牙白，辅色绯红
+32. 冷暖分离 | 一侧暖色、一侧冷色，分界清楚
+33. 暴风夕阳 | 冷蓝与暖橙强烈对撞，暖色压在冷色底上
+34. 高饱和跳色 | 提高关键色饱和，主色与对比色更跳
+35. 能量染色 | 绯红、宝蓝、紫罗兰从暗底透出，边缘发亮
+
+【画面质量】
+1. 超写实皮肤发丝 | 超写实真人摄影感，皮肤可见自然毛孔与细微瑕疵，发丝根根可分，焦点落在眼睛
+2. 时尚大片质感 | 高级时尚摄影美学，皮肤细腻但仍有毛孔，布光干净，服装材质纹理清楚
+3. 电影级阴影反射 | 电影级写实阴影过渡，物理准确反射与高光，暗部保留细节不过度死黑
+4. 8K锐利细节 | 8K 级清晰锐利细节，边缘干净，微距级别的织物织纹与金属划痕可读
+5. 光追反射材质 | 光线追踪反射与物理亮面材质，金属/玻璃/湿地面反射环境，高光形状合理
+6. 虚幻5过场 | 虚幻引擎 5 高端过场动画画质，角色模型精细，光照与材质接近预渲染水准
+7. 游戏开场动画 | 高端游戏开场/过场画质，角色比例稳定，材质分层清楚，适度电影调色
+8. 胶片颗粒复古 | 模拟胶片颗粒与轻度 halation，锐度略柔，色彩偏复古，适合怀旧科幻气质
+9. 70年代科幻片 | 70 年代美国复古科幻电影美学，细微胶片颗粒，温暖橙调高光，轻微画面呼吸感
+10. 复古赛博胶片 | 复古胶片颗粒叠加未来赛博霓虹色，颗粒不吃掉五官，霓虹渗色克制
+11. 湿发织物细节 | 湿发丝缕分明，织物纤维与缝线清晰，水珠与高光物理合理
+12. 装甲金属微距 | 金属装甲表面高度精细，细划痕与螺栓可读，边缘倒角清楚，环境反射层次分明
+13. 机械表面精模 | 机械表面精模级细节，面板缝与散热格栅清楚，磨损漆面可读，焦点清晰不糊片
+14. 清晰无运动模糊 | 焦点清晰，主体无运动模糊，适合角色定妆与装备展示关键帧
+15. 戏剧反射高光 | 富有戏剧性但物理合理的反射高光，眼中有环境反光，金属件有可读高光条
+16. HDR体积层次 | HDR 动态范围拉出色光层次，亮部不削波、暗部有信息，体积感强
+17. 皮肤毛孔发丝 | 写实皮肤毛孔，自然面部微细节，根根发丝可分，避免塑料感磨皮
+18. 材质三件套 | 皮肤、织物、金属三类材质同时成立，各自纹理不同，光照逻辑统一
+19. 金色晨光 | 低角度温暖金色晨光从侧前方打来，柔和拉长阴影，皮肤与金属出现细腻高光
+20. 金色午后 | 偏高的金色午后阳光，阴影短而清晰
+21. 柔和自然光 | 漫射自然光，几乎无硬影，材质与五官都看得清
+22. 薄雾午后光 | 暖光穿透薄雾，远景被柔化，近景高光仍清晰
+23. 电影轮廓光 | 轮廓光勾出肩背与发丝边缘，主体与背景分开
+24. 电影逆光 | 强逆光形成剪影或半剪影，边缘烧出亮边，正面靠环境补光仍能读清五官
+25. 夕阳轮廓光 | 暖夕阳轮廓光压在冷蓝天空上，身体边缘呈金橙
+26. 夕阳霓虹轮廓 | 夕阳暖边之外再加一层霓虹色辅轮廓
+27. 应急照明 | 应急红或琥珀灯照在主体上，阴影深，可以常亮或频闪

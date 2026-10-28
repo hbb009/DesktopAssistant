@@ -61,7 +61,7 @@ def ask_yes(prompt: str, default_yes: bool = True) -> bool:
 def main() -> int:
     _fix_stdio()
     os.chdir(ROOT)
-    hr("1/3 安装组件 - 桌面助手 v9.17")
+    hr("1/3 安装组件 - 桌面助手 v9.18")
     print("本步只负责【安装】运行库，不做 PaddleOCR-VL 真测（真测很慢）。")
     print("检测请用：软件内「检测」或  python tools/setup_components.py --check-deep")
     print()

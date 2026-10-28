@@ -2,7 +2,9 @@
 # 文本编辑 —— 独立整理排版区（语音编辑分离出来的「编辑整理」部分）
 # 功能：主编辑区 + 一键整理/加序号/加符号前缀 + 前缀符号历史卡片（拖拽排序）
 
+import os
 import re
+from datetime import datetime
 
 from PyQt5.QtCore import Qt, QEvent, QTimer, QSize, QPoint, QRectF, pyqtSignal
 from PyQt5.QtGui import (
@@ -22,7 +24,13 @@ from styles.style_all import (
     apply_btn_download,
     apply_medium_button,
     MEDIUM_BUTTON_H,
+    CARD_LEFT_GAP,
 )
+from pages.seq_dup_panel import SeqDupPanel
+from utils.logger import get_logger
+
+log = get_logger(__name__)
+_KEEP_VER_FALLBACK = "v9.18"
 
 
 # ── 前缀符号历史卡片：参照「提示词」分类卡 —— 彩色圆角卡 + 影子拖拽排序 ──
@@ -372,7 +380,7 @@ _UNDO_IDLE_MS = 700     # 连续输入停这么久算一步
 
 
 class PageTextEditor(QWidget):
-    """文本编辑：左编辑区（复制/清空）+ 右整理工具、符号卡、操作记录。"""
+    """文本编辑：左编辑区；右栏三区「操作记录 / 文本操作 / 文件处理」。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -382,6 +390,7 @@ class PageTextEditor(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         self._theme_titles = []
+        self._theme_frames = []
         self._func_cards = []
         self._h_seps = []
         self._symbol_history = []      # 用过的前缀符号（顺序即卡片顺序）
@@ -438,7 +447,7 @@ class PageTextEditor(QWidget):
         body.setSpacing(8)
         page.addLayout(body, 1)
 
-        # ══ 左 70%：编辑区 + 复制 / 清空 ════════════════════════════
+        # ══ 左 70%：编辑区 + 快速保持 / 复制 / 清空 ══════════════════
         left = QWidget()
         left.setObjectName("TextEditorLeft")
         left.setAttribute(Qt.WA_StyledBackground, True)
@@ -484,6 +493,10 @@ class PageTextEditor(QWidget):
         row_edit_btn = QHBoxLayout()
         row_edit_btn.setSpacing(8)
         row_edit_btn.addStretch(1)
+        self.btn_quick_keep = apply_medium_button(QPushButton("快速保持"))
+        self.btn_quick_keep.setMinimumHeight(28)
+        self.btn_quick_keep.setMinimumWidth(0)
+        self.btn_quick_keep.clicked.connect(self._quick_keep)
         self.btn_copy = QPushButton("复制")
         apply_btn_download(self.btn_copy)
         self.btn_copy.setMinimumHeight(28)
@@ -494,11 +507,13 @@ class PageTextEditor(QWidget):
         self.btn_clear_editor.setMinimumHeight(28)
         self.btn_clear_editor.setMinimumWidth(0)
         self.btn_clear_editor.clicked.connect(self._on_clear_editor)
+        row_edit_btn.addWidget(self.btn_quick_keep, 0)
         row_edit_btn.addWidget(self.btn_copy, 0)
         row_edit_btn.addWidget(self.btn_clear_editor, 0)
         cve.addLayout(row_edit_btn)
 
-        # ══ 右 30%：操作记录 30% / 整理 20% / 加序号 25% / 加符号 25% ══
+
+        # ══ 右 30%：操作记录 | 编辑 | 文件处理（三区，无互斥蒙层）══
         right = QWidget()
         right.setObjectName("TextEditorRight")
         right.setAttribute(Qt.WA_StyledBackground, True)
@@ -508,8 +523,9 @@ class PageTextEditor(QWidget):
         right.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         rv = QVBoxLayout(right)
         rv.setContentsMargins(0, 0, 0, 0)
-        rv.setSpacing(0)
+        rv.setSpacing(4)
 
+        # —— 1) 操作记录 ——
         card_log = QWidget()
         card_log.setObjectName("CardTextEditorLog")
         card_log.setAttribute(Qt.WA_StyledBackground, True)
@@ -521,7 +537,7 @@ class PageTextEditor(QWidget):
         cv3.setSpacing(2)
         row_log_title = QHBoxLayout()
         row_log_title.setContentsMargins(0, 0, 0, 0)
-        row_log_title.setSpacing(8)
+        row_log_title.setSpacing(6)
         row_log_title.addWidget(self._section_title("操作记录"), 0, Qt.AlignVCenter)
         row_log_title.addStretch(1)
         self.btn_undo = apply_medium_button(QPushButton("撤销"))
@@ -546,65 +562,58 @@ class PageTextEditor(QWidget):
         self.log.setWordWrap(True)
         self.log.setTextElideMode(Qt.ElideRight)
         cv3.addWidget(self.log, 1)
-        rv.addWidget(card_log, 30)
+        rv.addWidget(card_log, 28)
         self._refresh_undo_btns()
 
-        tools = QWidget()
-        tools.setObjectName("TextEditorTools")
-        tools.setAttribute(Qt.WA_StyledBackground, True)
-        tools.setStyleSheet("#TextEditorTools{background:transparent;border:none;}")
-        tools.setMinimumHeight(0)
-        tools.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-        cvr = QVBoxLayout(tools)
-        cvr.setContentsMargins(0, 0, 0, 0)
-        cvr.setSpacing(4)
-        cvr.setAlignment(Qt.AlignTop)
-        cvr.addWidget(self._make_hsep())
+        # —— 2) 编辑（整理 + 加序号 + 加符号，压成约 4 行）——
+        edit_panel = QWidget()
+        edit_panel.setObjectName("TextEditorEditZone")
+        edit_panel.setAttribute(Qt.WA_StyledBackground, True)
+        edit_panel.setStyleSheet("#TextEditorEditZone{background:transparent;border:none;}")
+        edit_panel.setMinimumHeight(0)
+        edit_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        cve_r = QVBoxLayout(edit_panel)
+        cve_r.setContentsMargins(0, 0, 0, 0)
+        cve_r.setSpacing(4)
+        cve_r.setAlignment(Qt.AlignTop)
+        cve_r.addWidget(self._section_title("文本操作"), 0, Qt.AlignLeft)
+        cve_r.addWidget(self._make_hsep())
 
         row_tools = QHBoxLayout()
-        row_tools.setSpacing(8)
+        row_tools.setSpacing(4)
         self.btn_one_para = apply_medium_button(QPushButton("整理成1段"))
         self.btn_one_para.setMinimumHeight(MEDIUM_BUTTON_H)
         self.btn_one_para.setMinimumWidth(0)
         self.btn_one_para.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btn_one_para.setCursor(Qt.PointingHandCursor)
         self.btn_one_para.clicked.connect(self._collapse_to_one_paragraph)
-        row_tools.addWidget(self.btn_one_para, 1)
-        cvr.addLayout(row_tools)
-
-        row_tools2 = QHBoxLayout()
-        row_tools2.setSpacing(8)
         self.btn_del_blank = apply_medium_button(QPushButton("删除空行"))
         self.btn_del_blank.setMinimumHeight(MEDIUM_BUTTON_H)
         self.btn_del_blank.setMinimumWidth(0)
         self.btn_del_blank.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btn_del_blank.setCursor(Qt.PointingHandCursor)
         self.btn_del_blank.clicked.connect(self._remove_blank_lines)
-        row_tools2.addWidget(self.btn_del_blank, 1)
-        cvr.addLayout(row_tools2)
-        rv.addWidget(tools, 20)
-
-        # 加序号区：顶部分隔线，高度 25%，ABC / 123 单选
-        num_panel = QWidget()
-        num_panel.setObjectName("TextEditorNumber")
-        num_panel.setAttribute(Qt.WA_StyledBackground, True)
-        num_panel.setStyleSheet("#TextEditorNumber{background:transparent;border:none;}")
-        num_panel.setMinimumHeight(0)
-        num_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-        cvn = QVBoxLayout(num_panel)
-        cvn.setContentsMargins(0, 0, 0, 0)
-        cvn.setSpacing(4)
-        cvn.setAlignment(Qt.AlignTop)
-        cvn.addWidget(self._make_hsep())
+        row_tools.addWidget(self.btn_one_para, 1)
+        row_tools.addWidget(self.btn_del_blank, 1)
+        cve_r.addLayout(row_tools)
+        cve_r.addWidget(self._make_hsep())
 
         row_num = QHBoxLayout()
-        row_num.setSpacing(8)
+        row_num.setSpacing(4)
         self.btn_add_num = apply_medium_button(QPushButton("加序号"))
         self.btn_add_num.setMinimumHeight(MEDIUM_BUTTON_H)
         self.btn_add_num.setMinimumWidth(0)
         self.btn_add_num.setCursor(Qt.PointingHandCursor)
         self.btn_add_num.clicked.connect(self._add_line_numbers)
         row_num.addWidget(self.btn_add_num, 0)
+        self.inp_num_start = QLineEdit("1")
+        self.inp_num_start.setObjectName("CalcInput")
+        self.inp_num_start.setToolTip("起始序号（正整数；无效时按 1）")
+        self.inp_num_start.setFixedHeight(MEDIUM_BUTTON_H)
+        self.inp_num_start.setFixedWidth(44)
+        self.inp_num_start.setAlignment(Qt.AlignCenter)
+        self.inp_num_start.setMaxLength(6)
+        row_num.addWidget(self.inp_num_start, 0)
         self._num_style_group = QButtonGroup(self)
         self.radio_num_abc = QRadioButton("ABC")
         self.radio_num_123 = QRadioButton("123")
@@ -617,25 +626,11 @@ class PageTextEditor(QWidget):
             self._num_style_group.addButton(r)
             row_num.addWidget(r, 0)
         row_num.addStretch(1)
-        cvn.addLayout(row_num)
-        cvn.addStretch(1)
-        rv.addWidget(num_panel, 25)
-
-        # 加符号区：顶部分隔线，高度 25%，内容顶对齐
-        sym_panel = QWidget()
-        sym_panel.setObjectName("TextEditorSymbol")
-        sym_panel.setAttribute(Qt.WA_StyledBackground, True)
-        sym_panel.setStyleSheet("#TextEditorSymbol{background:transparent;border:none;}")
-        sym_panel.setMinimumHeight(0)
-        sym_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-        cvs = QVBoxLayout(sym_panel)
-        cvs.setContentsMargins(0, 0, 0, 0)
-        cvs.setSpacing(4)
-        cvs.setAlignment(Qt.AlignTop)
-        cvs.addWidget(self._make_hsep())
+        cve_r.addLayout(row_num)
+        cve_r.addWidget(self._make_hsep())
 
         row_add_sym = QHBoxLayout()
-        row_add_sym.setSpacing(8)
+        row_add_sym.setSpacing(4)
         self.btn_add_symbol = apply_medium_button(QPushButton("加符号"))
         self.btn_add_symbol.setMinimumHeight(MEDIUM_BUTTON_H)
         self.btn_add_symbol.setMinimumWidth(0)
@@ -643,7 +638,6 @@ class PageTextEditor(QWidget):
         self.btn_add_symbol.clicked.connect(self._add_symbol_prefix)
         row_add_sym.addWidget(self.btn_add_symbol, 0)
         self.inp_symbol = QLineEdit()
-        # CalcInput：padding 4px，28–29px 高时汉字不会被裁
         self.inp_symbol.setObjectName("CalcInput")
         self.inp_symbol.setPlaceholderText("符号编辑")
         self.inp_symbol.setFixedHeight(MEDIUM_BUTTON_H)
@@ -652,22 +646,17 @@ class PageTextEditor(QWidget):
         self.inp_symbol.setClearButtonEnabled(True)
         self.inp_symbol.setCursor(Qt.IBeamCursor)
         row_add_sym.addWidget(self.inp_symbol, 1)
-        cvs.addLayout(row_add_sym)
-
-        row_plus = QHBoxLayout()
-        row_plus.setSpacing(8)
         self.btn_symbol_save = apply_medium_button(QPushButton("+"))
         self.btn_symbol_save.setFixedWidth(36)
         self.btn_symbol_save.setMinimumHeight(28)
         self.btn_symbol_save.setCursor(Qt.PointingHandCursor)
         self.btn_symbol_save.setToolTip("把当前前缀内容直接存成一张「前缀卡」")
         self.btn_symbol_save.clicked.connect(self._save_current_symbol_as_card)
-        row_plus.addWidget(self.btn_symbol_save, 0)
+        row_add_sym.addWidget(self.btn_symbol_save, 0)
         self.symbol_preview = _CharPreview()
         self.symbol_preview.setMinimumWidth(0)
-        row_plus.addWidget(self.symbol_preview, 0, Qt.AlignVCenter)
-        row_plus.addStretch(1)
-        cvs.addLayout(row_plus)
+        row_add_sym.addWidget(self.symbol_preview, 0, Qt.AlignVCenter)
+        cve_r.addLayout(row_add_sym)
         self.inp_symbol.textChanged.connect(self.symbol_preview.set_text)
 
         self.symbol_row = QWidget()
@@ -677,7 +666,7 @@ class PageTextEditor(QWidget):
         self.symbol_row.setMinimumWidth(0)
         sr = QHBoxLayout(self.symbol_row)
         sr.setContentsMargins(0, 0, 0, 0)
-        sr.setSpacing(6)
+        sr.setSpacing(4)
         self.prefix_scroll = _PrefixHScroll()
         self.prefix_scroll.setObjectName("VoicePrefixScroll")
         self.prefix_scroll.setWidgetResizable(True)
@@ -714,14 +703,23 @@ class PageTextEditor(QWidget):
         self._pfx_grab = None
         self._pfx_drag_card = None
         self.symbol_row.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Maximum)
-        cvs.addWidget(self.symbol_row, 0, Qt.AlignTop)
-        cvs.addStretch(1)
+        cve_r.addWidget(self.symbol_row, 0, Qt.AlignTop)
         self._refresh_symbol_chips()
-        rv.addWidget(sym_panel, 25)
         self._restyle_sep()
+        rv.addWidget(edit_panel, 32)
+
+        # —— 3) 文件处理（序列 + 查重）——
+        self.seq_dup = SeqDupPanel()
+        try:
+            self.seq_dup.prefs_changed.connect(self._mark_prefs_dirty)
+        except Exception:
+            pass
+        self._theme_frames.append(self.seq_dup)
+        rv.addWidget(self.seq_dup, 40)
 
         body.addWidget(left, 70)
         body.addWidget(right, 30)
+
 
     # ── 对外接口 ──────────────────────────────────────────────────────
     def load_text(self, text: str, append: bool = False):
@@ -846,10 +844,11 @@ class PageTextEditor(QWidget):
 
     # ── 主题 ──────────────────────────────────────────────────────────
     def _restyle_sep(self):
+        # 占位高度仍用 _SEP_PX，只把可见线画成 1px，不改布局间距
         color = tk("border")
         qss = (
             "QFrame#TextEditorHSep{"
-            f"background:{color};border:none;"
+            f"background:transparent;border:none;border-top:1px solid {color};"
             f"max-height:{_SEP_PX}px;min-height:{_SEP_PX}px;}}"
         )
         for sep in getattr(self, "_h_seps", []) or []:
@@ -858,6 +857,12 @@ class PageTextEditor(QWidget):
     def refresh_theme(self, *_):
         for t in self._theme_titles:
             restyle_card_title(t)
+        panel = getattr(self, "seq_dup", None)
+        if panel is not None and hasattr(panel, "refresh_theme"):
+            try:
+                panel.refresh_theme()
+            except Exception:
+                pass
         for c in self._func_cards:
             restyle_card_frame(c)
         self._restyle_sep()
@@ -886,6 +891,59 @@ class PageTextEditor(QWidget):
             return
         QApplication.clipboard().setText(text)
         self._log("已复制到剪贴板")
+
+    def _keep_version_tag(self) -> str:
+        try:
+            title = self.window().windowTitle() or ""
+        except Exception:
+            title = ""
+        found = re.search(r"v\d+(?:\.\d+)+", title)
+        return found.group(0) if found else _KEEP_VER_FALLBACK
+
+    def _public_save_root(self) -> str:
+        prefs = None
+        try:
+            prefs = getattr(self.window(), "_user_prefs", None)
+        except Exception:
+            prefs = None
+        from utils.app_paths import public_save_base
+        return public_save_base(prefs if isinstance(prefs, dict) else None)
+
+    def _quick_keep(self):
+        """把编辑区原文存到公共目录根：桌面助手v9.18_20261022_14.35_01.txt。"""
+        raw = self.editor.toPlainText()
+        if not (raw or "").strip():
+            self._log("编辑区为空，未保存")
+            return
+        try:
+            root = self._public_save_root()
+        except Exception:
+            log.exception("读取公共目录失败")
+            self._log("公共目录不可用，未保存")
+            return
+        if not root or not os.path.isdir(root):
+            self._log("公共目录不可用，未保存")
+            return
+        now = datetime.now()
+        prefix = (
+            f"桌面助手{self._keep_version_tag()}_"
+            f"{now.strftime('%Y%m%d')}_{now.strftime('%H.%M')}_"
+        )
+        for n in range(1, 100):
+            name = f"{prefix}{n:02d}.txt"
+            path = os.path.join(root, name)
+            try:
+                with open(path, "x", encoding="utf-8") as fp:
+                    fp.write(raw)
+            except FileExistsError:
+                continue
+            except OSError as e:
+                log.exception("快速保持写入失败 path=%s", path)
+                self._log(f"保存失败：{e}")
+                return
+            self._log(f"已快速保持：{name}")
+            return
+        self._log("这一分钟已有 99 个文件，未保存")
 
     def _collapse_to_one_paragraph(self):
         """删除编辑区全部换行符，整理成连续一段（针对 GPT 爱断行）。"""
@@ -934,8 +992,27 @@ class PageTextEditor(QWidget):
             chars.append(chr(ord("A") + rem))
         return "".join(reversed(chars))
 
+    def _num_start_value(self) -> int:
+        """起始序号：正整数；空/非法回退为 1。"""
+        w = getattr(self, "inp_num_start", None)
+        raw = ""
+        try:
+            raw = (w.text() if w is not None else "") or ""
+        except Exception:
+            raw = ""
+        raw = raw.strip()
+        if not raw:
+            return 1
+        try:
+            n = int(raw)
+        except Exception:
+            return 1
+        if n < 1:
+            return 1
+        return n
+
     def _add_line_numbers(self):
-        """按行加序号：123 为 1. 2. 3.；ABC 为 A. B. C.（超 26 行走 AA）。"""
+        """按行加序号：123 为 N. N+1…；ABC 为对应字母（超 26 行走 AA）。起始见旁输入框。"""
         raw = self.editor.toPlainText()
         if not (raw or "").strip():
             self._log("编辑区为空，无需加序号")
@@ -944,15 +1021,22 @@ class PageTextEditor(QWidget):
         if not lines:
             self._log("编辑区无有效行，无需加序号")
             return
+        start = self._num_start_value()
         use_abc = bool(self.radio_num_abc.isChecked())
         strip_re = re.compile(r"^\s*(?:\d+|[A-Za-z]+)\s*[\.、．\)]\s*")
         cleaned = [strip_re.sub("", ln).strip() or ln for ln in lines]
         if use_abc:
-            numbered = [f"{self._index_to_letters(i)}. {text}" for i, text in enumerate(cleaned)]
-            shown = f"{self._index_to_letters(0)}–{self._index_to_letters(len(numbered) - 1)}"
+            numbered = [
+                f"{self._index_to_letters(start - 1 + i)}. {text}"
+                for i, text in enumerate(cleaned)
+            ]
+            shown = (
+                f"{self._index_to_letters(start - 1)}"
+                f"–{self._index_to_letters(start - 1 + len(numbered) - 1)}"
+            )
         else:
-            numbered = [f"{i + 1}. {text}" for i, text in enumerate(cleaned)]
-            shown = f"1–{len(numbered)}"
+            numbered = [f"{start + i}. {text}" for i, text in enumerate(cleaned)]
+            shown = f"{start}–{start + len(numbered) - 1}"
         kind = "ABC" if use_abc else "123"
         self._mutate_editor(
             "\n".join(numbered),
@@ -1005,6 +1089,42 @@ class PageTextEditor(QWidget):
     def _on_word_wrap_toggled(self, checked: bool):
         self._apply_word_wrap(checked)
         self._mark_prefs_dirty()
+
+
+    def export_check_dup_settings(self) -> dict:
+        panel = getattr(self, "seq_dup", None)
+        if panel is None:
+            return {}
+        try:
+            return dict(panel.export_settings() or {})
+        except Exception:
+            return {}
+
+    def apply_check_dup_settings(self, d: dict) -> None:
+        panel = getattr(self, "seq_dup", None)
+        if panel is None:
+            return
+        try:
+            panel.apply_settings(d or {})
+        except Exception:
+            pass
+
+
+    def on_sequence_fill_done(self, **kwargs):
+        panel = getattr(self, "seq_dup", None)
+        if panel is not None and hasattr(panel, "on_sequence_fill_done"):
+            return panel.on_sequence_fill_done(**kwargs)
+
+    def stop_background_checks(self):
+        panel = getattr(self, "seq_dup", None)
+        if panel is not None and hasattr(panel, "stop_background_checks"):
+            try:
+                panel.stop_background_checks()
+            except Exception:
+                pass
+
+    def shutdown(self):
+        self.stop_background_checks()
 
     def export_settings(self) -> dict:
         """写入 user.txt 的文本编辑段。"""

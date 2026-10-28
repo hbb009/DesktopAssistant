@@ -1,10 +1,11 @@
 # -*- coding: utf-8 -*-
-"""v9.17 外置模型下载 → model/
+"""v9.18 外置模型下载 → model/
 
   python tools/download_models.py
   python tools/download_models.py --only paddleocr
   python tools/download_models.py --only whisper-small
   python tools/download_models.py --only cosyvoice --mirror modelscope
+  python tools/download_models.py --only opus-mt-zh-en --only opus-mt-en-zh
 """
 from __future__ import annotations
 import argparse, subprocess, sys
@@ -26,6 +27,12 @@ CATALOG = {
                   "hf": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512", "ms": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512", "kind": "snapshot"},
     "cosyvoice-code": {"title": "CosyVoice 源码", "local": "CosyVoice", "kind": "git",
                        "url": "https://github.com/FunAudioLLM/CosyVoice.git"},
+    "opus-mt-zh-en": {"title": "opus-mt-zh-en（中→英，PyTorch约0.3GB）", "local": "opus-mt-zh-en",
+                     "hf": "Helsinki-NLP/opus-mt-zh-en", "ms": "Helsinki-NLP/opus-mt-zh-en", "kind": "snapshot",
+                     "allow": ["*.json", "*.txt", "*.model", "*.spm", "pytorch_model.bin", "tokenizer*"]},
+    "opus-mt-en-zh": {"title": "opus-mt-en-zh（英→中，PyTorch约0.3GB）", "local": "opus-mt-en-zh",
+                     "hf": "Helsinki-NLP/opus-mt-en-zh", "ms": "Helsinki-NLP/opus-mt-en-zh", "kind": "snapshot",
+                     "allow": ["*.json", "*.txt", "*.model", "*.spm", "pytorch_model.bin", "tokenizer*"]},
 }
 
 def _ready(name: str) -> bool:
@@ -39,23 +46,33 @@ def _ready(name: str) -> bool:
             return True
     return False
 
-def _hf(repo, dest: Path):
+def _hf(repo, dest: Path, allow_patterns=None):
     try:
         from huggingface_hub import snapshot_download
     except ImportError:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", "huggingface_hub"])
         from huggingface_hub import snapshot_download
     dest.parent.mkdir(parents=True, exist_ok=True)
-    snapshot_download(repo_id=repo, local_dir=str(dest))
+    kw = {}
+    if allow_patterns:
+        kw["allow_patterns"] = allow_patterns
+    snapshot_download(repo_id=repo, local_dir=str(dest), **kw)
 
-def _ms(repo, dest: Path):
+def _ms(repo, dest: Path, allow_patterns=None):
     try:
         from modelscope import snapshot_download
     except ImportError:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "-U", "modelscope"])
         from modelscope import snapshot_download
     dest.parent.mkdir(parents=True, exist_ok=True)
-    snapshot_download(repo, local_dir=str(dest))
+    kw = {}
+    # ModelScope 部分版本支持 allow_patterns；不支持时整库下完再靠本机裁剪
+    if allow_patterns:
+        kw["allow_patterns"] = allow_patterns
+    try:
+        snapshot_download(repo, local_dir=str(dest), **kw)
+    except TypeError:
+        snapshot_download(repo, local_dir=str(dest))
 
 def _git(url, dest: Path):
     if dest.exists():
@@ -71,12 +88,13 @@ def download(key, mirror):
     print("===", item["title"], "===")
     if item["kind"] == "git":
         _git(item["url"], dest); return
+    allow = item.get("allow")
     if mirror == "modelscope":
         try:
-            _ms(item["ms"], dest); return
+            _ms(item["ms"], dest, allow_patterns=allow); return
         except Exception as e:
-            print("ModelScope 失败:", e)
-    _hf(item["hf"], dest)
+            print("ModelScope failed:", e)
+    _hf(item["hf"], dest, allow_patterns=allow)
 
 def main():
     ap = argparse.ArgumentParser()

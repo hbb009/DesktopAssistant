@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+# IDE / OS
+.vscode/
+.idea/
+.cursor/
+*.swp
+Thumbs.db
+Desktop.ini
+.DS_Store
+# Personal data / large (kept locally, not in git)
+temp/
+log/
+logs/
+userdata/
+model/
+VoiceEdit/
+gameassist/
+gamebrain/
+data/
+records/
+user.txt
+# Logs / scratch / drafts
+*.log
+crash_*.log
+docs/_draft_*.md
+*.b64
+*.gz
+*.bak
+*.bak_*
+*.pyw.bak*
+# NOTE: assets/ (qss/icons/guides), docs/提示词分类.txt and MV41/ (browser extension) are needed at runtime -> tracked

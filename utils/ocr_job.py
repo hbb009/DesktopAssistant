@@ -4,7 +4,7 @@
 # 切勿在本文件 import PyQt5 —— 主进程 Qt 会与 Paddle / OpenCV 抢 DLL。
 #
 # 开发：python -m utils.ocr_job <meta.json>
-# 打包：mainv917.exe --ocr-job <meta.json>
+# 打包：mainv918.exe --ocr-job <meta.json>
 # meta.json:
 #   { "action": "probe"|"ocr", "image": "可选 png", "model_dir": "...", "out": "out.json" }
 # ---------------------------------------------------------------------------

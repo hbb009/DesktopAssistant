@@ -1,6 +1,6 @@
 """
 page_points_calc.py  —  积分计算页
-放在 pages/ 目录下，与其他页面同级。
+生图 / 生视频是两个页签，样式对齐「视频下载」。
 记录文件存到：项目根目录 / records / points_calc.txt
 """
 
@@ -10,23 +10,22 @@ from datetime import datetime
 
 from styles.style_all import (
     install_card_title, theme, apply_btn_download, make_card,
-    apply_mini_button, tk,
-    CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP,
+    apply_mini_button, tk, fmt, TAB_QSS, VIDEO_TAB_QSS,
 )
 
 from PyQt5.QtCore import (
     Qt, QUrl, QTimer, QMimeData, pyqtSignal, QEvent,
-    QRectF, QPointF, QPropertyAnimation, QEasingCurve, pyqtProperty,
+    QRectF, QPointF, QSize,
 )
 from PyQt5.QtGui import (
-    QColor, QPalette, QDrag, QPainter, QMouseEvent, QFont, QFontMetrics,
-    QPen, QBrush, QLinearGradient, QRadialGradient,
+    QColor, QPalette, QDrag, QPainter, QMouseEvent,
+    QPen, QBrush, QIcon, QPixmap, QPolygonF,
 )
 from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkRequest
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QScrollArea, QFrame, QMessageBox,
-    QSizePolicy, QComboBox, QStackedWidget,
+    QSizePolicy, QComboBox, QTabWidget,
     QApplication, QAbstractButton, QScrollBar, QAbstractSpinBox,
 )
 
@@ -113,325 +112,60 @@ def _style_toggle_btn(btn: QPushButton):
     btn.setPalette(pal)
 
 
-# ── 生图 / 生视频：词夹滑块，二选一（左蓝右绿）────────────────────────────────
+# ── 生图 / 生视频页签图标（对齐视频下载页签：圆角底 + 选中提亮）──────────────
 _USAGE_BLUE = QColor("#3B82F6")
 _USAGE_GREEN = QColor("#22C55E")
 
 
-def _lerp_qcolor(a: QColor, b: QColor, t: float) -> QColor:
-    t = 0.0 if t < 0 else (1.0 if t > 1 else float(t))
-    return QColor(
-        int(a.red()   + (b.red()   - a.red())   * t),
-        int(a.green() + (b.green() - a.green()) * t),
-        int(a.blue()  + (b.blue()  - a.blue())  * t),
-        int(a.alpha() + (b.alpha() - a.alpha()) * t),
-    )
-
-
-class _UsageSlider(QWidget):
-    """圆角轨道 + 白滑块。0=左（生图/蓝），1=右（生视频/绿）。"""
-
-    W, H = 32, 18
-    snapped = pyqtSignal(bool)  # True=生视频
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setFixedSize(self.W, self.H)
-        self.setCursor(Qt.PointingHandCursor)
-        self.setFocusPolicy(Qt.NoFocus)
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        self._knob = 0.0
-        self._frozen = False
-        self._press = None       # (x, knob) ；None=未按下
-        self._dragging = False
-        self._anim = QPropertyAnimation(self, b"knobPos", self)
-        self._anim.setDuration(160)
-        self._anim.setEasingCurve(QEasingCurve.OutCubic)
-
-    def getKnobPos(self):
-        return self._knob
-
-    def setKnobPos(self, v):
-        self._knob = max(0.0, min(1.0, float(v)))
-        self.update()
-
-    knobPos = pyqtProperty(float, fget=getKnobPos, fset=setKnobPos)
-
-    def setFrozen(self, frozen: bool):
-        frozen = bool(frozen)
-        if self._frozen == frozen:
-            return
-        self._frozen = frozen
-        self.setCursor(Qt.ForbiddenCursor if frozen else Qt.PointingHandCursor)
-        self.update()
-
-    def set_pos(self, video: bool, animate: bool):
-        end = 1.0 if video else 0.0
-        if abs(self._knob - end) < 0.001:
-            return
-        if animate and self.isVisible():
-            self._anim.stop()
-            self._anim.setStartValue(self._knob)
-            self._anim.setEndValue(end)
-            self._anim.start()
-        else:
-            self._anim.stop()
-            self._knob = end
-            self.update()
-
-    def mousePressEvent(self, e):
-        if self._frozen or e.button() != Qt.LeftButton:
-            e.accept()
-            return
-        self._anim.stop()
-        self._press = (e.x(), self._knob)
-        self._dragging = False
-        self.grabMouse()
-        e.accept()
-
-    def mouseMoveEvent(self, e):
-        if self._press is None:
-            return
-        if not self._dragging and abs(e.x() - self._press[0]) < 4:
-            return
-        self._dragging = True
-        pad = 2.5
-        kn = max(8.0, self.height() - 2.0 * pad)
-        x0 = pad
-        x1 = self.width() - pad - kn
-        span = max(1.0, x1 - x0)
-        t = (float(e.x()) - kn / 2.0 - x0) / span
-        self._knob = max(0.0, min(1.0, t))
-        self.update()
-
-    def mouseReleaseEvent(self, e):
-        if e.button() != Qt.LeftButton:
-            return
-        try:
-            self.releaseMouse()
-        except Exception:
-            pass
-        if self._frozen or self._press is None:
-            self._press = None
-            self._dragging = False
-            e.accept()
-            return
-        if self._dragging:
-            video = self._knob >= 0.5
-        else:
-            video = self._knob < 0.5  # 单击翻转
-        self._press = None
-        self._dragging = False
-        self.set_pos(video, animate=True)
-        self.snapped.emit(bool(video))
-        e.accept()
-
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        w, h = float(self.width()), float(self.height())
-        t = self._knob
-        frozen = bool(self._frozen)
-        if frozen:
-            p.setOpacity(0.55)
-
-        track = QRectF(1.0, 1.5, w - 2.0, h - 3.0)
-        radius = track.height() / 2.0
-        if frozen:
-            c0 = QColor("#64748B")
-            c1 = QColor("#475569")
-        else:
-            c0 = _lerp_qcolor(_USAGE_BLUE, _USAGE_GREEN, t)
-            c1 = QColor(c0).darker(112)
-        g = QLinearGradient(track.topLeft(), track.topRight())
-        g.setColorAt(0, c0)
-        g.setColorAt(1, c1)
+def _paint_usage_tab_icon(video: bool, size: int = 20, selected: bool = True, dark: bool = True) -> QIcon:
+    """生图：蓝底画框。生视频：绿底三角。未选中时灰化。"""
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    s = float(size)
+    m = s * 0.06
+    body = QRectF(m, m, s - 2 * m, s - 2 * m)
+    if selected:
+        base = QColor(_USAGE_GREEN if video else _USAGE_BLUE)
+        fg = QColor("#ffffff")
+        rim = QColor("#ffffff")
+        rim.setAlpha(90)
+    else:
+        base = QColor("#3a3f4a") if dark else QColor("#c5ccd6")
+        base.setAlpha(120 if dark else 140)
+        fg = QColor("#9ca3af")
+        fg.setAlpha(180)
+        rim = QColor("#6b7280")
+        rim.setAlpha(90)
+    p.setPen(QPen(rim, max(1.0, s * 0.06)))
+    p.setBrush(QBrush(base))
+    p.drawRoundedRect(body, s * 0.22, s * 0.22)
+    p.setPen(Qt.NoPen)
+    p.setBrush(QBrush(fg))
+    if video:
+        p.drawPolygon(QPolygonF([
+            QPointF(s * 0.38, s * 0.30),
+            QPointF(s * 0.38, s * 0.70),
+            QPointF(s * 0.72, s * 0.50),
+        ]))
+    else:
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(fg, max(1.2, s * 0.07)))
+        p.drawRoundedRect(QRectF(s * 0.26, s * 0.30, s * 0.48, s * 0.40), s * 0.06, s * 0.06)
         p.setPen(Qt.NoPen)
-        p.setBrush(QBrush(g))
-        p.drawRoundedRect(track, radius, radius)
-        # 内高光
-        hi = QLinearGradient(track.topLeft(), QPointF(track.left(), track.center().y()))
-        hi.setColorAt(0, QColor(255, 255, 255, 48 if frozen else 70))
-        hi.setColorAt(1, QColor(255, 255, 255, 0))
-        p.setBrush(QBrush(hi))
-        p.drawRoundedRect(
-            track.adjusted(0.5, 0.5, -0.5, -track.height() * 0.35), radius, radius,
-        )
-
-        pad = 2.5
-        kn = h - 2.0 * pad
-        x0 = pad
-        x1 = w - pad - kn
-        kx = x0 + (x1 - x0) * t
-        knob = QRectF(kx, pad, kn, kn)
-
-        sh = QRadialGradient(knob.center() + QPointF(0, 1), kn * 0.7)
-        sh.setColorAt(0, QColor(0, 0, 0, 50))
-        sh.setColorAt(1, QColor(0, 0, 0, 0))
-        p.setPen(Qt.NoPen)
-        p.setBrush(QBrush(sh))
-        p.drawEllipse(knob.adjusted(-1, 0, 1, 2))
-
-        kg = QLinearGradient(knob.topLeft(), knob.bottomLeft())
-        if frozen:
-            kg.setColorAt(0, QColor("#E2E8F0"))
-            kg.setColorAt(1, QColor("#CBD5E1"))
-        else:
-            kg.setColorAt(0, QColor("#FFFFFF"))
-            kg.setColorAt(1, QColor("#F1F5F9"))
-        p.setBrush(QBrush(kg))
-        p.setPen(QPen(QColor(0, 0, 0, 28), 1.0))
-        p.drawEllipse(knob)
-        p.setPen(Qt.NoPen)
-        p.setBrush(QBrush(QColor(255, 255, 255, 100 if frozen else 160)))
-        p.drawEllipse(QRectF(kx + kn * 0.22, pad + kn * 0.15, kn * 0.45, kn * 0.28))
-        p.end()
-
-
-class UsageTypeSwitch(QFrame):
-    """用途类型整组：生图 ←滑块→ 生视频。点词或拖滑块均可，左蓝右绿。"""
-
-    changed = pyqtSignal(str)  # "image" | "video"
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("UsageTypeSwitch")
-        self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setFrameShape(QFrame.NoFrame)
-        self.setFixedHeight(28)
-        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self._video = False
-        self._frozen = False
-
-        lay = QHBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(6)
-
-        self.lbl_image = QLabel("生图")
-        self.lbl_video = QLabel("生视频")
-        for lbl in (self.lbl_image, self.lbl_video):
-            lbl.setObjectName("UsageTypeWord")
-            lbl.setAlignment(Qt.AlignCenter)
-            lbl.setCursor(Qt.PointingHandCursor)
-            lbl.installEventFilter(self)
-
-        self.slider = _UsageSlider(self)
-        self.slider.snapped.connect(self._on_slider)
-
-        lay.addWidget(self.lbl_image)
-        lay.addWidget(self.slider, 0, Qt.AlignVCenter)
-        lay.addWidget(self.lbl_video)
-
-        self.refresh_theme()
-        self._lock_label_widths()
-
-    def eventFilter(self, obj, event):
-        if obj in (self.lbl_image, self.lbl_video) and event.type() == QEvent.MouseButtonPress:
-            if isinstance(event, QMouseEvent) and event.button() == Qt.LeftButton:
-                self._apply(obj is self.lbl_video, animate=True, move_slider=True)
-                return True
-        return super().eventFilter(obj, event)
-
-    def _on_slider(self, video: bool):
-        # 滑块自己在播动画，这里只同步文字与对外信号
-        self._apply(bool(video), animate=False, move_slider=False)
-
-    def _apply(self, video: bool, animate: bool, move_slider: bool):
-        video = bool(video)
-        if self._frozen:
-            if move_slider:
-                self.slider.set_pos(self._video, animate=True)
-            return
-        changed = bool(self._video) != video
-        self._video = video
-        if move_slider:
-            self.slider.set_pos(video, animate=animate)
-        if changed:
-            self._refresh_labels()
-            self._refresh_chrome()
-            self.changed.emit("video" if video else "image")
-
-    def usage_type(self) -> str:
-        return "video" if self._video else "image"
-
-    def set_usage_type(self, t: str):
-        """程序回填：无动画、不发信号。"""
-        video = t == "video"
-        if self._video == video:
-            self.slider.set_pos(video, animate=False)
-            return
-        self._video = video
-        self.slider.set_pos(video, animate=False)
-        self._refresh_labels()
-        self._refresh_chrome()
-
-    def setFrozen(self, frozen: bool):
-        frozen = bool(frozen)
-        if self._frozen == frozen:
-            return
-        self._frozen = frozen
-        self.slider.setFrozen(frozen)
-        cur = Qt.ForbiddenCursor if frozen else Qt.PointingHandCursor
-        self.setCursor(cur)
-        self.lbl_image.setCursor(cur)
-        self.lbl_video.setCursor(cur)
-        tip = "编辑记录时不可更改用途" if frozen else ""
-        self.setToolTip(tip)
-        self.lbl_image.setToolTip(tip)
-        self.lbl_video.setToolTip(tip)
-        self.slider.setToolTip(tip)
-        self._refresh_labels()
-        self._refresh_chrome()
-
-    def refresh_theme(self):
-        self._refresh_labels()
-        self._refresh_chrome()
-        self.slider.update()
-
-    def _refresh_chrome(self):
-        self.setStyleSheet(
-            "QFrame#UsageTypeSwitch {"
-            "  background: transparent;"
-            "  border: none;"
-            "}"
-        )
-
-    def _lock_label_widths(self):
-        """按加粗字宽锁死，进出编辑 / 切换生图生视频都不改外框。"""
-        f = QFont(self.lbl_image.font())
-        f.setPixelSize(13)
-        f.setWeight(QFont.Bold)
-        fm = QFontMetrics(f)
-        self.lbl_image.setFixedWidth(fm.horizontalAdvance("生图") + 4)
-        self.lbl_video.setFixedWidth(fm.horizontalAdvance("生视频") + 4)
-        self.setFixedHeight(28)
-        self.setFixedWidth(
-            self.lbl_image.width() + 6 + _UsageSlider.W + 6 + self.lbl_video.width()
-        )
-
-    def _refresh_labels(self):
-        mut = tk("text_faint") if self._frozen else tk("text_mut")
-        if self._frozen:
-            img_c = vid_c = mut
-        elif self._video:
-            img_c, vid_c = mut, _USAGE_GREEN.name()
-        else:
-            img_c, vid_c = _USAGE_BLUE.name(), mut
-        # 字重始终 700：选中只换颜色，避免 600/700 切换撑缩宽度
-        for lbl, color in (
-            (self.lbl_image, img_c),
-            (self.lbl_video, vid_c),
-        ):
-            lbl.setStyleSheet(
-                f"QLabel#UsageTypeWord {{"
-                f"  color: {color};"
-                f"  font-size: 13px;"
-                f"  font-weight: 700;"
-                f"  background: transparent;"
-                f"  border: none;"
-                f"  padding: 0;"
-                f"}}"
-            )
+        p.setBrush(QBrush(fg))
+        p.drawEllipse(QPointF(s * 0.40, s * 0.42), s * 0.055, s * 0.055)
+        p.drawPolygon(QPolygonF([
+            QPointF(s * 0.30, s * 0.64),
+            QPointF(s * 0.46, s * 0.50),
+            QPointF(s * 0.56, s * 0.58),
+            QPointF(s * 0.70, s * 0.46),
+            QPointF(s * 0.70, s * 0.66),
+            QPointF(s * 0.30, s * 0.66),
+        ]))
+    p.end()
+    return QIcon(pm)
 
 
 # ── 记录文件路径 ─────────────────────────────────────────────────────────────
@@ -442,7 +176,7 @@ def _points_record_file() -> str:
     except Exception:
         return os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "data", "points_calc.txt",
+            "userdata", "points_calc.txt",
         )
 
 
@@ -501,10 +235,20 @@ class _ElideLabel(QLabel):
     def setText(self, text):
         self._full_text = text or ""
         self._refresh_elided()
+        if self.property("hintWidth") == "text":
+            self.updateGeometry()
 
     def sizeHint(self):
         from PyQt5.QtCore import QSize
         h = super().sizeHint().height()
+        if self.property("hintWidth") == "text":
+            fm = self.fontMetrics()
+            text = self._full_text or ""
+            try:
+                w = int(fm.horizontalAdvance(text))
+            except AttributeError:
+                w = int(fm.width(text))
+            return QSize(max(40, w + 4), h)
         return QSize(40, h)
 
     def minimumSizeHint(self):
@@ -924,11 +668,9 @@ class PagePointsCalc(QWidget):
                 row.refresh_theme()
         for b in getattr(self, "_toggle_btns", []):
             _style_toggle_btn(b)
-        sw = getattr(self, "usage_switch", None)
-        if sw is not None:
-            sw.refresh_theme()
         for b in self._cost_sort_btns.values():
             self._style_cost_sort_btn(b)
+        self._apply_tab_chrome()
 
     def _style_cost_sort_btn(self, btn):
         section_key = btn.property("sectionKey")
@@ -1073,25 +815,158 @@ class PagePointsCalc(QWidget):
                 self._auto_calc_suspended = suspended
 
     # ── UI 构建 ──────────────────────────────────────────────────────────────
+    def _tab_page_qss(self) -> str:
+        bg = tk("panel_2")
+        return (
+            fmt(TAB_QSS + VIDEO_TAB_QSS)
+            + "\n#PageRoot{background:transparent;border:none;}"
+            + f"\n#TabPointsImage,#TabPointsVideo{{background:{bg};border:none;}}"
+        )
+
+    def _apply_tab_page_bg(self, widget):
+        name = widget.objectName() or "TabPoints"
+        widget.setAttribute(Qt.WA_StyledBackground, True)
+        widget.setAutoFillBackground(True)
+        bg = tk("panel_2")
+        widget.setStyleSheet(f"#{name}{{background:{bg};border:none;}}")
+
+    def _apply_tab_chrome(self):
+        self.setStyleSheet(self._tab_page_qss())
+        for page in (
+            getattr(self, "page_image", None),
+            getattr(self, "page_video", None),
+        ):
+            if page is not None:
+                self._apply_tab_page_bg(page)
+        self._refresh_tab_deco()
+
+    def _refresh_tab_deco(self):
+        tabs = getattr(self, "tabs", None)
+        if tabs is None:
+            return
+        dark = bool(theme.is_dark)
+        idx = tabs.currentIndex()
+        tabs.setTabIcon(0, _paint_usage_tab_icon(False, 20, selected=(idx == 0), dark=dark))
+        tabs.setTabIcon(1, _paint_usage_tab_icon(True, 20, selected=(idx == 1), dark=dark))
+        tabs.setProperty("firstSelected", "true" if idx == 0 else "false")
+        st = tabs.style()
+        if st is not None:
+            st.unpolish(tabs)
+            st.polish(tabs)
+        tabs.update()
+
+    def _make_usage_page(self, object_name: str):
+        page = QWidget()
+        page.setObjectName(object_name)
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        host = QWidget()
+        host.setObjectName(object_name + "Form")
+        host.setAttribute(Qt.WA_StyledBackground, True)
+        host.setStyleSheet(f"#{host.objectName()}{{background:transparent;border:none;}}")
+        host.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
+        hl = QVBoxLayout(host)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(0)
+        lay.addWidget(host, 0)
+        self._apply_tab_page_bg(page)
+        return page, host
+
+    def _place_form(self, idx: int):
+        host = self._form_host_video if idx == 1 else self._form_host_image
+        panel = getattr(self, "_top_panel", None)
+        if panel is None or host is None:
+            return
+        if panel.parentWidget() is not host:
+            panel.setParent(host)
+            lay = host.layout()
+            if lay is not None and lay.indexOf(panel) < 0:
+                lay.addWidget(panel)
+        panel.show()
+
+    def _on_usage_tab(self, idx: int):
+        if getattr(self, "_editing_id", None):
+            want = 1 if self._usage_type == "video" else 0
+            if idx != want:
+                self.tabs.blockSignals(True)
+                self.tabs.setCurrentIndex(want)
+                self.tabs.blockSignals(False)
+            return
+        t = "video" if idx == 1 else "image"
+        if t != self._usage_type:
+            self._set_usage_type(t)
+        else:
+            self._place_form(idx)
+            self._refresh_tab_deco()
+
+    def _sync_usage_tab(self, t: str):
+        tabs = getattr(self, "tabs", None)
+        if tabs is None:
+            return
+        idx = 1 if t == "video" else 0
+        if tabs.currentIndex() != idx:
+            tabs.blockSignals(True)
+            tabs.setCurrentIndex(idx)
+            tabs.blockSignals(False)
+        self._place_form(idx)
+        self._refresh_tab_deco()
+
     def _build_ui(self):
         page_layout = QVBoxLayout(self)
-        # 与系统总览一致：ContentRoot 已有左右内边距，页面不再叠第二层
+        # ContentRoot 已有左右内边距。页签样式对齐「视频下载」。
         page_layout.setContentsMargins(0, 0, 0, 0)
         page_layout.setSpacing(6)
+        self.setStyleSheet(self._tab_page_qss())
 
-        # 上半：四行输入 + 结果，顶对齐不拉伸
+        self.tabs = QTabWidget()
+        self.tabs.setObjectName("VideoTabWidget")
+        self.tabs.setIconSize(QSize(20, 20))
+        try:
+            from ui_main import install_tight_pre_dl_tab_bar
+            install_tight_pre_dl_tab_bar(self.tabs)
+            setter = getattr(self.tabs.tabBar(), "set_info_slot", None)
+            if callable(setter):
+                setter(False)
+        except Exception:
+            pass
+
         self._top_panel = self._build_top_panel()
-        page_layout.addWidget(self._top_panel, 0)
+        self._top_panel.hide()
+        self.page_image, self._form_host_image = self._make_usage_page("TabPointsImage")
+        self.page_video, self._form_host_video = self._make_usage_page("TabPointsVideo")
+        card_img, card_vid = self._build_records_panel()
+        self.page_image.layout().addWidget(card_img, 1)
+        self.page_video.layout().addWidget(card_vid, 1)
 
-        # 下半：历史记录吃掉剩余全部空间
-        page_layout.addWidget(self._build_records_panel(), 1)
+        self.tabs.blockSignals(True)
+        self.tabs.addTab(self.page_image, "生图")
+        self.tabs.addTab(self.page_video, "生视频")
+        self.tabs.setCurrentIndex(0)
+        self.tabs.blockSignals(False)
+
+        # 提示跟页签同一行，靠右（与「生视频」对齐）
+        corner = QWidget()
+        corner.setObjectName("PointsHintCorner")
+        corner.setStyleSheet("#PointsHintCorner{background:transparent;border:none;}")
+        corner_lay = QHBoxLayout(corner)
+        corner_lay.setContentsMargins(12, 0, 10, 0)
+        corner_lay.setSpacing(0)
+        corner_lay.addWidget(self.result_hint, 0, Qt.AlignRight | Qt.AlignVCenter)
+        self.tabs.setCornerWidget(corner, Qt.TopRightCorner)
+        self._place_form(0)
+        self._refresh_tab_deco()
+        self.tabs.currentChanged.connect(self._on_usage_tab)
+        page_layout.addWidget(self.tabs, 1)
 
     # ── 顶部：四行紧贴，顶对齐；标签贴输入，组与组之间不拉空 ────────────────
     def _build_top_panel(self) -> QWidget:
-        box = make_card("CardPointsTop")
+        # 融进页签面板，不再另画一层卡片外框（与视频下载子页相同）
+        box = make_card("CardPointsTop", borderless=True)
 
         form = QVBoxLayout(box)
-        form.setContentsMargins(CARD_LEFT_GAP, 6, CARD_RIGHT_GAP, 6)  # 顶/底边距一致 6
+        # 页签面板已有 10px 内边距，这里不再叠一层卡片边距
+        form.setContentsMargins(0, 0, 0, 0)
         form.setSpacing(4)
         form.setAlignment(Qt.AlignTop)
 
@@ -1165,23 +1040,16 @@ class PagePointsCalc(QWidget):
             hl.addWidget(val, 0)
             return w, val
 
-        # ── 行1：生图/生视频 左对齐 · 「填好…」提示右对齐 ──────────────────
-        self.usage_switch = UsageTypeSwitch(self)
-        self.usage_switch.changed.connect(self._set_usage_type)
-        self.usage_switch.setFixedHeight(_H)
-
+        # 提示不占表单行，挂在页签右侧
         self.result_hint = _ElideLabel("")
         self.result_hint.setObjectName("ResultHint")
+        self.result_hint.setProperty("hintWidth", "text")
         self.result_hint.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.result_hint.setMinimumWidth(0)
-        self.result_hint.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self.result_hint.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         self.result_hint.setFixedHeight(_H)
 
-        row1 = _add_row()
-        row1.addWidget(self.usage_switch, 0, Qt.AlignVCenter)
-        row1.addWidget(self.result_hint, 1, Qt.AlignVCenter)
-
-        # ── 行2：平台+月费/年费 左 · 订阅金额+币种汇率 紧随 ────────────────
+        # ── 行1：平台+月费/年费 左 · 订阅金额+币种汇率 紧随 ────────────────
         lbl_p = _field_lbl("平台")
         self.inp_platform = self._inp("例：可灵、即梦…")
         self.inp_platform.setMinimumWidth(120)
@@ -1373,12 +1241,8 @@ class PagePointsCalc(QWidget):
         return c, val
 
     # ── 历史记录面板 ─────────────────────────────────────────────────────────
-    def _build_records_panel(self) -> QWidget:
-        box = make_card("CardPointsRecords")
-
-        outer = QVBoxLayout(box)
-        outer.setContentsMargins(CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
-        outer.setSpacing(0)
+    def _build_records_panel(self):
+        """返回（生图记录卡, 生视频记录卡），各放进对应页签。"""
 
         def _make_section(section_key):
             sec = QWidget()
@@ -1394,7 +1258,7 @@ class PagePointsCalc(QWidget):
             hh = QHBoxLayout(header)
             hh.setContentsMargins(10, 4, 8, 4)
             hh.setSpacing(6)
-            # 首列是平台名；生图/生视频由「用途类型」按钮切页
+            # 首列是平台名；生图/生视频各占一个页签
             cost_title = "每张" if section_key == "img" else "每秒"
             columns = [("平台", 23, "RecordHeaderCell")] + [
                 (txt, stretch, "RecordHeaderCell")
@@ -1472,13 +1336,15 @@ class PagePointsCalc(QWidget):
         self._container_image.reordered.connect(lambda r, i: self._reorder_records(r, i, self.layout_image))
         self._container_video.reordered.connect(lambda r, i: self._reorder_records(r, i, self.layout_video))
 
-        self._hist_stack = QStackedWidget()
-        self._hist_stack.setStyleSheet("background: transparent;")
-        self._hist_stack.addWidget(sec_img)
-        self._hist_stack.addWidget(sec_vid)
-        outer.addWidget(self._hist_stack, 1)
-        self._hist_stack.setCurrentIndex(0 if self._usage_type != "video" else 1)
-        return box
+        def _wrap(sec, name):
+            box = make_card(name, borderless=True)
+            outer = QVBoxLayout(box)
+            outer.setContentsMargins(0, 0, 0, 0)
+            outer.setSpacing(0)
+            outer.addWidget(sec, 1)
+            return box
+
+        return _wrap(sec_img, "CardPointsRecordsImage"), _wrap(sec_vid, "CardPointsRecordsVideo")
 
     # ── 控件工厂 ─────────────────────────────────────────────────────────────
     def _lbl(self, text):
@@ -1555,16 +1421,19 @@ class PagePointsCalc(QWidget):
         self._schedule_calc()
 
     def _set_usage_btns_enabled(self, enabled: bool):
-        """新建记录时可切生图/生视频；编辑记录时冻结，避免改用途。"""
-        sw = getattr(self, "usage_switch", None)
-        if sw is not None:
-            sw.setFrozen(not bool(enabled))
+        """新建记录时可切页签；编辑记录时冻结，避免改用途。"""
+        tabs = getattr(self, "tabs", None)
+        if tabs is None:
+            return
+        bar = tabs.tabBar()
+        if bar is not None:
+            bar.setEnabled(bool(enabled))
 
     def _set_usage_type(self, t):
+        if t not in ("image", "video"):
+            t = "image"
         self._usage_type = t
-        sw = getattr(self, "usage_switch", None)
-        if sw is not None:
-            sw.set_usage_type(t)
+        self._sync_usage_tab(t)
         # 每张图片 / 单支视频始终占位：非当前用途灰显
         self._set_metric_active(getattr(self, "lbl_cost_image", None), t == "image")
         self._set_one_video_metric_active(t == "video")
@@ -1573,10 +1442,6 @@ class PagePointsCalc(QWidget):
             vid_pair[0].hide()
         # 生图：冻结视频时长；生视频：解冻
         self._set_video_dur_enabled(t == "video")
-        # 记录区跟着用途类型切子页
-        stack = getattr(self, "_hist_stack", None)
-        if stack is not None:
-            stack.setCurrentIndex(0 if t == "image" else 1)
         self._schedule_calc()
 
     def _set_metric_active(self, pair, active: bool):
@@ -1773,11 +1638,7 @@ class PagePointsCalc(QWidget):
         return "填好金额、每月积分、单次消耗后自动计算"
 
     def _show_hint(self, text=None):
-        """更新第 1 行右侧提示：强制单行；空/None 回退默认文案。
-
-        使用 _ElideLabel：宽度不够时显示省略号，
-        避免长文案抬高 minimumWidth 破坏分栏。
-        """
+        """更新页签行右侧提示：强制单行；空/None 回退默认文案。"""
         if text is None or not str(text).strip():
             text = self._default_hint()
         # 压成一行，避免撑高布局

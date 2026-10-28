@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from utils.logger import get_logger
 
@@ -72,17 +72,81 @@ COOLDOWN_SEC = 3.0
 
 
 def _store_path() -> str:
+    """Canonical path: userdata/pre_download.txt."""
     try:
         from utils.app_paths import records_file
-        return records_file("pre_download.json")
+        return records_file("pre_download.txt")
     except Exception:
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        d = os.path.join(root, "records")
+        d = os.path.join(root, "userdata")
         try:
             os.makedirs(d, exist_ok=True)
         except Exception:
             pass
-        return os.path.join(d, "pre_download.json")
+        return os.path.join(d, "pre_download.txt")
+
+
+def _parse_sectioned_txt(text: str) -> Tuple[List[Tuple[str, str]], List[str], float]:
+    """Parse human-readable pre_download.txt (# section / one URL per line)."""
+    items: List[Tuple[str, str]] = []
+    failed: List[str] = []
+    last_finish_ts = 0.0
+    cur: Optional[str] = None
+    seen_items = set()
+    seen_failed = set()
+    for raw in (text or "").splitlines():
+        stripped = (raw or "").strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#"):
+            body = stripped[1:].strip()
+            low = body.lower()
+            if low.startswith("last_finish_ts"):
+                _, _, rest = body.partition("=")
+                try:
+                    last_finish_ts = float(rest.strip() or 0)
+                except (TypeError, ValueError):
+                    last_finish_ts = 0.0
+                continue
+            key = body.split()[0].lower() if body else ""
+            if key == FAILED_PLAT or key in PLATFORMS:
+                cur = key
+            else:
+                cur = None
+            continue
+        url = normalize_line(stripped)
+        if not url or cur is None:
+            continue
+        if cur == FAILED_PLAT:
+            if url not in seen_failed:
+                seen_failed.add(url)
+                failed.append(url)
+        elif cur in PLATFORMS:
+            key = (cur, url)
+            if key not in seen_items:
+                seen_items.add(key)
+                items.append(key)
+    return items, failed, last_finish_ts
+
+
+def _format_sectioned_txt(
+    items: List[Tuple[str, str]],
+    failed: List[str],
+    last_finish_ts: float,
+) -> str:
+    lines: List[str] = [f"# last_finish_ts={float(last_finish_ts or 0)}", ""]
+    by_plat: Dict[str, List[str]] = {k: [] for k in PLATFORMS}
+    for plat, url in items:
+        if plat in by_plat:
+            by_plat[plat].append(url)
+    for plat in PLATFORMS:
+        lines.append(f"# {plat}")
+        lines.extend(by_plat.get(plat) or [])
+        lines.append("")
+    lines.append(f"# {FAILED_PLAT}")
+    lines.extend(list(failed or []))
+    lines.append("")
+    return "\n".join(lines)
 
 
 def normalize_line(text: str) -> str:
@@ -111,43 +175,52 @@ class PreDownloadStore:
             return
         try:
             with open(path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if not isinstance(data, dict):
+                raw = f.read()
+            if raw.lstrip().startswith("{"):
+                # tolerate JSON content in .txt once (e.g. older write)
+                data = json.loads(raw)
+                if not isinstance(data, dict):
+                    return
+                qs = data.get("queues") or {}
+                queues: Dict[str, List[str]] = {k: [] for k in PLATFORMS}
+                if isinstance(qs, dict):
+                    for k in PLATFORMS:
+                        rawq = qs.get(k) or []
+                        if isinstance(rawq, list):
+                            queues[k] = [
+                                normalize_line(str(x))
+                                for x in rawq
+                                if normalize_line(str(x))
+                            ]
+                items = self._parse_pairs(data.get("items"))
+                if not items:
+                    for k in PLATFORMS:
+                        for url in queues.get(k) or []:
+                            items.append((k, url))
+                for plat, url in self._parse_pairs(data.get("deferred")):
+                    items = [(p, u) for p, u in items if not (p == plat and u == url)]
+                    items.append((plat, url))
+                self.items = items
+                self.failed = self._parse_failed_urls(data.get("failed"))
+                in_queue = {u for _p, u in self.items}
+                self.failed = [u for u in self.failed if u not in in_queue]
+                self._rebuild_queues()
+                try:
+                    self.last_finish_ts = float(data.get("last_finish_ts") or 0)
+                except (TypeError, ValueError):
+                    self.last_finish_ts = 0.0
                 return
-            qs = data.get("queues") or {}
-            queues: Dict[str, List[str]] = {k: [] for k in PLATFORMS}
-            if isinstance(qs, dict):
-                for k in PLATFORMS:
-                    raw = qs.get(k) or []
-                    if isinstance(raw, list):
-                        queues[k] = [
-                            normalize_line(str(x))
-                            for x in raw
-                            if normalize_line(str(x))
-                        ]
-            items = self._parse_pairs(data.get("items"))
-            if not items:
-                for k in PLATFORMS:
-                    for url in queues.get(k) or []:
-                        items.append((k, url))
-            # 旧版 deferred：补进总队尾，再丢掉独立字段
-            for plat, url in self._parse_pairs(data.get("deferred")):
-                items = [(p, u) for p, u in items if not (p == plat and u == url)]
-                items.append((plat, url))
+            items, failed, ts = _parse_sectioned_txt(raw)
             self.items = items
-            self.failed = self._parse_failed_urls(data.get("failed"))
-            # 还在队里的 URL 不算无法处理（用户可能已手动移回）
+            self.failed = failed
+            self.last_finish_ts = float(ts or 0)
             in_queue = {u for _p, u in self.items}
             self.failed = [u for u in self.failed if u not in in_queue]
             self._rebuild_queues()
-            try:
-                self.last_finish_ts = float(data.get("last_finish_ts") or 0)
-            except (TypeError, ValueError):
-                self.last_finish_ts = 0.0
         except Exception:
-            log.exception("读取预下载记录失败")
+            log.exception("load pre_download failed path=%s", path)
 
-    @staticmethod
+
     def _parse_pairs(raw) -> List[Tuple[str, str]]:
         out: List[Tuple[str, str]] = []
         if not isinstance(raw, list):
@@ -202,18 +275,19 @@ class PreDownloadStore:
         path = _store_path()
         try:
             self._rebuild_queues()
-            payload = {
-                "items": [[p, u] for p, u in self.items],
-                "queues": {k: list(self.queues.get(k) or []) for k in PLATFORMS},
-                "failed": list(self.failed),
-                "last_finish_ts": float(self.last_finish_ts or 0),
-            }
+            text = _format_sectioned_txt(self.items, self.failed, self.last_finish_ts)
+            parent = os.path.dirname(path) or "."
+            try:
+                os.makedirs(parent, exist_ok=True)
+            except Exception:
+                pass
             tmp = path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=2)
+            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
+                f.write(text)
             os.replace(tmp, path)
         except Exception:
-            log.exception("写入预下载记录失败")
+            log.exception("write pre_download.txt failed")
+
 
     def list_platform(self, plat: str) -> List[str]:
         if plat == FAILED_PLAT:
@@ -408,3 +482,39 @@ class PreDownloadStore:
 
     def can_activate(self) -> bool:
         return self.cooldown_remaining() <= 0 and self.total_count() > 0
+
+
+def reclassify_failed(
+    queues: Dict[str, List[str]],
+    detect_platform: Callable[[str], str],
+) -> Tuple[int, int]:
+    """Re-detect FAILED_PLAT URLs with current whitelist; move hits into platform queues.
+
+    Mutates queues in place. Returns (moved, still_failed).
+    detect_platform matches ui_main._detect_pre_download_platform (plat key or "").
+    """
+    failed = list((queues or {}).get(FAILED_PLAT) or [])
+    still: List[str] = []
+    moved = 0
+    for raw in failed:
+        line = normalize_line(str(raw))
+        if not line:
+            continue
+        plat = ""
+        try:
+            plat = (detect_platform(line) or "").strip()
+        except Exception:
+            log.exception("reclassify detect failed url=%s", line[:80])
+            plat = ""
+        if plat and plat in PLATFORMS:
+            q = queues.setdefault(plat, [])
+            if not isinstance(q, list):
+                q = []
+                queues[plat] = q
+            if line not in q:
+                q.append(line)
+            moved += 1
+        else:
+            still.append(line)
+    queues[FAILED_PLAT] = still
+    return moved, len(still)

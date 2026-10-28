@@ -1,6 +1,6 @@
 # utils/user_prefs.py
 # ---------------------------------------------------------------------------
-# 用户习惯持久化：data/user.txt（JSON 文本）
+# 用户习惯持久化：userdata/user.txt（JSON 文本）
 #
 # 启动时严格判断（不能只靠「文件是否存在」）：
 #   · 无文件 / 空文件 → 按当前程序状态新建
@@ -31,7 +31,7 @@ _PREFS_VERSION = 1
 DEFAULT_SIDE_ORDER = (
     "video", "audio", "gallery", "fast", "shot", "region_rec",
     "@hdr:assistant",
-    "paste", "img_proc", "voice", "auk", "points", "ratio", "prompt", "text_edit", "tz_fx", "dir_link",
+    "paste", "img_proc", "pixel_board", "voice", "auk", "points", "sub_usage", "ratio", "prompt", "ollama", "text_edit", "tz_fx", "dir_link",
     "@hdr:tool",
     "gameassist", "gamebrain", "gamemeet",
 )
@@ -51,9 +51,9 @@ def records_dir() -> str:
 
 
 def user_file_path() -> str:
-    """data/user.txt（程序偏好，不属于用户创造的 records/）。"""
-    from utils.app_paths import data_dir
-    return os.path.join(data_dir(), "user.txt")
+    """userdata/user.txt — single canonical prefs path."""
+    from utils.app_paths import userdata_dir
+    return os.path.join(userdata_dir(), "user.txt")
 
 
 def normalize_whitelist_pattern(raw: str) -> str:
@@ -268,6 +268,7 @@ def default_prefs() -> Dict[str, Any]:
             "check_ignore_ext": True,
             "check_fill": False,
             "dup_exts": [],
+            "dup_exts_off": [],
         },
         "screenshot": {
             "enabled": False,
@@ -376,23 +377,56 @@ def default_prefs() -> Dict[str, Any]:
             "whitelist": default_clipboard_whitelist(),
         },
         # 视频下载页（抖音/B站/YouTube/其它视频）：各子页保存路径 + Cookie路径
-        # 其它视频（即梦 / LibTV / XVideos）共用 other，统一落到公共保存根下 Video
+        # 其它视频（即梦 / LibTV / XVideos / Pornhub）共用 other，统一落到公共保存根下 Video
+        # check_records：页底已下记录开关。开=按即梦/LibTV/XVideos/Pornhub 的类型和画质跳过 other_video.txt 里已有的那一档
         "video": {
             "douyin": {"save_path": "", "cookie_path": ""},
             "bilibili": {"save_path": "", "cookie_path": ""},
             "youtube": {"save_path": "", "cookie_path": ""},
-            "other": {"save_path": "", "cookie_path": ""},
+            "other": {"save_path": "", "cookie_path": "", "check_records": True},
         },
         # 音频下载 · 汽水音乐（公共保存根下 Audio）
         # save_subdir_names：公共保存各子目录的文件夹名，空则用出厂名
+        # check_records：页底防重开关。开=按视频/音频跳过 qishui.txt 里已有的那一项
         "audio": {
-            "qishui": {"save_path": "", "cookie_path": ""},
+            "qishui": {"save_path": "", "cookie_path": "", "check_records": True},
         },
         # 积分计算：常用汇率等
         "points_calc": {
             "rate": 7.25,       # USD → CNY
             "currency": "CNY",
             "history_view": "image",  # 历史记录子页：image=生图 / video=生视频
+        },
+        # 订阅用量：缺这一段时给出四条空白平台。已保存的 items 整表替换，删掉的不会补回。
+        "sub_usage": {
+            "display": "forward",
+            "items": [
+                {
+                    "id": "runninghub", "name": "runninghub.ai", "kind": "points", "meter": "points",
+                    "record_dir": "forward", "points_remain": 100,
+                    "monthly_points": 0, "renew_day": 1, "expire": "",
+                    "window_hours": 5, "window_reset": "", "window_remain": 100,
+                    "week_weekday": 0, "week_time": "08:00", "week_reset": "", "week_remain": 100,
+                },
+                {
+                    "id": "chatgpt", "name": "ChatGPT", "kind": "month", "record_dir": "forward",
+                    "monthly_points": 0, "renew_day": 1, "expire": "",
+                    "window_hours": 5, "window_reset": "", "window_remain": 100,
+                    "week_weekday": 0, "week_time": "08:00", "week_reset": "", "week_remain": 100,
+                },
+                {
+                    "id": "gemini", "name": "Gemini", "kind": "month", "record_dir": "reverse",
+                    "monthly_points": 0, "renew_day": 1, "expire": "",
+                    "window_hours": 5, "window_reset": "", "window_remain": 0,
+                    "week_weekday": 0, "week_time": "08:00", "week_reset": "", "week_remain": 0,
+                },
+                {
+                    "id": "grok", "name": "Grok Bot", "kind": "year", "record_dir": "forward",
+                    "monthly_points": 0, "renew_day": 1, "expire": "",
+                    "window_hours": 5, "window_reset": "", "window_remain": 100,
+                    "week_weekday": 0, "week_time": "08:00", "week_reset": "", "week_remain": 100,
+                },
+            ],
         },
         # 电子钟：七段数字颜色（与粘贴助手同套七色）
         "clock": {
@@ -407,6 +441,8 @@ def default_prefs() -> Dict[str, Any]:
         "prompt_editor": {
             "active": "",
             "pages": [],
+            "full_lang": "zh",
+            "translate_model": "",
         },
         # 旧角色模板残留，仅给提示词页一次性回读装备/场景细节/色彩
         "female_char": {
@@ -426,12 +462,42 @@ def default_prefs() -> Dict[str, Any]:
             "upscale_scale": 4,       # 2 … 6
             "active_op": "scale",     # scale | upscale | split | matting | more
         },
+        # 像素画板：画板和行走各记各的。行走沿用 cell/colors/name/dollar；画板用 art_*。图本身不进 user.txt。
+        "pixel_board": {
+            "save_path": "",
+            "cell": 48,
+            "colors": 0,
+            "stride": 2,
+            "leg": 42,
+            "fps": 8,
+            "four": False,
+            "dollar": True,
+            "name": "角色",
+        },
         "timezone_fx": {
             "cities": [
                 "洛杉矶", "纽约", "伦敦", "巴黎",
                 "迪拜", "加尔各答", "上海", "东京",
             ],
             "hero_city": "上海",
+        },
+        # 看图：勾选的扩展名会关联到 PhotoViewer；空列表表示还没关联。
+        # pierce：stay=翻到头仍留在本夹，next=接着进旁边的文件夹。
+        # lock_scale：翻页时沿用当前页的缩放比例。
+        # auto_window：换图时窗口按图片显示尺寸自己改变（与 * 相同，不退出最大化）。
+        # auto_fit：打开图片时按桌面自适应。缺省为开，和原来的默认一致。
+        "photo_viewer": {
+            "exts": [],
+            "pierce": "stay",
+            "lock_scale": False,
+            "auto_window": False,
+            "auto_fit": True,
+            "prev_prog": {},
+        },
+        # 文件阅读器：打开的扩展名会关联到 MarkdownViewer；空列表表示还没关联。
+        "md_reader": {
+            "exts": [],
+            "prev_prog": {},
         },
     }
 
@@ -650,7 +716,7 @@ def load_user_prefs() -> Tuple[Dict[str, Any], bool]:
 
 
 def save_user_prefs(prefs: Dict[str, Any]) -> bool:
-    """原子写入 data/user.txt。成功返回 True。"""
+    """原子写入 userdata/user.txt。成功返回 True。"""
     path = user_file_path()
     try:
         payload = _deep_merge(default_prefs(), prefs or {})
@@ -660,8 +726,9 @@ def save_user_prefs(prefs: Dict[str, Any]) -> bool:
         base = default_prefs()
         for key in (
             *_APP_SECTIONS,
-            "gallery", "gallery_pixiv", "points_calc", "clipboard_auto",
+            "gallery", "gallery_pixiv", "points_calc", "sub_usage", "clipboard_auto",
             "video", "region_record", "voice_input", "voice_clone", "gameassist", "gamebrain", "digital_human",
+            "photo_viewer", "md_reader",
         ):
             if not isinstance(payload.get(key), dict):
                 payload[key] = deepcopy(base[key])
@@ -672,11 +739,34 @@ def save_user_prefs(prefs: Dict[str, Any]) -> bool:
             payload["save_path_host"] = current_save_host()
         except Exception:
             pass
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(payload, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-        os.replace(tmp, path)
+        from utils.photo_viewer_cfg import external_auto_fit, note_saved_auto_fit, prefs_file_lock
+        with prefs_file_lock(path):
+            # 看图窗口按 / 改过自适应时，这次保存沿用磁盘上的新值。
+            try:
+                pv = payload.get("photo_viewer")
+                if isinstance(pv, dict):
+                    adopted = external_auto_fit(pv.get("auto_fit", True))
+                    if adopted is not None:
+                        pv["auto_fit"] = bool(adopted)
+                        if isinstance(prefs, dict):
+                            box = prefs.get("photo_viewer")
+                            if not isinstance(box, dict):
+                                box = {}
+                                prefs["photo_viewer"] = box
+                            box["auto_fit"] = bool(adopted)
+            except Exception:
+                log.exception("合并看图自适应失败")
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+            os.replace(tmp, path)
+        try:
+            pv = payload.get("photo_viewer")
+            if isinstance(pv, dict):
+                note_saved_auto_fit(pv.get("auto_fit", True))
+        except Exception:
+            log.exception("记下看图自适应失败")
         log.debug("user.txt 已保存 path=%s", path)
         return True
     except Exception:

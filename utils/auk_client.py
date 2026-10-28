@@ -36,15 +36,19 @@ def model_paths() -> dict:
 
 
 def _task_index_path() -> str:
-    """AUK 任务索引：结果行首的「任务名 素材名」跨重启靠它还原。"""
+    """AUK task title index under userdata/auk/tasks.jsonl."""
     try:
-        from utils.app_paths import data_dir
-        d = os.path.join(data_dir(), "auk")
+        from utils.app_paths import userdata_dir
+        d = os.path.join(userdata_dir(), "auk")
     except Exception:
         d = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "auk"
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "userdata", "auk",
         )
-    os.makedirs(d, exist_ok=True)
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        pass
     return os.path.join(d, "tasks.jsonl")
 
 

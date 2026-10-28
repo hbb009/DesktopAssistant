@@ -40,8 +40,8 @@ log = get_logger(__name__)
 # ── 页面集合：当前主程序包含的全部页面 ───────────────────────────────────
 _PAGES_MAIN = {
     "overview", "fast", "video", "audio", "gallery",
-    "paste", "img_proc", "voice", "auk", "text_edit", "gameassist", "gamebrain", "gamemeet", "prompt", "points", "shot", "region_rec",
-    "ratio", "dir_link", "tz_fx",
+    "paste", "img_proc", "pixel_board", "voice", "auk", "text_edit", "gameassist", "gamebrain", "gamemeet", "prompt", "points", "sub_usage", "shot", "region_rec",
+    "ratio", "dir_link", "tz_fx", "ollama",
     "about",
 }
 
@@ -55,14 +55,14 @@ _SIDE_W = 166
 _NAV_WHEEL_STEP = 38
 _NAV_WHEEL_COALESCE_S = 0.09
 
-# ── 侧栏导航分区与默认顺序（支持拖拽排序，顺序保存到 data/user.txt）────
+# ── 侧栏导航分区与默认顺序（支持拖拽排序，顺序保存到 userdata/user.txt）────
 # 分区：pinned=置顶常用（不显示标签）/ assistant=助手 / tool=工具小偏门
 # 出厂顺序：视频/图集/速存/截图/录屏 → 助手 → 工具（按当前主菜单定稿）
 _SIDE_SECTION_MAP = {
     "fast": "pinned", "video": "pinned", "audio": "pinned", "gallery": "pinned",
     "shot": "pinned", "region_rec": "pinned",
-    "paste": "assistant", "img_proc": "assistant", "points": "assistant",
-    "voice": "assistant", "auk": "assistant", "gameassist": "assistant", "gamebrain": "assistant", "gamemeet": "assistant", "prompt": "assistant",
+    "paste": "assistant", "img_proc": "assistant", "pixel_board": "assistant", "points": "assistant", "sub_usage": "assistant",
+    "voice": "assistant", "auk": "assistant", "gameassist": "assistant", "gamebrain": "assistant", "gamemeet": "assistant", "prompt": "assistant", "ollama": "assistant",
     "ratio": "assistant",
     "text_edit": "tool", "tz_fx": "tool", "dir_link": "tool",
 }
@@ -71,10 +71,12 @@ _SIDE_SECTION_MAP = {
 _NAV_BTN_ATTR = {
     "fast": "btn_fast", "video": "btn_douyin", "audio": "btn_audio",
     "gallery": "btn_gallery", "paste": "btn_paste", "img_proc": "btn_img_proc",
+    "pixel_board": "btn_pixel_board",
     "voice": "btn_voice", "auk": "btn_auk", "text_edit": "btn_text_edit",
     "gameassist": "btn_gameassist", "gamebrain": "btn_gamebrain", "gamemeet": "btn_gamemeet", "prompt": "btn_prompt",
-    "points": "btn_points", "shot": "btn_shot", "region_rec": "btn_region_rec",
+    "points": "btn_points", "sub_usage": "btn_sub_usage", "shot": "btn_shot", "region_rec": "btn_region_rec",
     "ratio": "btn_ratio", "dir_link": "btn_dir_link", "tz_fx": "btn_tz_fx",
+    "ollama": "btn_ollama",
 }
 
 # 页面在第一次用到时再导入。视频下载这条导入就要一秒多，不能放在窗口出现之前。
@@ -83,6 +85,7 @@ _PAGE_LOADERS = {
     "fast": ("pages.page_fast_save", "PageFastSave", "page_fast"),
     "paste": ("pages.page_paste", "PagePaste", "page_paste"),
     "img_proc": ("pages.page_image_proc", "PageImageProc", "page_img_proc"),
+    "pixel_board": ("pages.page_pixel_board", "PagePixelBoard", "page_pixel_board"),
     "voice": ("pages.page_voice_input", "PageVoiceInput", "page_voice"),
     "auk": ("pages.page_auk", "PageAudioProcess", "page_auk"),
     "text_edit": ("pages.page_text_editor", "PageTextEditor", "page_text_editor"),
@@ -91,6 +94,7 @@ _PAGE_LOADERS = {
     "gamemeet": ("pages.page_gamemeet", "PageGameMeet", "page_gamemeet"),
     "prompt": ("pages.page_prompt_editor", "PagePromptEditor", "page_prompt"),
     "points": ("pages.page_points_calc", "PagePointsCalc", "page_points"),
+    "sub_usage": ("pages.page_sub_usage", "PageSubUsage", "page_sub_usage"),
     "shot": ("pages.page_screenshot", "PageScreenshot", "page_shot"),
     "video": ("pages.page_video", "PageVideo", "page_douyin"),
     "audio": ("pages.page_audio", "PageAudio", "page_audio"),
@@ -98,6 +102,7 @@ _PAGE_LOADERS = {
     "ratio": ("pages.page_ratio_calc", "PageRatioCalc", "page_ratio"),
     "dir_link": ("pages.page_dir_link", "PageDirLink", "page_dir_link"),
     "tz_fx": ("pages.page_timezone_fx", "PageTimezoneFx", "page_tz_fx"),
+    "ollama": ("pages.page_ollama_chat", "PageOllamaChat", "page_ollama"),
     "region_rec": ("pages.page_region_record", "PageRegionRecord", "page_region_rec"),
     "clock": ("pages.page_clock", "PageClock", "page_clock"),
 }
@@ -114,7 +119,7 @@ _DEFAULT_SECTION_TITLES = {
 # 与按钮一起参与拖拽占位计算，只是分项名本身不可被拖拽。
 _SIDE_SECTIONS = [
     ("pinned",    None,                  ["video", "audio", "gallery", "fast", "shot", "region_rec"]),
-    ("assistant", "助手 · 主手脚",          ["paste", "img_proc", "voice", "auk", "points", "gameassist", "gamebrain", "gamemeet", "ratio", "prompt"]),
+    ("assistant", "助手 · 主手脚",          ["paste", "img_proc", "pixel_board", "voice", "auk", "points", "sub_usage", "gameassist", "gamebrain", "gamemeet", "ratio", "prompt", "ollama"]),
     ("tool",      "工具 · 小偏门",          ["text_edit", "tz_fx", "dir_link"]),
 ]
 
@@ -1194,6 +1199,7 @@ class SidePreDlSlot(QAbstractButton):
 
     开：描边方框 + 单字；关：灰色空框。点击切换，API 对齐 SideToggleSwitch。
     配置按钮右侧用「预」；图集页签防重用「防」。
+    挂到页签上之后，只有该子页是当前页时点击才切换；未打开时点击只进入该页。
     """
 
     # 尺寸即主题切换按钮（ui_main._apply_chrome_metrics 取 SidePreDlSlot.W 同宽）
@@ -1213,10 +1219,85 @@ class SidePreDlSlot(QAbstractButton):
         self.setFocusPolicy(Qt.NoFocus)
         self.setAttribute(Qt.WA_StyledBackground, False)
         self._frozen = False
+        self._gate_bar = None
+        self._gate_index = -1
+        self._tip_normal = None
+        self._swallow_release = False
         try:
             theme.changed.connect(self.update)
         except Exception:
             pass
+
+    def bind_owner_tab(self, bar, index: int) -> None:
+        """挂到页签上。只有这一页正处于当前页时，点击才切换开关。"""
+        self._gate_bar = bar
+        try:
+            self._gate_index = int(index)
+        except (TypeError, ValueError):
+            self._gate_index = -1
+        if self._tip_normal is None:
+            self._tip_normal = self.toolTip() or ""
+        try:
+            bar.currentChanged.connect(self._sync_owner_tab_state)
+        except Exception:
+            pass
+        self._sync_owner_tab_state()
+
+    def _owner_tab_index(self):
+        bar = getattr(self, "_gate_bar", None)
+        if bar is None:
+            return None
+        try:
+            side = bar.LeftSide
+            for i in range(int(bar.count())):
+                if bar.tabButton(i, side) is self:
+                    return i
+        except Exception:
+            pass
+        try:
+            idx = int(getattr(self, "_gate_index", -1))
+        except (TypeError, ValueError):
+            return None
+        return idx if idx >= 0 else None
+
+    def _owner_tab_active(self) -> bool:
+        """未挂页签时始终可点（侧栏「预」）。挂上后只认当前子页。"""
+        bar = getattr(self, "_gate_bar", None)
+        if bar is None:
+            return True
+        idx = self._owner_tab_index()
+        if idx is None:
+            return True
+        try:
+            return int(bar.currentIndex()) == int(idx)
+        except Exception:
+            return True
+
+    def _select_owner_tab(self) -> None:
+        bar = getattr(self, "_gate_bar", None)
+        idx = self._owner_tab_index()
+        if bar is None or idx is None:
+            return
+        try:
+            if int(bar.currentIndex()) != int(idx):
+                bar.setCurrentIndex(int(idx))
+        except Exception:
+            pass
+
+    def _sync_owner_tab_state(self, *_args) -> None:
+        if getattr(self, "_frozen", False):
+            self.update()
+            return
+        active = self._owner_tab_active()
+        self.setCursor(Qt.PointingHandCursor if active else Qt.ArrowCursor)
+        base = getattr(self, "_tip_normal", None)
+        if base is not None:
+            if active:
+                self.setToolTip(base)
+            else:
+                note = "先打开这一页，再点这里才会开关"
+                self.setToolTip(f"{base}\n{note}" if base else note)
+        self.update()
 
     def isFrozen(self) -> bool:
         return bool(getattr(self, "_frozen", False))
@@ -1229,6 +1310,9 @@ class SidePreDlSlot(QAbstractButton):
         if frozen:
             self.setCursor(Qt.ForbiddenCursor)
             self.setToolTip(self._FROZEN_TIP)
+        elif getattr(self, "_gate_bar", None) is not None:
+            self._sync_owner_tab_state()
+            return
         else:
             self.setCursor(Qt.PointingHandCursor)
         self.update()
@@ -1243,10 +1327,21 @@ class SidePreDlSlot(QAbstractButton):
         if getattr(self, "_frozen", False):
             e.accept()
             return
+        if e.button() == Qt.LeftButton and not self._owner_tab_active():
+            # 切子页时容易点到旁边的「防」。这一下只进入该页，不改开关。
+            self._swallow_release = True
+            self._select_owner_tab()
+            e.accept()
+            return
+        self._swallow_release = False
         super().mousePressEvent(e)
 
     def mouseReleaseEvent(self, e):
         if getattr(self, "_frozen", False):
+            e.accept()
+            return
+        if getattr(self, "_swallow_release", False) or not self._owner_tab_active():
+            self._swallow_release = False
             e.accept()
             return
         if (
@@ -1267,7 +1362,9 @@ class SidePreDlSlot(QAbstractButton):
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
-        if getattr(self, "_frozen", False):
+        if not self._owner_tab_active():
+            p.setOpacity(0.62)
+        elif getattr(self, "_frozen", False):
             p.setOpacity(0.58)
         w, h = float(self.width()), float(self.height())
         rect = QRectF(0.5, 0.5, w - 1.0, h - 1.0)
@@ -1362,7 +1459,10 @@ class SideClipboardOwnerSlot(QAbstractButton):
             self.setCursor(Qt.ForbiddenCursor)
             self.setToolTip(self._FROZEN_TIP)
         else:
-            self.setCursor(Qt.PointingHandCursor)
+            if getattr(self, "_watch_locked", False):
+                self.setCursor(Qt.ForbiddenCursor)
+            else:
+                self.setCursor(Qt.PointingHandCursor)
             tip = getattr(self, "_tip_normal", "") or ""
             self.setToolTip(tip)
         self.update()
@@ -1373,14 +1473,24 @@ class SideClipboardOwnerSlot(QAbstractButton):
         self.blockSignals(False)
         self.update()
 
+    def setWatchLocked(self, locked: bool):
+        """辅助粘贴正在查看系统剪贴板：三枚归属图标一起灰掉，不能点。"""
+        locked = bool(locked)
+        self._watch_locked = locked
+        if locked:
+            self.setCursor(Qt.ForbiddenCursor)
+        elif not self.isFrozen():
+            self.setCursor(Qt.PointingHandCursor)
+        self.update()
+
     def mousePressEvent(self, e):
-        if getattr(self, "_frozen", False):
+        if getattr(self, "_frozen", False) or getattr(self, "_watch_locked", False):
             e.accept()
             return
         super().mousePressEvent(e)
 
     def mouseReleaseEvent(self, e):
-        if getattr(self, "_frozen", False):
+        if getattr(self, "_frozen", False) or getattr(self, "_watch_locked", False):
             e.accept()
             return
         if (
@@ -1397,7 +1507,7 @@ class SideClipboardOwnerSlot(QAbstractButton):
     def paintEvent(self, event):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
-        if getattr(self, "_frozen", False):
+        if getattr(self, "_frozen", False) or getattr(self, "_watch_locked", False):
             p.setOpacity(0.58)
         w, h = float(self.width()), float(self.height())
         rect = QRectF(0.5, 0.5, w - 1.0, h - 1.0)
@@ -1406,7 +1516,7 @@ class SideClipboardOwnerSlot(QAbstractButton):
             dark = bool(theme.is_dark)
         except Exception:
             dark = True
-        on = bool(self.isChecked())
+        on = bool(self.isChecked()) and not getattr(self, "_watch_locked", False)
         if on:
             custom = QColor(self._on_color) if self._on_color else QColor()
             if custom.isValid():
@@ -1535,7 +1645,7 @@ class MainWindow(QWidget):
 
         # 默认深色；浅色仍可通过侧栏 ☀/🌙 切换
         self.is_light_theme = False
-        # 界面缩放由启动时 QT_SCALE_FACTOR 整窗放大（见 mainv917）；此处只记偏好值
+        # 界面缩放由启动时 QT_SCALE_FACTOR 整窗放大（见 mainv918）；此处只记偏好值
         self._ui_scale = self._read_active_qt_scale()
         # 内部 sp()/写死像素保持设计稿 1×，避免与 QT_SCALE_FACTOR 叠乘
         try:
@@ -1546,7 +1656,7 @@ class MainWindow(QWidget):
         theme.set_theme("dark")
 
         self.setWindowIcon(QIcon(os.path.join(ASSETS_DIR, 'star.ico')))
-        self.setWindowTitle("桌面助手 v9.17")
+        self.setWindowTitle("桌面助手 v9.18")
         # 主窗最小 960×776（与 user.txt 当前一致）；不设最大，可自由放大
         self.setMinimumSize(_WIN_MIN_W, _WIN_MIN_H)
         self.resize(_WIN_MIN_W, _WIN_MIN_H)
@@ -1593,7 +1703,7 @@ class MainWindow(QWidget):
         brand_txt = QVBoxLayout()
         brand_txt.setContentsMargins(0, 0, 0, 0)
         brand_txt.setSpacing(0)
-        self.lbl_brand_title = QLabel("桌面助手 v9.17")
+        self.lbl_brand_title = QLabel("桌面助手 v9.18")
         self.lbl_brand_title.setObjectName("SideBrandTitle")
         self.lbl_brand_sub = QLabel("AI口袋瑞士军刀")
         self.lbl_brand_sub.setObjectName("SideBrandSub")
@@ -1621,6 +1731,7 @@ class MainWindow(QWidget):
         self.btn_fast         = _nav("fast", "速存图文") if self._page_enabled("fast") else None
         self.btn_paste        = _nav("paste", "粘贴助手") if self._page_enabled("paste") else None
         self.btn_img_proc     = _nav("img_proc", "图片处理") if self._page_enabled("img_proc") else None
+        self.btn_pixel_board  = _nav("pixel_board", "像素画板") if self._page_enabled("pixel_board") else None
         self.btn_voice        = _nav("voice", "语音录入") if self._page_enabled("voice") else None
         self.btn_auk          = _nav("auk", "音频处理") if self._page_enabled("auk") else None
         self.btn_text_edit    = _nav("text_edit", "文本编辑") if self._page_enabled("text_edit") else None
@@ -1629,6 +1740,7 @@ class MainWindow(QWidget):
         self.btn_gamemeet   = _nav("gamemeet", "游戏会议") if self._page_enabled("gamemeet") else None
         self.btn_prompt       = _nav("prompt", "提示词") if self._page_enabled("prompt") else None
         self.btn_points       = _nav("points", "积分计算") if self._page_enabled("points") else None
+        self.btn_sub_usage    = _nav("sub_usage", "订阅用量") if self._page_enabled("sub_usage") else None
         self.btn_shot         = _nav("shot", "截图工具") if self._page_enabled("shot") else None
         self.btn_douyin       = _nav("video", "视频下载") if self._page_enabled("video") else None
         self.btn_audio        = _nav("audio", "音频下载") if self._page_enabled("audio") else None
@@ -1638,6 +1750,7 @@ class MainWindow(QWidget):
         self.btn_ratio        = _nav("ratio", "比例计算") if self._page_enabled("ratio") else None
         self.btn_dir_link     = _nav("dir_link", "目录映射") if self._page_enabled("dir_link") else None
         self.btn_tz_fx        = _nav("tz_fx", "时区汇率") if self._page_enabled("tz_fx") else None
+        self.btn_ollama       = _nav("ollama", "ollama") if self._page_enabled("ollama") else None
 
         # 侧栏顺序：置顶常用 → 助手 → 工具·小偏门
         self.side_btns = [
@@ -1646,13 +1759,16 @@ class MainWindow(QWidget):
                 getattr(self, "btn_douyin", None), getattr(self, "btn_audio", None),
                 getattr(self, "btn_gallery", None),
                 getattr(self, "btn_paste", None), getattr(self, "btn_img_proc", None),
+                getattr(self, "btn_pixel_board", None),
                 getattr(self, "btn_voice", None), getattr(self, "btn_auk", None),
                 getattr(self, "btn_text_edit", None),
                 getattr(self, "btn_gameassist", None),
                 getattr(self, "btn_gamebrain", None),
                 getattr(self, "btn_gamemeet", None),
                 getattr(self, "btn_prompt", None),
-                getattr(self, "btn_points", None), getattr(self, "btn_shot", None),
+                getattr(self, "btn_ollama", None),
+                getattr(self, "btn_points", None), getattr(self, "btn_sub_usage", None),
+                getattr(self, "btn_shot", None),
                 getattr(self, "btn_region_rec", None),
                 getattr(self, "btn_ratio", None), getattr(self, "btn_dir_link", None),
                 getattr(self, "btn_tz_fx", None),
@@ -2146,6 +2262,10 @@ class MainWindow(QWidget):
                 cb = getattr(page, "set_prefs_dirty_callback", None)
                 if callable(cb):
                     cb(self._schedule_save_user_prefs)
+            elif key == "pixel_board":
+                cb = getattr(page, "set_prefs_dirty_callback", None)
+                if callable(cb):
+                    cb(self._schedule_save_user_prefs)
             elif key == "voice":
                 page.set_goto_paste_callback(self._voice_goto_paste)
                 if getattr(self, "page_text_editor", None) is not None:
@@ -2242,7 +2362,7 @@ class MainWindow(QWidget):
                 cb = getattr(page, "set_prefs_dirty_callback", None)
                 if callable(cb):
                     cb(self._schedule_save_user_prefs)
-            elif key == "tz_fx":
+            elif key in ("tz_fx", "ollama", "sub_usage"):
                 cb = getattr(page, "set_prefs_dirty_callback", None)
                 if callable(cb):
                     cb(self._schedule_save_user_prefs)
@@ -2281,6 +2401,14 @@ class MainWindow(QWidget):
                     ip["save_path"] = derived
                     prefs["image_proc"] = ip
                 page.apply_settings(ip)
+            elif key == "pixel_board":
+                pb = dict(prefs.get("pixel_board") or {})
+                derived = _usable_or_derived_save_path(
+                    prefs, pb.get("save_path"), "PixelBoard")
+                if derived != (pb.get("save_path") or "").strip().replace("\\", "/"):
+                    pb["save_path"] = derived
+                    prefs["pixel_board"] = pb
+                page.apply_settings(pb)
             elif key == "gallery":
                 page.apply_settings(prefs.get("gallery") or {})
                 pixiv = getattr(page, "page_pixiv", None)
@@ -2288,6 +2416,8 @@ class MainWindow(QWidget):
                     pixiv.apply_settings(prefs.get("gallery_pixiv") or {})
             elif key == "points":
                 page.apply_settings(prefs.get("points_calc") or {})
+            elif key == "sub_usage":
+                page.apply_settings(prefs.get("sub_usage") or {})
             elif key == "voice":
                 page.apply_settings(prefs.get("voice_input") or {})
             elif key == "auk":
@@ -2295,6 +2425,8 @@ class MainWindow(QWidget):
                 page.apply_settings(prefs.get("voice_clone") or {})
             elif key == "text_edit":
                 page.apply_settings(prefs.get("text_editor") or {})
+                if hasattr(page, "apply_check_dup_settings"):
+                    page.apply_check_dup_settings(prefs.get("fast_save") or {})
             elif key == "gameassist":
                 page.apply_settings(prefs.get("gameassist") or {})
             elif key == "gamebrain":
@@ -2314,6 +2446,8 @@ class MainWindow(QWidget):
                 page.apply_settings(prefs.get("clock") or {})
             elif key == "tz_fx" and hasattr(page, "apply_settings"):
                 page.apply_settings(prefs.get("timezone_fx") or {})
+            elif key == "ollama" and hasattr(page, "apply_settings"):
+                page.apply_settings(prefs.get("ollama_chat") or {})
             elif key == "dir_link" and hasattr(page, "apply_settings"):
                 page.apply_settings(prefs.get("dir_link") or {})
             elif key == "overview" and hasattr(page, "reload_from_prefs"):
@@ -2341,7 +2475,7 @@ class MainWindow(QWidget):
             elif key == "auk" and hasattr(page, "on_enter"):
                 # 音频处理：进页时刷新 AUK / CosVoice3 两个子页
                 page.on_enter()
-            elif key in ("gameassist", "gamebrain", "gamemeet", "prompt", "tz_fx", "region_rec", "overview"):
+            elif key in ("gameassist", "gamebrain", "gamemeet", "prompt", "tz_fx", "ollama", "region_rec", "overview"):
                 if hasattr(page, "on_enter"):
                     page.on_enter()
         except Exception:
@@ -2352,14 +2486,18 @@ class MainWindow(QWidget):
         keys = getattr(self, "_deferred_page_keys", None) or []
         if not keys:
             log.info("热键页已在窗口显示后就绪")
-            # 总览启动时热键页还没建，占用卡是空的；全部就绪后再刷一次。
+            # 只排一次轻量异步重挂（不杀进程），不堵当前事件循环
             try:
                 ov = getattr(self, "page_overview", None)
                 about = getattr(ov, "about_section", None) if ov is not None else None
-                if about is not None and hasattr(about, "_refresh_hotkey_card"):
-                    about._refresh_hotkey_card()
+                if about is not None:
+                    sched = getattr(about, "_schedule_soft_rehang_once", None)
+                    if callable(sched):
+                        sched(reason="hotkey_pages_ready")
+                    elif hasattr(about, "_refresh_hotkey_card"):
+                        about._refresh_hotkey_card()
             except Exception:
-                log.exception("热键页就绪后刷新热键占用失败")
+                log.exception("热键页就绪后安排轻量重挂失败")
             return
         key = keys.pop(0)
         try:
@@ -2569,6 +2707,7 @@ class MainWindow(QWidget):
         if w is getattr(self, "page_fast",         None): return "速存图文"
         if w is getattr(self, "page_paste",        None): return "粘贴助手"
         if w is getattr(self, "page_img_proc",     None): return "图片处理"
+        if w is getattr(self, "page_pixel_board",  None): return "像素画板"
         if w is getattr(self, "page_voice",        None): return "语音录入"
         if w is getattr(self, "page_auk",          None): return "音频处理"
         if w is getattr(self, "page_text_editor",  None): return "文本编辑"
@@ -2576,6 +2715,7 @@ class MainWindow(QWidget):
         if w is getattr(self, "page_gamebrain",   None): return "游戏大脑"
         if w is getattr(self, "page_gamemeet",   None): return "游戏会议"
         if w is getattr(self, "page_points",       None): return "积分计算"
+        if w is getattr(self, "page_sub_usage",    None): return "订阅用量"
         if w is getattr(self, "page_shot",         None): return "截图工具"
         if w is getattr(self, "page_douyin",       None): return "视频下载"
         if w is getattr(self, "page_audio",        None): return "音频下载"
@@ -2583,6 +2723,7 @@ class MainWindow(QWidget):
         if w is getattr(self, "page_ratio",       None): return "比例计算"
         if w is getattr(self, "page_dir_link",    None): return "目录映射"
         if w is getattr(self, "page_tz_fx",       None): return "时区汇率"
+        if w is getattr(self, "page_ollama",      None): return "ollama"
         if w is getattr(self, "page_region_rec",   None): return "区域录屏"
         if w is getattr(self, "page_about",        None): return "系统总览"
         if w is getattr(self, "page_clock",        None): return "电子钟"
@@ -3293,7 +3434,7 @@ class MainWindow(QWidget):
                 log.exception("接入预下载取消按钮失败 plat=%s", plat)
 
     def _on_pre_dl_page_cancel(self, plat: str):
-        """预下载进行中点「取消」：立刻改 pre_download.json；仅剩一条则无法操作并关开关。"""
+        """预下载进行中点「取消」：立刻改 pre_download.txt；仅剩一条则无法操作并关开关。"""
         if not getattr(self, "_pre_dl_running", False):
             return
         if (getattr(self, "_pre_dl_current_plat", "") or "") != (plat or "").strip():
@@ -3407,6 +3548,8 @@ class MainWindow(QWidget):
         return self.get_clipboard_owner()
 
     def _on_clipboard_owner_clicked(self, key: str):
+        if getattr(self, "_assist_watch_lock", False):
+            return
         key = str(key or "").strip()
         if key not in ("paste", "gamebrain", "gamemeet"):
             return
@@ -3437,6 +3580,8 @@ class MainWindow(QWidget):
         """设置剪贴板归属页。key 为空表示无人占用。"""
         key = str(key or "").strip()
         if key not in ("", "paste", "gamebrain", "gamemeet"):
+            key = ""
+        if key and getattr(self, "_assist_watch_lock", False):
             key = ""
         # 对应页面未启用则回落为空
         if key and not self._page_enabled(key):
@@ -3474,6 +3619,39 @@ class MainWindow(QWidget):
                 log.exception("保存剪贴板归属失败")
         if prev != key:
             log.info("剪贴板归属 %r → %r", prev or "(无)", key or "(无)")
+
+    def set_assist_watch_lock(self, locked: bool):
+        """辅助粘贴查看系统剪贴板：强制关掉三个归属，关掉后再按打开前恢复。"""
+        locked = bool(locked)
+        if locked:
+            if not getattr(self, "_assist_watch_lock", False):
+                self._assist_watch_owner_saved = self.get_clipboard_owner()
+            self._assist_watch_lock = True
+            self._apply_assist_watch_slot_lock(True)
+            if self.get_clipboard_owner():
+                self.set_clipboard_owner("", persist=False, sync_now=False)
+            return
+        if not getattr(self, "_assist_watch_lock", False):
+            self._apply_assist_watch_slot_lock(False)
+            return
+        saved = str(getattr(self, "_assist_watch_owner_saved", "") or "")
+        self._assist_watch_owner_saved = ""
+        self._assist_watch_lock = False
+        self._apply_assist_watch_slot_lock(False)
+        self.set_clipboard_owner(saved, persist=False, sync_now=False)
+
+    def _apply_assist_watch_slot_lock(self, locked: bool):
+        for slot in (
+            getattr(self, "clip_owner_paste", None),
+            getattr(self, "clip_owner_gamebrain", None),
+            getattr(self, "clip_owner_gamemeet", None),
+        ):
+            if slot is None or not hasattr(slot, "setWatchLocked"):
+                continue
+            try:
+                slot.setWatchLocked(locked)
+            except Exception:
+                log.exception("辅助粘贴锁定剪贴板归属失败")
 
     def _apply_clipboard_owner_to_pages(self, *, sync_now: bool = True):
         """把归属状态下发到三页（未创建的页跳过）。"""
@@ -4728,11 +4906,14 @@ class MainWindow(QWidget):
             getattr(self, "page_ratio", None),      # 工具·小偏门
             getattr(self, "page_dir_link", None),   # 内含磁盘扫描线程
             getattr(self, "page_tz_fx", None),
+            getattr(self, "page_ollama", None),   # 本地对话（流式线程）
+            getattr(self, "page_sub_usage", None),  # 订阅用量（重置计时）
             getattr(self, "page_overview", None),
             getattr(self, "page_shot", None),
             getattr(self, "page_region_rec", None),
             getattr(self, "page_paste", None),
             getattr(self, "page_img_proc", None),
+            getattr(self, "page_pixel_board", None),
         )
         for p in pages:
             if p is None:
@@ -4781,6 +4962,14 @@ class MainWindow(QWidget):
         except Exception:
             log.exception("导出速存设置失败")
         try:
+            te = getattr(self, "page_text_editor", None)
+            if te is not None and hasattr(te, "export_check_dup_settings"):
+                if not isinstance(prefs.get("fast_save"), dict):
+                    prefs["fast_save"] = {}
+                prefs["fast_save"].update(te.export_check_dup_settings() or {})
+        except Exception:
+            log.exception("export check/dup settings failed")
+        try:
             page = getattr(self, "page_shot", None)
             if page is not None:
                 prefs["screenshot"].update(page.export_settings())
@@ -4820,6 +5009,12 @@ class MainWindow(QWidget):
         except Exception:
             log.exception("导出积分计算设置失败")
         try:
+            page = getattr(self, "page_sub_usage", None)
+            if page is not None and hasattr(page, "export_settings"):
+                prefs["sub_usage"] = page.export_settings()
+        except Exception:
+            log.exception("导出订阅用量设置失败")
+        try:
             page = getattr(self, "page_img_proc", None)
             if page is not None:
                 if not isinstance(prefs.get("image_proc"), dict):
@@ -4827,6 +5022,14 @@ class MainWindow(QWidget):
                 prefs["image_proc"].update(page.export_settings())
         except Exception:
             log.exception("导出图片处理设置失败")
+        try:
+            page = getattr(self, "page_pixel_board", None)
+            if page is not None and hasattr(page, "export_settings"):
+                if not isinstance(prefs.get("pixel_board"), dict):
+                    prefs["pixel_board"] = {}
+                prefs["pixel_board"].update(page.export_settings())
+        except Exception:
+            log.exception("导出像素画板设置失败")
         try:
             page = getattr(self, "page_prompt", None)
             if page is not None and hasattr(page, "export_settings"):
@@ -4847,6 +5050,12 @@ class MainWindow(QWidget):
                 prefs["timezone_fx"].update(tz.export_settings())
         except Exception:
             log.exception("导出时区汇率设置失败")
+        try:
+            page = getattr(self, "page_ollama", None)
+            if page is not None and hasattr(page, "export_settings"):
+                prefs["ollama_chat"] = page.export_settings()
+        except Exception:
+            log.exception("导出本地对话设置失败")
         try:
             page = getattr(self, "page_dir_link", None)
             if page is not None and hasattr(page, "export_settings"):
@@ -4959,9 +5168,31 @@ class MainWindow(QWidget):
 
     def _save_user_prefs(self):
         try:
-            save_user_prefs(self._collect_user_prefs())
+            prefs = self._collect_user_prefs()
+            if save_user_prefs(prefs):
+                self._sync_auto_fit_after_save(prefs)
         except Exception:
             log.exception("保存 user.txt 失败")
+
+    def _sync_auto_fit_after_save(self, prefs):
+        """保存时若采用了看图窗口写下的自适应，勾选和内存一起改。"""
+        if not isinstance(prefs, dict):
+            return
+        pv = prefs.get("photo_viewer")
+        if not isinstance(pv, dict) or "auto_fit" not in pv:
+            return
+        on = bool(pv.get("auto_fit", True))
+        live = getattr(self, "_user_prefs", None)
+        if isinstance(live, dict):
+            live_pv = live.get("photo_viewer")
+            if not isinstance(live_pv, dict):
+                live_pv = {}
+                live["photo_viewer"] = live_pv
+            live_pv["auto_fit"] = on
+        sec = getattr(getattr(self, "page_overview", None), "settings_section", None)
+        fn = getattr(sec, "apply_auto_fit_from_disk_value", None)
+        if callable(fn):
+            fn(on)
 
     def _schedule_save_user_prefs(self, *_args):
         """设置变更后 500ms 防抖写盘，避免拖动路径时狂写文件。"""
@@ -4994,20 +5225,41 @@ class MainWindow(QWidget):
                     sig.connect(self._schedule_save_user_prefs)
                 except Exception:
                     pass
-            # 序列文件检查：忽略扩展名 / 补全 / 同名扩展名卡
-            for attr in ("chk_ignore_ext", "chk_check_fill", "chk_new_record"):
+            for attr in ("chk_new_record",):
                 w = getattr(pf, attr, None)
                 if w is not None:
                     try:
                         w.toggled.connect(self._schedule_save_user_prefs)
                     except Exception:
                         pass
-            bar = getattr(pf, "dup_ext_bar", None)
-            if bar is not None:
+
+
+        if (
+            self._page_enabled("text_edit")
+            and "text_edit" not in wired
+            and getattr(self, "page_text_editor", None) is not None
+        ):
+            te = self.page_text_editor
+            wired.add("text_edit")
+            panel = getattr(te, "seq_dup", None)
+            if panel is not None:
                 try:
-                    bar.changed.connect(self._schedule_save_user_prefs)
+                    panel.prefs_changed.connect(self._schedule_save_user_prefs)
                 except Exception:
                     pass
+                for attr in ("chk_ignore_ext", "chk_check_fill"):
+                    w = getattr(panel, attr, None)
+                    if w is not None:
+                        try:
+                            w.toggled.connect(self._schedule_save_user_prefs)
+                        except Exception:
+                            pass
+                bar = getattr(panel, "dup_ext_bar", None)
+                if bar is not None:
+                    try:
+                        bar.changed.connect(self._schedule_save_user_prefs)
+                    except Exception:
+                        pass
 
         if self._page_enabled("shot") and "shot" not in wired and getattr(self, "page_shot", None) is not None:
             sh = self.page_shot
@@ -5153,6 +5405,12 @@ class MainWindow(QWidget):
         """
         prefs, created_new = load_user_prefs()
         self._user_prefs = prefs
+        try:
+            from utils.photo_viewer_cfg import note_saved_auto_fit
+            pv = prefs.get("photo_viewer") if isinstance(prefs, dict) else None
+            note_saved_auto_fit((pv or {}).get("auto_fit", True) if isinstance(pv, dict) else True)
+        except Exception:
+            log.exception("记下看图自适应初值失败")
         log.info("加载用户偏好 created_new=%s", created_new)
         # 速存页还没建，先按 user.txt 点亮侧栏开关，避免一打开就是关
         try:
@@ -5244,8 +5502,10 @@ class MainWindow(QWidget):
                 te = getattr(self, "page_text_editor", None)
                 if te is not None and hasattr(te, "apply_settings"):
                     te.apply_settings(prefs.get("text_editor") or {})
+                if te is not None and hasattr(te, "apply_check_dup_settings"):
+                    te.apply_check_dup_settings(prefs.get("fast_save") or {})
             except Exception:
-                log.exception("恢复文本编辑设置失败")
+                log.exception("restore text editor settings failed")
             try:
                 page = getattr(self, "page_gameassist", None)
                 if page is not None:
@@ -5301,7 +5561,7 @@ class MainWindow(QWidget):
             except Exception:
                 log.exception("恢复区域录屏设置失败")
 
-        # 界面缩放：只同步偏好显示值（真正缩放已在 mainv917 启动前设 QT_SCALE_FACTOR）
+        # 界面缩放：只同步偏好显示值（真正缩放已在 mainv918 启动前设 QT_SCALE_FACTOR）
         try:
             want_scale = float(ui_prefs.get("scale", 1.0) or 1.0)
         except (TypeError, ValueError):
@@ -5727,6 +5987,14 @@ class MainWindow(QWidget):
                     fn()
                 except Exception:
                     log.exception("重启前解绑粘贴助手热键失败")
+        ov = getattr(self, "page_overview", None)
+        if ov is not None:
+            fn = getattr(ov, "_unbind_color_hotkey", None)
+            if callable(fn):
+                try:
+                    fn()
+                except Exception:
+                    log.exception("重启前解绑取色热键失败")
         hk = getattr(self, "_f7_hotkey", None)
         if hk is not None and hasattr(hk, "unbind"):
             try:
@@ -5769,7 +6037,13 @@ class MainWindow(QWidget):
             blob = " ".join(
                 str(x) for x in (name, exe, *list(cmd))
             ).lower()
-            if ("mainv917" in blob) or ("mainv916" in blob):
+            if (
+                ("mainv918" in blob)
+                or ("mainv917" in blob)
+                or ("mainv916" in blob)
+                or ("desktop assistant" in blob)
+                or ("desktop_assistant" in blob)
+            ):
                 hits.append(p)
                 continue
             if my_exe and exe:
@@ -5783,7 +6057,7 @@ class MainWindow(QWidget):
     def collect_hotkey_inventory(self):
         """各页当前全局热键 + 就绪/占用/未启用。"""
         rows = []
-        for attr in ("page_fast", "page_shot", "page_region_rec", "page_paste"):
+        for attr in ("page_fast", "page_shot", "page_region_rec", "page_paste", "page_overview"):
             page = getattr(self, attr, None)
             fn = getattr(page, "hotkey_inventory", None) if page is not None else None
             if not callable(fn):
@@ -5809,44 +6083,10 @@ class MainWindow(QWidget):
         })
         return rows
 
-    def force_release_hotkeys(self):
-        """结束本程序残留进程，并按当前开关重注册全部热键。"""
-        import time
-
-        killed = []
-        for p in list(self.find_sibling_assistants() or ()):
-            pid = 0
-            try:
-                pid = int(p.pid)
-            except Exception:
-                pid = 0
-            try:
-                p.terminate()
-                try:
-                    p.wait(timeout=3)
-                except Exception:
-                    pass
-                if p.is_running():
-                    p.kill()
-                    try:
-                        p.wait(timeout=2)
-                    except Exception:
-                        pass
-                killed.append(pid)
-                log.info("已结束残留桌面助手进程 pid=%s", pid)
-            except Exception:
-                log.exception("结束残留进程失败 pid=%s", pid)
-        try:
-            time.sleep(0.2)
-        except Exception:
-            pass
-        try:
-            QApplication.processEvents()
-        except Exception:
-            pass
-
+    def rehang_hotkeys_soft(self):
+        """仅按当前开关重注册热键：不杀进程、不 sleep，供启动/自动路径使用。"""
         rebound = []
-        for attr in ("page_fast", "page_shot", "page_region_rec", "page_paste"):
+        for attr in ("page_fast", "page_shot", "page_region_rec", "page_paste", "page_overview"):
             page = getattr(self, attr, None)
             fn = getattr(page, "rebind_hotkeys", None) if page is not None else None
             if not callable(fn):
@@ -5854,17 +6094,53 @@ class MainWindow(QWidget):
             try:
                 rebound.extend(list(fn() or ()))
             except Exception:
-                log.exception("重注册热键失败 page=%s", attr)
+                log.exception("轻量重注册热键失败 page=%s", attr)
         hk = getattr(self, "_f7_hotkey", None)
-        # 静默复制关着：不重注册 F7（保持让出）
         if hk is not None and hasattr(hk, "bind") and self.is_silent_copy_enabled():
             try:
                 ok = bool(hk.bind())
                 rebound.append(("静默复制", "F7", ok))
             except Exception:
-                log.exception("重注册 F7 静默复制热键失败")
+                log.exception("轻量重注册 F7 失败")
                 rebound.append(("静默复制", "F7", False))
-        return {"killed": killed, "rebound": rebound}
+        return {"killed": [], "rebound": rebound}
+
+    def force_release_hotkeys(self, kill_siblings: bool = True):
+        """手动「重新挂上」：可选结束残留实例，再重注册。
+
+        自动/启动路径请用 rehang_hotkeys_soft，避免 terminate+wait 卡死 UI。
+        """
+        killed = []
+        if kill_siblings:
+            try:
+                self._release_global_hotkeys()
+            except Exception:
+                log.exception("重挂前释放本进程热键失败")
+            for p in list(self.find_sibling_assistants() or ()):
+                pid = 0
+                try:
+                    pid = int(p.pid)
+                except Exception:
+                    pid = 0
+                try:
+                    # 不阻塞 wait：发 terminate/kill 即走，避免启动/点击卡数秒
+                    p.terminate()
+                    if hasattr(p, "is_running") and p.is_running():
+                        try:
+                            p.kill()
+                        except Exception:
+                            pass
+                    killed.append(pid)
+                    log.info("已请求结束残留桌面助手进程 pid=%s", pid)
+                except Exception:
+                    log.exception("结束残留进程失败 pid=%s", pid)
+            try:
+                QApplication.processEvents()
+            except Exception:
+                pass
+
+        soft = self.rehang_hotkeys_soft()
+        return {"killed": killed, "rebound": soft.get("rebound") or []}
 
     def _relaunch_app(self):
         """保存后重启自身，使新的 QT_SCALE_FACTOR 在创建 QApplication 前生效。"""
@@ -5954,7 +6230,7 @@ class MainWindow(QWidget):
 
         if save or not from_prefs:
             try:
-                # 立即落盘，保证重启后 mainv917 能读到新倍数
+                # 立即落盘，保证重启后 mainv918 能读到新倍数
                 self._save_user_prefs()
             except Exception:
                 log.exception("保存界面缩放失败")
@@ -6828,6 +7104,18 @@ class MainWindow(QWidget):
             log.exception("派生图片处理路径失败")
 
         try:
+            pb = dict(prefs.get("pixel_board") or {})
+            derived = _usable_or_derived_save_path(
+                prefs, pb.get("save_path"), "PixelBoard"
+            )
+            if derived != (pb.get("save_path") or "").strip().replace("\\", "/"):
+                pb["save_path"] = derived
+                prefs["pixel_board"] = pb
+                self._user_prefs = prefs
+        except Exception:
+            log.exception("派生像素画板路径失败")
+
+        try:
             vc = dict(prefs.get("voice_clone") or {})
             derived = _usable_or_derived_save_path(
                 prefs, vc.get("save_path"), "VoiceClone"
@@ -6853,8 +7141,10 @@ class MainWindow(QWidget):
             (getattr(self, "page_shot", None), "screenshot"),
             (getattr(self, "page_region_rec", None), "region_record"),
             (getattr(self, "page_img_proc", None), "image_proc"),
+            (getattr(self, "page_pixel_board", None), "pixel_board"),
             (getattr(self, "page_gallery", None), "gallery"),
             (getattr(self, "page_points", None), "points_calc"),
+            (getattr(self, "page_sub_usage", None), "sub_usage"),
             (getattr(self, "page_voice", None), "voice_input"),
             (getattr(self, "page_auk", None), "voice_clone"),  # 音频处理 · CosVoice3
             (getattr(self, "page_text_editor", None), "text_editor"),
@@ -6866,6 +7156,7 @@ class MainWindow(QWidget):
             (getattr(self, "page_prompt", None), "prompt_editor"),
             (getattr(self, "page_clock", None), "clock"),
             (getattr(self, "page_tz_fx", None), "timezone_fx"),
+            (getattr(self, "page_ollama", None), "ollama_chat"),
         )
         for page, key in page_keys:
             if page is None or not hasattr(page, "apply_settings"):
@@ -7040,6 +7331,8 @@ class MainWindow(QWidget):
                 "· data：偏好 / 粘贴仓库 / 积分历史 / 时区城市 / 日志\n"
                 "· data（card_*.txt）：速存记录模式卡片\n"
                 "· 图集去重记录（gallery_eh.txt / gallery_hitomi.txt）\n"
+                "· 其它视频去重记录（other_video.txt）\n"
+                "· 汽水音乐去重记录（qishui.txt）\n"
                 "· 知识库：游戏助手 gameassist/、游戏大脑 gamebrain/",
             )
         except Exception as e:
@@ -7052,7 +7345,7 @@ class MainWindow(QWidget):
         import shutil
         import tempfile
         import zipfile
-        from utils.app_paths import data_dir, records_dir, flatten_data_subdirs, _migrate_user_records_split_once
+        from utils.app_paths import log_dir, data_dir, records_dir, userdata_dir, flatten_data_subdirs, _migrate_user_records_split_once
 
         parent = parent or self
         path, _ = QFileDialog.getOpenFileName(
@@ -7072,7 +7365,7 @@ class MainWindow(QWidget):
             "导入本地数据",
             "导入将覆盖 data/ 下的本地数据：\n"
             "· 偏好 / 粘贴 / 积分 / 时区城市 / 日志\n"
-            "· 图集下载去重记录\n"
+            "· 图集 / 其它视频 / 汽水音乐去重记录\n"
             "· 速存记录卡片\n"
             "· 知识库（游戏助手 / 游戏大脑；备份里没有则保留本机）\n\n"
             "旧版 records / gallery / cards 备份仍可导入。\n"
@@ -7120,7 +7413,7 @@ class MainWindow(QWidget):
                 # 兼容 ZIP 根下多包一层 deskassist_data / 桌面助手_xxx
                 scan_root = td
                 entries = [e for e in os.listdir(td) if e not in (".", "..")]
-                known = {"data", "records", "gallery", "cards"}
+                known = {"log", "data", "userdata", "records", "gallery", "cards"}
                 if len(entries) == 1:
                     only = os.path.join(td, entries[0])
                     if os.path.isdir(only):
@@ -7134,10 +7427,17 @@ class MainWindow(QWidget):
                 markers = {
                     "user.txt", "paste_helper.txt", "points_calc.txt",
                     "app.log", "world_clock_cities.txt",
-                    "pre_download.json", "gallery_eh.txt", "gallery_hitomi.txt",
+                    "pre_download.txt", "gamemeet_history.txt", "prompts_editor.txt",
+                    "gallery_eh.txt", "gallery_hitomi.txt",
+                    "other_video.txt", "qishui.txt",
                 }
-                has_data = "data" in top_l and os.path.isdir(
-                    os.path.join(scan_root, top_l["data"])
+                has_log = "log" in top_l and os.path.isdir(
+                    os.path.join(scan_root, top_l["log"])
+                )
+                has_data = has_log or (
+                    "data" in top_l and os.path.isdir(
+                        os.path.join(scan_root, top_l["data"])
+                    )
                 )
                 has_legacy_roots = bool({"records", "gallery", "cards"} & set(top_l.keys()))
                 flat_records = bool(markers & top) and not has_data and not has_legacy_roots
@@ -7154,21 +7454,30 @@ class MainWindow(QWidget):
                             "ZIP 内没有可识别的数据（需要 data/、records/ 或 user.txt）"
                         )
 
-                dest_data = data_dir()
+                dest_data = log_dir()  # runtime logs (legacy zip key: data)
                 dest_rec = records_dir()
+                dest_user = userdata_dir()
                 cleared, wipe_errs, copied = [], [], 0
-                c, e = self._wipe_dir_contents(dest_data, "data")
+                c, e = self._wipe_dir_contents(dest_data, "log")
                 cleared.extend(c)
                 wipe_errs.extend(e)
                 c, e = self._wipe_dir_contents(dest_rec, "records")
                 cleared.extend(c)
                 wipe_errs.extend(e)
+                c, e = self._wipe_dir_contents(dest_user, "userdata")
+                cleared.extend(c)
+                wipe_errs.extend(e)
 
                 if has_data:
                     copied += self._copy_tree_merge(
-                        os.path.join(scan_root, top_l["data"]), dest_data
+                        os.path.join(scan_root, top_l.get("log") or top_l["data"]), dest_data
                     )
                     # 新备份若同时带 records/
+                    ud_key = top_l.get("userdata")
+                    if ud_key:
+                        src = os.path.join(scan_root, ud_key)
+                        if os.path.isdir(src):
+                            copied += self._copy_tree_merge(src, dest_user)
                     rec_key = top_l.get("records")
                     if rec_key:
                         src = os.path.join(scan_root, rec_key)
@@ -7278,7 +7587,7 @@ class MainWindow(QWidget):
         )
 
     def _write_back_kb_prefs(self, keep: dict):
-        """把 {段名: {sources, groups}} 写回 data/user.txt（导入旧备份时保留本机知识库）。"""
+        """把 {段名: {sources, groups}} 写回 userdata/user.txt（导入旧备份时保留本机知识库）。"""
         import json as _json
         from utils.user_prefs import user_file_path
 
@@ -7320,7 +7629,7 @@ class MainWindow(QWidget):
             "重置本地数据",
             "将清除 data/ 下全部本地业务数据，包括：\n"
             "· 用户偏好、粘贴仓库、积分历史、时区城市、日志\n"
-            "· 图集下载去重记录\n"
+            "· 图集 / 其它视频 / 汽水音乐去重记录\n"
             "· 速存记录模式卡片\n"
             "· 知识库（游戏助手 gameassist/、游戏大脑 gamebrain/）\n"
             "· 侧栏顺序 / 分区名 / 主题 / 缩放 / 各页路径与 Cookie 配置\n\n"

@@ -692,7 +692,7 @@ def _run_whisper_job(
             json.dump(meta, f, ensure_ascii=False)
 
         # 子进程必须用无 Qt 的 whisper_job（import PyQt 会触发 ctranslate2 硬崩）
-        # 开发：python -m utils.whisper_job；打包：exe --whisper-job（mainv917 在 import Qt 前分流）
+        # 开发：python -m utils.whisper_job；打包：exe --whisper-job（mainv918 在 import Qt 前分流）
         try:
             from utils.app_paths import is_frozen
             frozen = is_frozen()
@@ -940,5 +940,5 @@ class TranscribeFileWorker(QThread):
 
 # 子进程入口：
 #   开发：python -m utils.whisper_job <meta.json>
-#   打包：mainv917.exe --whisper-job <meta.json>（main 在 import Qt 前分流）
+#   打包：mainv918.exe --whisper-job <meta.json>（main 在 import Qt 前分流）
 # 不可用本模块作 -m 入口（顶层 import 了 PyQt5，会触发硬崩）

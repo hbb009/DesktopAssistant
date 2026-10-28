@@ -1,10 +1,11 @@
 # pages/page_overview.py
 
-from PyQt5.QtCore import Qt, QTimer, QSize, QEvent
+from PyQt5.QtCore import Qt, QTimer, QSize, QEvent, QAbstractNativeEventFilter, QCoreApplication
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QProgressBar,
-    QGroupBox, QScrollArea, QFrame, QSizePolicy,
+    QGroupBox, QScrollArea, QFrame, QSizePolicy, QPushButton, QApplication,
 )
+import ctypes
 import platform, shutil, sys, subprocess
 from styles.style_all import (
     install_card_title,
@@ -19,14 +20,60 @@ from styles.style_all import (
     CARD_RIGHT_GAP,
     CARD_BOTTOM_GAP,
     theme,
+    tk,
+    apply_mini_button,
 )
 from pages.settings_section import SettingsSection
+from utils.logger import get_logger
+
+log = get_logger(__name__)
 
 # 统一行高（像素）：环境信息 / 资源监控 两栏共用，逐行对齐。
 # 相对旧值 26 加高 2px（行距加大）；字号比全局正文 14px 小一码。
 ROW_H = 26
 OVERVIEW_ROW_H = ROW_H + 2  # 收紧行高，全页项对齐
 OVERVIEW_FONT_PX = 13
+
+# 屏幕取色全局热键 Ctrl+2。id 避开速存 0x1002–0x1006、截图 0x1010、粘贴 0x1020、F7 0x1030。
+_WM_HOTKEY = 0x0312
+_MOD_CONTROL = 0x0002
+_MOD_NOREPEAT = 0x4000
+_COLOR_HOTKEY_ID = 0x1040
+_VK_2 = 0x32
+_COLOR_HOTKEY_LABEL = "Ctrl+2"
+
+try:
+    import ctypes.wintypes as _wintypes
+except Exception:  # pragma: no cover
+    _wintypes = None
+
+
+class _ColorHotkeyFilter(QAbstractNativeEventFilter):
+    """把 Ctrl+2 的 WM_HOTKEY 转到主线程。"""
+
+    def __init__(self, callback, hotkey_id: int):
+        super().__init__()
+        self._cb = callback
+        self._hid = int(hotkey_id)
+
+    def nativeEventFilter(self, eventType, message):
+        try:
+            if eventType not in ("windows_generic_MSG", "windows_dispatcher_MSG"):
+                return False, 0
+            if _wintypes is None:
+                return False, 0
+            msg = _wintypes.MSG.from_address(int(message))
+            if msg.message == _WM_HOTKEY and int(msg.wParam) == self._hid:
+                cb = self._cb
+                if callable(cb):
+                    try:
+                        cb()
+                    except Exception:
+                        log.exception("取色热键回调失败")
+                return True, 0
+        except Exception:
+            log.exception("取色热键消息过滤失败")
+        return False, 0
 
 
 class _ShrinkLabel(QLabel):
@@ -169,9 +216,22 @@ class _EqualWidthRow(QWidget):
             lh = max(1, self._col_h(self._left, half), int(self._left.minimumSizeHint().height()))
             rh = max(1, self._col_h(self._right, half), int(self._right.minimumSizeHint().height()))
             needed = max(lh, rh, 1)
+            rw = w - half - self._spacing
+            rx = half + self._spacing
+            lg = self._left.geometry()
+            rg = self._right.geometry()
+            # 矩形没变也 setGeometry 会再发一次布局请求，总览两列跟着重切，画面抖
+            if (
+                lg.x() == 0 and lg.y() == 0 and lg.width() == half and lg.height() == lh
+                and rg.x() == rx and rg.y() == 0 and rg.width() == rw and rg.height() == rh
+                and self.minimumHeight() == needed
+                and self.maximumHeight() >= needed
+                and self.height() >= needed
+            ):
+                return
             # 各列按自身内容高度（顶对齐），避免矮列被拉高后在「环境信息」下留空
             self._left.setGeometry(0, 0, half, lh)
-            self._right.setGeometry(half + self._spacing, 0, w - half - self._spacing, rh)
+            self._right.setGeometry(rx, 0, rw, rh)
             self.setMinimumHeight(needed)
             if self.maximumHeight() < needed:
                 self.setMaximumHeight(16777215)
@@ -411,8 +471,8 @@ class PageOverview(QWidget):
         root.setAlignment(Qt.AlignTop)
 
         # 整页通栏左右两列（顶对齐）：
-        # 左：功能与说明 → 白名单 → 环境信息
-        # 右：缩放/Cookie/预下载/数据管理 → 模型与组件 → 热键占用 → 资源监控
+        # 左：功能与说明 → 热键占用 → 公共保存 → 白名单 → 环境信息
+        # 右：屏幕取色 → ACDSeeMini → 文件阅读器 → 缩放/Cookie/预下载/数据管理 → 模型 → 组件 → 资源监控
         left_wrap = QWidget()
         left_wrap.setObjectName("OverviewLeftCol")
         left_wrap.setMinimumWidth(0)
@@ -588,12 +648,89 @@ class PageOverview(QWidget):
         # 检测显卡名称（监控占位/日志用）
         self._gpu_name = _detect_gpu_name()
 
+        # 右列最上面：屏幕取色（点按钮后再点屏幕，HEX 进剪贴板，卡片保留 RGB）
+        self._color_overlay = None
+        self._picked_rgb = None
+        card_pick = make_card("CardColorPick")
+        card_pick.setMinimumWidth(0)
+        self._theme_frames.append(card_pick)
+        pick_box = QVBoxLayout(card_pick)
+        pick_box.setContentsMargins(CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
+        pick_box.setSpacing(6)
+        pick_title_row = QHBoxLayout()
+        pick_title_row.setContentsMargins(0, 0, 0, 0)
+        pick_title_row.setSpacing(8)
+        pick_title = install_card_title(card_pick, pick_title_row, "屏幕取色", gap=0)
+        self._theme_titles.append(pick_title)
+        pick_title_row.addStretch(1)
+        self._color_hk_hint = QLabel(_COLOR_HOTKEY_LABEL)
+        self._color_hk_hint.setMinimumWidth(0)
+        pick_title_row.addWidget(self._color_hk_hint, 0, Qt.AlignVCenter)
+        self.btn_color_pick = apply_mini_button(QPushButton("取色"))
+        self.btn_color_pick.setMinimumWidth(0)
+        self.btn_color_pick.clicked.connect(self._toggle_color_pick)
+        pick_title_row.addWidget(self.btn_color_pick, 0, Qt.AlignVCenter)
+        pick_box.addLayout(pick_title_row)
+
+        def _mk_swatch(oid: str, size: int = 16) -> QFrame:
+            sw = QFrame()
+            sw.setObjectName(oid)
+            sw.setAttribute(Qt.WA_StyledBackground, True)
+            sw.setFixedSize(size, size)
+            return sw
+
+        self._color_text_labels = []
+        line = QHBoxLayout()
+        line.setContentsMargins(0, 0, 0, 0)
+        line.setSpacing(4)
+        rgb_pre = QLabel("RGB(")
+        self._color_text_labels.append(rgb_pre)
+        line.addWidget(rgb_pre, 0, Qt.AlignVCenter)
+        self._color_ch_labs = []
+        self._color_ch_swatches = []
+        for i, ch in enumerate("RGB"):
+            if i:
+                comma = QLabel(",")
+                self._color_text_labels.append(comma)
+                line.addWidget(comma, 0, Qt.AlignVCenter)
+            lab = QLabel("--")
+            lab.setMinimumWidth(0)
+            sw = _mk_swatch("ColorPickCh%s" % ch)
+            self._color_ch_labs.append(lab)
+            self._color_ch_swatches.append(sw)
+            self._color_text_labels.append(lab)
+            line.addWidget(lab, 0, Qt.AlignVCenter)
+            line.addWidget(sw, 0, Qt.AlignVCenter)
+        rgb_post = QLabel(")")
+        self._color_text_labels.append(rgb_post)
+        line.addWidget(rgb_post, 0, Qt.AlignVCenter)
+        line.addStretch(1)
+        self._color_value = QLabel("尚未取色")
+        self._color_value.setMinimumWidth(0)
+        self._color_value.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._color_text_labels.append(self._color_value)
+        self._color_swatch = _mk_swatch("ColorPickSwatch", 18)
+        line.addWidget(self._color_value, 0, Qt.AlignVCenter)
+        line.addWidget(self._color_swatch, 0, Qt.AlignVCenter)
+        pick_box.addLayout(line)
+        self._style_color_pick_value()
+        self._color_hotkey_ok = False
+        self._color_hotkey_filter = None
+        right_col.addWidget(card_pick, 0, Qt.AlignTop)
+        QTimer.singleShot(0, self._bind_color_hotkey)
+
         # 设置 + 白名单/组件/热键 都进整页两列；环境/资源挂各列底部
         self.settings_section = SettingsSection(self)
-        self.settings_section.install_into(left_col, right_col)
-
         from pages.page_about import PageAbout
         self.about_section = PageAbout(embedded=True)
+        # 公共保存：从设置右栏挪到左栏热键占用下方
+        try:
+            self.about_section.attach_public_save_card(
+                self.settings_section.take_public_save_card()
+            )
+        except Exception:
+            pass
+        self.settings_section.install_into(left_col, right_col)
         self.about_section.install_into(left_col, right_col)
 
         left_col.addWidget(card_env, 0, Qt.AlignTop)
@@ -609,12 +746,165 @@ class PageOverview(QWidget):
 
     def shutdown(self):
         """主窗口关窗：停资源监控定时器。"""
+        ov = getattr(self, "_color_overlay", None)
+        if ov is not None:
+            try:
+                ov.cancel()
+            except Exception:
+                pass
+            self._color_overlay = None
+        try:
+            self._unbind_color_hotkey()
+        except Exception:
+            log.exception("系统总览关窗解绑取色热键失败")
         t = getattr(self, "timer", None)
         if t is not None:
             try:
                 t.stop()
             except Exception:
                 pass
+
+    def _paint_swatch(self, swatch: QFrame, fill: str, border: str):
+        if swatch is None:
+            return
+        oid = swatch.objectName() or "ColorPickSwatch"
+        swatch.setStyleSheet(
+            f"QFrame#{oid}{{background:{fill};border:1px solid {border};"
+            f"border-radius:3px;}}"
+        )
+
+    def _style_color_pick_value(self):
+        swatch = getattr(self, "_color_swatch", None)
+        lab = getattr(self, "_color_value", None)
+        if swatch is None or lab is None:
+            return
+        rgb = getattr(self, "_picked_rgb", None)
+        empty = "#4a5575" if theme.is_dark else "#cbd5e1"
+        border = "#000000" if (rgb is not None and theme.is_dark) else (
+            "#94a3b8" if rgb is not None else tk("border")
+        )
+        if rgb is None:
+            fill = empty
+            ch_fills = (empty, empty, empty)
+            ch_text = ("--", "--", "--")
+        else:
+            r, g, b = rgb
+            fill = "rgb(%d,%d,%d)" % rgb
+            ch_fills = ("rgb(%d,0,0)" % r, "rgb(0,%d,0)" % g, "rgb(0,0,%d)" % b)
+            ch_text = (str(r), str(g), str(b))
+        self._paint_swatch(swatch, fill, border)
+        for i, ch_sw in enumerate(getattr(self, "_color_ch_swatches", []) or ()):
+            self._paint_swatch(ch_sw, ch_fills[i], border)
+        for i, ch_lab in enumerate(getattr(self, "_color_ch_labs", []) or ()):
+            ch_lab.setText(ch_text[i])
+        qss = (
+            f"background:transparent; color:{content_secondary_color()}; "
+            f"font-size:{OVERVIEW_FONT_PX}px;"
+        )
+        for item in getattr(self, "_color_text_labels", None) or (lab,):
+            item.setStyleSheet(qss)
+        hint = getattr(self, "_color_hk_hint", None)
+        if hint is not None:
+            hint.setStyleSheet(
+                f"background:transparent; color:{tk('text_mut')}; "
+                f"font-size:12px;"
+            )
+
+    def _toggle_color_pick(self):
+        ov = getattr(self, "_color_overlay", None)
+        if ov is not None:
+            try:
+                ov.cancel()
+            except Exception:
+                pass
+            return
+        from utils.color_pick import ColorPickOverlay
+        self.btn_color_pick.setText("取消")
+        try:
+            self._color_overlay = ColorPickOverlay(
+                self._on_color_picked, self._on_color_pick_cancel
+            )
+        except Exception:
+            self._on_color_overlay_gone()
+            try:
+                from utils.cursor_toast import show_cursor_toast
+                show_cursor_toast("取色失败", accent="err")
+            except Exception:
+                pass
+
+    def _on_color_overlay_gone(self):
+        self._color_overlay = None
+        btn = getattr(self, "btn_color_pick", None)
+        if btn is not None:
+            btn.setText("取色")
+
+    def _on_color_pick_cancel(self):
+        self._on_color_overlay_gone()
+
+    def _on_color_picked(self, r, g, b):
+        self._on_color_overlay_gone()
+        self._picked_rgb = (int(r), int(g), int(b))
+        from utils.color_pick import format_clip_hex, format_hex_hash
+        clip = format_clip_hex(*self._picked_rgb)
+        shown = format_hex_hash(*self._picked_rgb)
+        lab = getattr(self, "_color_value", None)
+        if lab is not None:
+            lab.setText(shown)
+        self._style_color_pick_value()
+        try:
+            QApplication.clipboard().setText(clip)
+        except Exception:
+            pass
+        try:
+            from utils.cursor_toast import show_cursor_toast
+            show_cursor_toast(shown, "已复制", accent="ok")
+        except Exception:
+            pass
+
+    def _bind_color_hotkey(self):
+        """Ctrl+2 全局取色，其它窗口前台也能用。"""
+        self._unbind_color_hotkey()
+        if not sys.platform.startswith("win"):
+            return
+        try:
+            ok = bool(ctypes.windll.user32.RegisterHotKey(
+                None, int(_COLOR_HOTKEY_ID),
+                int(_MOD_CONTROL | _MOD_NOREPEAT), int(_VK_2),
+            ))
+        except Exception:
+            log.exception("注册取色热键失败")
+            return
+        if not ok:
+            log.info("取色热键 Ctrl+2 未挂上，可能被其它程序占用")
+            return
+        if self._color_hotkey_filter is None:
+            self._color_hotkey_filter = _ColorHotkeyFilter(
+                self._toggle_color_pick, _COLOR_HOTKEY_ID
+            )
+            app = QCoreApplication.instance()
+            if app is not None:
+                app.installNativeEventFilter(self._color_hotkey_filter)
+        self._color_hotkey_ok = True
+
+    def _unbind_color_hotkey(self):
+        try:
+            ctypes.windll.user32.UnregisterHotKey(None, int(_COLOR_HOTKEY_ID))
+        except Exception:
+            pass
+        self._color_hotkey_ok = False
+
+    def hotkey_inventory(self):
+        st = "ok" if getattr(self, "_color_hotkey_ok", False) else "busy"
+        return [{
+            "group": "系统总览",
+            "name": "屏幕取色",
+            "key": _COLOR_HOTKEY_LABEL,
+            "state": st,
+        }]
+
+    def rebind_hotkeys(self):
+        self._bind_color_hotkey()
+        return [("屏幕取色", _COLOR_HOTKEY_LABEL, bool(getattr(self, "_color_hotkey_ok", False)))]
 
     def _apply_theme(self, *_args):
         """主题切换（深色/浅色）时，重新刷新本页这几张"内联样式"卡片的配色。"""
@@ -646,12 +936,13 @@ class PageOverview(QWidget):
                 f"background:transparent; color:{secondary}; "
                 f"font-size:{OVERVIEW_FONT_PX}px;"
             )
-        # 设置卡（界面缩放 / Cookie设置 / 公共保存 / 数据管理）主题重刷
+        # 设置卡（界面缩放 / Cookie设置 / 预下载 / 数据管理；公共保存在左栏）主题重刷
         if getattr(self, "settings_section", None) is not None:
             self.settings_section.restyle_theme()
         about = getattr(self, "about_section", None)
         if about is not None and hasattr(about, "restyle_theme"):
             about.restyle_theme()
+        self._style_color_pick_value()
 
     # ---------------- internal ----------------
     def _env_fields(self):
@@ -709,6 +1000,13 @@ class PageOverview(QWidget):
             row._place()
         except Exception:
             pass
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        # 仅刷新清单；不在 show 时杀进程/重注册（启动会极慢）
+        about = getattr(self, "about_section", None)
+        if about is not None and hasattr(about, "_refresh_hotkey_card"):
+            QTimer.singleShot(0, about._refresh_hotkey_card)
 
     def on_enter(self, cookie_alert: bool = False):
         about = getattr(self, "about_section", None)

@@ -10,7 +10,7 @@ from PyQt5.QtGui import (
     QIcon, QPixmap, QPainter, QColor, QPen, QBrush, QPainterPath, QLinearGradient,
 )
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QTabWidget, QLabel, QFileDialog,
+    QWidget, QVBoxLayout, QTabWidget, QTabBar, QLabel, QFileDialog,
     QDialog, QDialogButtonBox, QTextEdit, QApplication, QSizePolicy, QFrame,
 )
 
@@ -485,6 +485,7 @@ class PageVideo(QWidget):
         self._pre_dl_badge_host = self._install_pre_dl_tab_badges()
         self._refresh_platform_tabs()
         self.tabs.currentChanged.connect(lambda _i: self._refresh_platform_tabs())
+        self._install_other_record_skip_slot()
 
         # 子页解析/下载进度 → 统一侧栏线（不在哪个 Tab 都能看到）
         try:
@@ -760,6 +761,45 @@ class PageVideo(QWidget):
         host = getattr(self, "_pre_dl_badge_host", None)
         if host is not None:
             host.reposition()
+        if bar is not None:
+            place = getattr(bar, "_place_left_buttons", None)
+            if callable(place):
+                place()
+
+    def _install_other_record_skip_slot(self):
+        """其它视频页签左侧放正方形「防」，和页底防重开关是同一个状态。"""
+        from ui_main import SidePreDlSlot
+        from pages.page_other_video import _RECORD_SKIP_TIP, _RECORD_SKIP_YELLOW
+
+        page = getattr(self, "page_other", None)
+        bar = self.tabs.tabBar() if self.tabs is not None else None
+        if page is None or bar is None:
+            return
+        index = self.tabs.indexOf(page)
+        if index < 0:
+            return
+        try:
+            sw = SidePreDlSlot(parent=bar, glyph="防", on_color=_RECORD_SKIP_YELLOW)
+            on = True
+            if hasattr(page, "_record_skip_enabled"):
+                on = bool(page._record_skip_enabled())
+            sw.setChecked(on)
+            sw.setToolTip(_RECORD_SKIP_TIP)
+            sw.clicked.connect(lambda _=False, src=sw: page._on_record_skip_toggled(src))
+            page.sw_record_skip = sw
+            bar.setTabButton(index, QTabBar.LeftSide, sw)
+            sw.bind_owner_tab(bar, index)
+        except Exception:
+            log.exception("安装其它视频页签防重开关失败")
+            page.sw_record_skip = None
+            return
+        refresh = getattr(bar, "_refresh_tab_layout", None)
+        if callable(refresh):
+            QTimer.singleShot(0, refresh)
+        else:
+            place = getattr(bar, "_place_left_buttons", None)
+            if callable(place):
+                QTimer.singleShot(0, place)
 
     # ── 跨平台交接：粘错平台链接时自动切 Tab 并续跑 ──
 
@@ -777,7 +817,7 @@ class PageVideo(QWidget):
                 rec_dir = base
         except Exception:
             rec_dir = os.path.normpath(
-                os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data")
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "userdata")
             )
             try:
                 os.makedirs(rec_dir, exist_ok=True)

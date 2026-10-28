@@ -18,7 +18,7 @@ def _ensure_dir() -> str:
     except Exception:
         d = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "data",
+            "userdata",
         )
         os.makedirs(d, exist_ok=True)
         return d

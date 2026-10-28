@@ -454,7 +454,7 @@ QScrollBar::add-page, QScrollBar::sub-page { background: none; }
   /* 侧栏行高：与 ui_main._apply_side_nav_metrics 的 setFixedHeight 同步，勿单独改动 */
   min-height: 26px;
   max-height: 26px;
-  margin: 4px;                   /* 悬停/选中框四边各收 4px */
+  margin: 1px 4px;               /* 上下 1px：按钮间距 4px；左右仍收 4px */
   background: transparent;
   border: 1px solid transparent; /* 始终占 1px，避免显隐位移 */
   border-radius: 10px;

@@ -56,6 +56,7 @@ _PAGE_ATTR = {
     "gallery": "page_gallery",
     "paste": "page_paste",
     "img_proc": "page_img_proc",
+    "pixel_board": "page_pixel_board",
     "voice": "page_voice",
     "auk": "page_auk",
     "text_edit": "page_text_editor",
@@ -64,11 +65,13 @@ _PAGE_ATTR = {
     "gamemeet": "page_gamemeet",
     "prompt": "page_prompt",
     "points": "page_points",
+    "sub_usage": "page_sub_usage",
     "shot": "page_shot",
     "region_rec": "page_region_rec",
     "ratio": "page_ratio",
     "dir_link": "page_dir_link",
     "tz_fx": "page_tz_fx",
+    "ollama": "page_ollama",
 }
 
 
