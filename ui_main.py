@@ -2881,7 +2881,7 @@ class MainWindow(QWidget):
 
     @staticmethod
     def _classify_other_whitelist_url(url: str) -> str:
-        """其它视频白名单命中后，仍入队到即梦 / LibTV / XVideos / Pornhub。汽水旧条目也认。"""
+        """其它视频白名单命中后，仍入队到即梦 / LibTV / XVideos / Pornhub / MissAV。汽水旧条目也认。"""
         plat = ""
         try:
             from pages.page_other_video import detect_other_platform
@@ -2902,6 +2902,12 @@ class MainWindow(QWidget):
             return "xvideos"
         if "pornhub.com" in low:
             return "pornhub"
+        try:
+            from utils.missav import looks_like_missav
+            if looks_like_missav(low):
+                return "missav"
+        except Exception:
+            log.exception("MissAV 链接识别失败")
         return ""
 
     def _process_global_clipboard_auto(self):
@@ -3062,6 +3068,7 @@ class MainWindow(QWidget):
                             + self._pre_dl_count("liblib")
                             + self._pre_dl_count("xvideos")
                             + self._pre_dl_count("pornhub")
+                            + self._pre_dl_count("missav")
                         ),
                     })
                 except Exception:
@@ -3098,7 +3105,7 @@ class MainWindow(QWidget):
             return 0
         if group == "video":
             keys = ("douyin", "bilibili", "youtube", "jimeng", "liblib",
-                    "xvideos", "pornhub")
+                    "xvideos", "pornhub", "missav")
         elif group == "audio":
             keys = ("qishui",)
         elif group == "gallery":
@@ -3143,7 +3150,7 @@ class MainWindow(QWidget):
             except Exception:
                 log.exception("读取批处理剩余条数失败")
                 counts = {}
-        video_keys = ("douyin", "bilibili", "youtube", "jimeng", "liblib", "xvideos", "pornhub")
+        video_keys = ("douyin", "bilibili", "youtube", "jimeng", "liblib", "xvideos", "pornhub", "missav")
         audio_keys = ("qishui",)
         gallery_keys = ("ehentai", "pixiv", "hitomi")
         video_n = 0
@@ -3185,6 +3192,7 @@ class MainWindow(QWidget):
                     + int(counts.get("liblib") or 0)
                     + int(counts.get("xvideos") or 0)
                     + int(counts.get("pornhub") or 0)
+                    + int(counts.get("missav") or 0)
                 )
                 pv.set_batch_counts(tab_counts)
             except Exception:
@@ -3376,7 +3384,7 @@ class MainWindow(QWidget):
                 return None
             return getattr(pa, "page_qishui", None)
         if plat in ("douyin", "bilibili", "youtube", "jimeng", "liblib", "xvideos",
-                       "pornhub"):
+                       "pornhub", "missav"):
             if create:
                 self._ensure_page("video")
             pv = getattr(self, "page_douyin", None)
@@ -3390,6 +3398,7 @@ class MainWindow(QWidget):
                 "liblib": getattr(pv, "page_other", None),
                 "xvideos": getattr(pv, "page_other", None),
                 "pornhub": getattr(pv, "page_other", None),
+                "missav": getattr(pv, "page_other", None),
             }.get(plat)
         if plat in ("ehentai", "pixiv", "hitomi"):
             if create:
@@ -4030,7 +4039,7 @@ class MainWindow(QWidget):
             # 预下载静默后台开跑：不切侧栏主页、不切子 Tab（避免打断用户当前界面）
             if plat == "qishui" or plat in (
                 "douyin", "bilibili", "youtube", "jimeng", "liblib", "xvideos",
-                "pornhub",
+                "pornhub", "missav",
             ):
                 page = self._pre_dl_page_for(plat, create=True)
                 if page is None:

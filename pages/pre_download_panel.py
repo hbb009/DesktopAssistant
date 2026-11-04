@@ -62,7 +62,7 @@ except ImportError:
     FAILED_PLAT = "failed"
     SECTION_KEYS = (
         "douyin", "qishui", "bilibili", "youtube", "jimeng", "liblib",
-        "xvideos", "pornhub", "ehentai", "pixiv", "hitomi", FAILED_PLAT,
+        "xvideos", "pornhub", "missav", "ehentai", "pixiv", "hitomi", FAILED_PLAT,
     )
     if FAILED_PLAT not in PLAT_LABEL:
         PLAT_LABEL = dict(PLAT_LABEL)
@@ -305,6 +305,7 @@ _EXPORT_CARD_NAME = {
     "liblib": "LibTV",
     "xvideos": "XVideos",
     "pornhub": "Pornhub",
+    "missav": "MissAV",
     "ehentai": "e-hentai.org",
     "pixiv": "pixiv",
     "hitomi": "hitomi.la",
@@ -596,6 +597,7 @@ def open_pre_process_file_dialog(
         "liblib": "LibTV",
         "xvideos": "XVideos",
         "pornhub": "Pornhub",
+        "missav": "MissAV",
         "ehentai": "EH",
         "pixiv": "Pixiv",
         "hitomi": "hitomi",

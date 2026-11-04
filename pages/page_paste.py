@@ -172,6 +172,8 @@ except Exception:
         "jimeng": "即梦",
         "liblib": "LibTV",
         "xvideos": "XVideos",
+        "pornhub": "Pornhub",
+        "missav": "MissAV",
         "ehentai": "e-hentai",
         "pixiv": "Pixiv",
         "hitomi": "hitomi.la",

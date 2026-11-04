@@ -1,6 +1,6 @@
 # pages/page_text_editor.py
 # 文本编辑 —— 独立整理排版区（语音编辑分离出来的「编辑整理」部分）
-# 功能：主编辑区 + 一键整理/加序号/加符号前缀 + 前缀符号历史卡片（拖拽排序）
+# 功能：主编辑区 + 一键整理/智能换行/加序号/加符号前缀 + 前缀符号历史卡片（拖拽排序）
 
 import os
 import re
@@ -63,6 +63,236 @@ def _pfx_contrast_fg(bg: str) -> str:
         return "#111111" if lum > 150 else "#ffffff"
     except Exception:
         return "#ffffff"
+
+
+# 句末才断行。逗号、顿号不断。「.」要躲开小数、缩写、序号和网址。
+_SENT_END = set("。！？!?")
+_CLOSERS = set("\"'”’）)】》」』]}")
+_ABBREV = {
+    "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc",
+    "ie", "eg", "am", "pm", "inc", "ltd", "fig", "vol", "pp", "ed", "al",
+}
+_NO_SPACE = set("，。！？、；：）】》」』”’\"'（(【《「『［[．…,.!?;:")
+_LIST_START = re.compile(
+    r"^(?:[-*•·]|\d{1,3}[.、．)]|[（(]\d{1,3}[）)]|[一二三四五六七八九十]{1,3}[、．.])"
+)
+
+
+def _is_cjk_letter(ch: str) -> bool:
+    o = ord(ch)
+    return (
+        0x4E00 <= o <= 0x9FFF
+        or 0x3400 <= o <= 0x4DBF
+        or 0xF900 <= o <= 0xFAFF
+        or 0x3040 <= o <= 0x30FF
+        or 0xAC00 <= o <= 0xD7AF
+    )
+
+
+def _ascii_word_before(text: str, i: int) -> str:
+    j = i - 1
+    while j >= 0 and text[j].isascii() and text[j].isalpha():
+        j -= 1
+    return text[j + 1:i]
+
+
+def _is_list_marker_period(text: str, i: int) -> bool:
+    """行首的 1. / 12． 是序号，不是句号。"""
+    j = i - 1
+    while j >= 0 and text[j].isdigit():
+        j -= 1
+    if j == i - 1:
+        return False
+    if i - j - 1 > 3:
+        return False
+    k = j
+    while k >= 0 and (text[k].isspace() or text[k] in "(（"):
+        k -= 1
+    return k < 0
+
+
+def _period_ends_sentence(text: str, i: int) -> bool:
+    if _is_list_marker_period(text, i):
+        return False
+    prev = text[i - 1] if i else ""
+    nxt = text[i + 1] if i + 1 < len(text) else ""
+    if prev.isdigit() and nxt.isdigit():
+        return False
+    word = _ascii_word_before(text, i)
+    if word and (len(word) == 1 or word.lower() in _ABBREV):
+        return False
+    if nxt and nxt.isascii() and nxt.isalnum():
+        return False
+    return True
+
+
+def _sentence_end_span(text: str, i: int) -> int:
+    """text[i] 若是句末，返回断行位置（含句末后的引号括号）；否则 0。"""
+    n = len(text)
+    ch = text[i]
+    end = 0
+    if ch in _SENT_END:
+        j = i + 1
+        while j < n and text[j] in _SENT_END:
+            j += 1
+        end = j
+    elif ch == "…":
+        j = i + 1
+        while j < n and text[j] == "…":
+            j += 1
+        end = j
+    elif ch == "．":
+        if not _is_list_marker_period(text, i):
+            end = i + 1
+    elif ch == ".":
+        if i + 2 < n and text[i:i + 3] == "...":
+            j = i
+            while j < n and text[j] == ".":
+                j += 1
+            if j - i >= 3:
+                end = j
+        elif _period_ends_sentence(text, i):
+            end = i + 1
+            k = end
+            while k < n and text[k] in _CLOSERS:
+                k += 1
+            t = k
+            while t < n and text[t] in " \t":
+                t += 1
+            if t < n and text[t].isascii() and text[t].islower():
+                end = 0
+    if end == 0:
+        return 0
+    while end < n and text[end] in _CLOSERS:
+        end += 1
+    return end
+
+
+def _ends_with_sentence(text: str) -> bool:
+    s = text.rstrip()
+    if not s:
+        return False
+    i = len(s) - 1
+    while i >= 0 and s[i] in _CLOSERS:
+        i -= 1
+    if i < 0:
+        return False
+    if s[i] in _SENT_END or s[i] == "…":
+        return True
+    if s[i] == "．":
+        return not _is_list_marker_period(s, i)
+    if s[i] == ".":
+        j = i
+        while j >= 0 and s[j] == ".":
+            j -= 1
+        if i - j >= 3:
+            return True
+        return _period_ends_sentence(s, i) and _sentence_end_span(s, i) == len(s)
+    return False
+
+
+def _glue(prev: str, nxt: str) -> str:
+    a = prev[-1]
+    b = nxt[0]
+    if _is_cjk_letter(a) or _is_cjk_letter(b):
+        return ""
+    if a in _NO_SPACE or b in _NO_SPACE:
+        return ""
+    if a == "-" and b.isascii() and b.islower():
+        return ""
+    return " "
+
+
+def _concat_wrapped(prev: str, nxt: str) -> str:
+    left = prev.rstrip()
+    right = nxt.lstrip()
+    if not left:
+        return right
+    if not right:
+        return left
+    return left + _glue(left, right) + right
+
+
+def _should_join_wrapped(prev: str, nxt: str) -> bool:
+    """只接硬换行：逗号收尾、英文词被拆开、或较长的中文行。短行和清单留下。"""
+    if _ends_with_sentence(prev) or _LIST_START.match(nxt):
+        return False
+    p = prev.rstrip()
+    n = nxt.lstrip()
+    if not p or not n:
+        return False
+    if n[0] in "，、。！？!?：:；;,.)）】》」』”’\"'":
+        return True
+    if p[-1] in "，、：:、,（(““‘「『【《":
+        return True
+    if p[-1] == "-" and n[0].isascii() and n[0].islower():
+        return True
+    if p[-1].isascii() and p[-1].isalpha() and n[0].isascii() and n[0].islower():
+        return True
+    if _is_cjk_letter(p[-1]) and len(p) >= 16:
+        return True
+    return False
+
+
+def _split_sentences(text: str) -> list:
+    out = []
+    buf = []
+    i = 0
+    n = len(text)
+    while i < n:
+        span = _sentence_end_span(text, i)
+        buf.append(text[i])
+        if span:
+            i += 1
+            while i < span:
+                buf.append(text[i])
+                i += 1
+            piece = "".join(buf).strip()
+            buf = []
+            if piece:
+                out.append(piece)
+            while i < n and text[i] in " \t":
+                i += 1
+            continue
+        i += 1
+    tail = "".join(buf).strip()
+    if tail:
+        out.append(tail)
+    return out
+
+
+def _join_wrapped_lines(lines: list) -> str:
+    kept = [ln.strip() for ln in lines if ln.strip()]
+    if not kept:
+        return ""
+    merged = [kept[0]]
+    for ln in kept[1:]:
+        if _should_join_wrapped(merged[-1], ln):
+            merged[-1] = _concat_wrapped(merged[-1], ln)
+        else:
+            merged.append(ln)
+    sentences = []
+    for piece in merged:
+        sentences.extend(_split_sentences(piece))
+    return "\n".join(sentences)
+
+
+def smart_line_breaks(raw: str) -> str:
+    """空行仍隔开段落。段落里的硬换行先接上，再按句末拆成一行一句。"""
+    if not raw or not str(raw).strip():
+        return ""
+    norm = (
+        str(raw).replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .replace("\u2028", "\n")
+        .replace("\u2029", "\n")
+    )
+    paras = []
+    for block in re.split(r"\n[ \t]*\n", norm):
+        joined = _join_wrapped_lines(block.split("\n"))
+        if joined:
+            paras.append(joined)
+    return "\n\n".join(paras)
 
 
 class _PrefixCard(QWidget):
@@ -593,8 +823,15 @@ class PageTextEditor(QWidget):
         self.btn_del_blank.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.btn_del_blank.setCursor(Qt.PointingHandCursor)
         self.btn_del_blank.clicked.connect(self._remove_blank_lines)
+        self.btn_smart_wrap = apply_medium_button(QPushButton("智能换行"))
+        self.btn_smart_wrap.setMinimumHeight(MEDIUM_BUTTON_H)
+        self.btn_smart_wrap.setMinimumWidth(0)
+        self.btn_smart_wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.btn_smart_wrap.setCursor(Qt.PointingHandCursor)
+        self.btn_smart_wrap.clicked.connect(self._smart_wrap_lines)
         row_tools.addWidget(self.btn_one_para, 1)
         row_tools.addWidget(self.btn_del_blank, 1)
+        row_tools.addWidget(self.btn_smart_wrap, 1)
         cve_r.addLayout(row_tools)
         cve_r.addWidget(self._make_hsep())
 
@@ -981,6 +1218,19 @@ class PageTextEditor(QWidget):
             return
         kept = [ln for ln in lines if ln.strip()]
         self._mutate_editor("\n".join(kept), "已删除空行")
+
+    def _smart_wrap_lines(self):
+        """按句末标点断行。段落内的硬换行先接上，空行仍隔开段落。"""
+        raw = self.editor.toPlainText()
+        if not (raw or "").strip():
+            self._log("编辑区为空，无需智能换行")
+            return
+        new = smart_line_breaks(raw)
+        if new == raw:
+            self._log("编辑区已按句换行，无需再处理")
+            return
+        n = sum(1 for ln in new.split("\n") if ln.strip())
+        self._mutate_editor(new, f"已智能换行（共 {n} 行）")
 
     @staticmethod
     def _index_to_letters(i: int) -> str:

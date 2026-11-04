@@ -1,13 +1,14 @@
 """其它视频已下记录。
 
 和 gallery_eh / gallery_hitomi 一样：一行一条，命中就跳过。
-分类和预下载一样，只留四个平台段：# 即梦 / # LibTV / # XVideos / # Pornhub。
+分类和预下载一样，只留五个平台段：# 即梦 / # LibTV / # XVideos / # Pornhub / # MissAV。
 每段里面再按类型和画质分开，只跳过已经下过的那一档。
 
   即梦     视频（原片 / 1080p / 720p / 480p / 360p …）
   LibTV    成片
   XVideos  HLS、直链（MP4 高 / MP4 低）
   Pornhub  HLS
+  MissAV   HLS
 
 文件：records/other_video.txt
 普通记录在上，----- 下面是带 _2 / (2) 的另存名（不参与跳过）。
@@ -24,8 +25,8 @@ log = get_logger(__name__)
 
 RECORD_KEY = "other_video"
 
-# 和预下载里这四段的标题一致。本页之后只认这四个。
-PLAT_ORDER = ("即梦", "LibTV", "XVideos", "Pornhub")
+# 和预下载里这五段的标题一致。本页之后只认这五个。
+PLAT_ORDER = ("即梦", "LibTV", "XVideos", "Pornhub", "MissAV")
 _PLAT_ORDER = PLAT_ORDER
 _KIND_ORDER = ("视频", "成片", "HLS", "直链", "未分类")
 _QUAL_ORDER = (
@@ -39,6 +40,7 @@ _PLAT_TAG = {
     "liblib": "LibTV",
     "xvideos": "XVideos",
     "pornhub": "Pornhub",
+    "missav": "MissAV",
 }
 _PLAT_ALIAS = {name.lower(): name for name in PLAT_ORDER}
 _PLAT_ALIAS.update({
@@ -76,7 +78,7 @@ def is_record_sep(line: str) -> bool:
 
 
 def _normalize_plat(text: str) -> str:
-    """# 即梦 / 【LibTV】 / jimeng → 四个平台名之一。对不上返回空。"""
+    """# 即梦 / 【LibTV】 / jimeng → 五个平台名之一。对不上返回空。"""
     s = (text or "").strip()
     if s.startswith("#"):
         s = s.lstrip("#").strip()
@@ -90,7 +92,7 @@ def _normalize_plat(text: str) -> str:
 def classify_label(platform_key: str, label: str) -> tuple:
     """解析得到的平台键 + 画质卡标题 → (平台, 类型, 画质)。
 
-    不是即梦 / LibTV / XVideos / Pornhub 时返回空平台，调用方不要写入记录。
+    不是即梦 / LibTV / XVideos / Pornhub / MissAV 时返回空平台，调用方不要写入记录。
     """
     key = (platform_key or "").strip().lower()
     plat = _PLAT_TAG.get(key, "")
@@ -107,7 +109,7 @@ def classify_label(platform_key: str, label: str) -> tuple:
         if "hls" in low:
             return plat, "HLS", quality
         return plat, "视频", quality
-    if key == "pornhub":
+    if key in ("pornhub", "missav"):
         if "直链" in raw or quality.upper().startswith("MP4"):
             return plat, "直链", quality
         return plat, "HLS", quality
@@ -128,7 +130,7 @@ def _quality_from_body(body: str) -> str:
 def _kind_for_tag(tag: str, quality: str) -> str:
     if tag == "LibTV":
         return "成片"
-    if tag in ("XVideos", "Pornhub"):
+    if tag in ("XVideos", "Pornhub", "MissAV"):
         if (quality or "").upper().startswith("MP4"):
             return "直链"
         if quality and quality != "未标明":
@@ -168,7 +170,7 @@ def classify_filename(name: str):
     认两类：
       · [桌面助手][即梦]作者_标题_原片.mp4
       · 旧文件名 作者_标题_原片.mp4 / 标题_成片.mp4
-    对不上这四个平台时返回 None。
+    对不上这五个平台时返回 None。
     """
     base = os.path.basename((name or "").strip())
     if not base:
@@ -255,8 +257,8 @@ def _take_header(s: str, plat: str, kind: str, qual: str):
 def parse_entries(text: str) -> list:
     """编辑框 / 记录文件 → 条目。同名只留一条；普通记录优先于另存名。
 
-    分段和预下载一样：# 即梦 / # LibTV / # XVideos / # Pornhub。
-    旧的 [即梦 · 视频 · 原片] 也能读。不在这四个平台里的行丢掉。
+    分段和预下载一样：# 即梦 / # LibTV / # XVideos / # Pornhub / # MissAV。
+    旧的 [即梦 · 视频 · 原片] 也能读。不在这五个平台里的行丢掉。
     """
     suspect_zone = False
     plat = kind = qual = ""
@@ -334,9 +336,9 @@ def _section_header(kind: str, qual: str) -> str:
 
 
 def format_entries(entries) -> str:
-    """按预下载的四个平台段写。每段里再按类型 · 画质分组。
+    """按预下载的五个平台段写。每段里再按类型 · 画质分组。
 
-    正式记录始终带上四个 # 标题。另存名放在 ----- 下面，只写有内容的段。
+    正式记录始终带上五个 # 标题。另存名放在 ----- 下面，只写有内容的段。
     """
     normal = [
         e for e in (entries or [])
@@ -569,7 +571,7 @@ def add_records(recs, path: str = None) -> list:
 
 
 def scan_dir(folder: str, path: str = None) -> list:
-    """扫描保存目录，只把即梦 / LibTV / XVideos / Pornhub 并入记录。
+    """扫描保存目录，只把即梦 / LibTV / XVideos / Pornhub / MissAV 并入记录。
 
     不要求必须带 [桌面助手] 前缀。
     旧的「作者_标题_原片.mp4」「标题_成片.mp4」靠末尾画质归到即梦 / LibTV。

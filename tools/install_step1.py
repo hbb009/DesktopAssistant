@@ -66,7 +66,7 @@ def main() -> int:
     print("检测请用：软件内「检测」或  python tools/setup_components.py --check-deep")
     print()
     print("会装：requirements / ffmpeg / Deno / Git / models-pip / torch / paddle / paddleocr / CosyVoice 源码与依赖")
-    print("不会下载大权重（在 2安装-模型.bat）")
+    print("不会下载大权重（高配用 B安装.bat）")
     print("-" * 60)
     pause("按回车开始安装...")
 
@@ -127,7 +127,7 @@ def main() -> int:
     ck = run([PY, str(ROOT / "tools" / "setup_components.py"), "--check"])
     print()
     print("说明：上面「截图 OCR 文件就绪」不等于已做 VL 真测。")
-    print("下一步：2安装-模型.bat 下载权重；启动后在软件里点「检测」做真测。")
+    print("下一步：要模型请运行 B安装.bat；启动用 3启动-程序.bat。启动后在软件里点「检测」做真测。")
     print("若装后软件 OCR 仍失败：")
     print("  python tools/diagnose_dll.py ocr")
     print("  python tools/setup_components.py --only paddle-cpu --yes")

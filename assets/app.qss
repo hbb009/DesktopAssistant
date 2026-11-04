@@ -678,6 +678,13 @@ QListWidget#FastSaveList::item:selected:!active {
 QScrollBar:vertical { width: 6px; }
 QScrollBar:horizontal { height: 10px; }
 QScrollBar::handle { min-height: 24px; }
+/* ollama 对话区竖条：在全站 6px 上加宽 4px，圆头跟着变 */
+QTextBrowser#OllamaChatView QScrollBar:vertical {
+  width: 10px;
+}
+QTextBrowser#OllamaChatView QScrollBar::handle:vertical {
+  border-radius: 5px;
+}
 
 /* ===== Screenshot 页面（page_screenshot.py，v9.9.5 标准改造）===== */
 /* 5 张卡片统一外观：背景/边框/圆角，标题已内嵌（install_card_title），margin-top 收为 0 */

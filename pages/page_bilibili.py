@@ -21,6 +21,7 @@ from PyQt5.QtWidgets import (
 
 from pages.page_douyin import MediaCard, MediaItem, _ElideLabel, DouyinProgressLine
 from utils.xvideos import looks_like_xvideos as _looks_like_xvideos
+from utils.missav import looks_like_missav as _looks_like_missav
 
 from styles.style_all import (
     theme,
@@ -2696,11 +2697,11 @@ class PageBilibili(QWidget):
             return
 
 
-        # XVideos 链接 → 「其它视频」
-        if probe and _looks_like_xvideos(probe):
+        # XVideos / MissAV 链接 → 「其它视频」
+        if probe and (_looks_like_xvideos(probe) or _looks_like_missav(probe)):
             handoff = text or raw_clip
             self._log(
-                "检测到 XVideos 链接，已自动切换到「其它视频」分页并开始解析…",
+                "检测到其它视频链接，已自动切换到「其它视频」分页并开始解析…",
                 "ok",
             )
             pv = self._find_page_video()

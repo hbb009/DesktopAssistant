@@ -459,8 +459,18 @@ class Viewer:
         self._build_title()
         # 状态栏必须先于画布 pack。画布默认请求大约 265 高，又带 expand，
         # 排在后面时矮窗口会把底栏挤成 1 像素，看起来像消失。
-        self.bar = tk.Label(root, bg=BG, fg='#888888', font=('Microsoft YaHei UI', 9), anchor='w')
+        self.bar = tk.Frame(root, bg=BG, bd=0, highlightthickness=0)
         self.bar.pack(fill='x', side='bottom')
+        self.bar_text = tk.Label(
+            self.bar, bg=BG, fg='#888888', font=('Microsoft YaHei UI', 9),
+            anchor='w', bd=0, padx=0, pady=0,
+        )
+        self.bar_text.pack(side='left')
+        self.bar_fit = tk.Label(
+            self.bar, bg=BG, fg='#22c55e', font=('Microsoft YaHei UI', 9),
+            anchor='w', bd=0, padx=0, pady=0,
+        )
+        self.bar_fit.pack(side='left')
         self.cv = tk.Canvas(root, bg=BG, highlightthickness=0, width=1, height=1)
         self.cv.pack(fill='both', expand=True)
         self.toast = tk.Label(
@@ -484,7 +494,7 @@ class Viewer:
         self.cv.bind('<Configure>', self._on_canvas_configure)
         root.bind('<Configure>', self._on_root_configure)
         root.protocol('WM_DELETE_WINDOW', self.close)
-        for w in (root, self.cv, self.title_bar, self.bar):
+        for w in (root, self.cv, self.title_bar, self.bar, self.bar_text, self.bar_fit):
             w.bind('<ButtonPress-1>', self._press, add='+')
             w.bind('<B1-Motion>', self._motion, add='+')
             w.bind('<ButtonRelease-1>', self._release, add='+')
@@ -1022,8 +1032,10 @@ class Viewer:
                 except Exception: pass
         threading.Thread(target=run, daemon=True).start()
 
-    def _set_status(self, text):
-        self.bar.config(text=text)
+    def _set_status(self, text, fit=False):
+        self.bar_text.config(text=text)
+        # 只有「适应」这两个字用绿色，前面的序号和比例仍是灰色。
+        self.bar_fit.config(text='  适应' if fit else '')
 
     def _on_canvas_configure(self, e=None):
         if self._suppress_show:
@@ -1073,8 +1085,11 @@ class Viewer:
         self.tkimg = ImageTk.PhotoImage(disp)
         self.cv.delete('all')
         self._img_id = self.cv.create_image(w / 2 + self._ox, h / 2 + self._oy, image=self.tkimg)
-        tag = '  适应' if self.fit_mode else ''
-        self._set_status(f'{self.idx+1}/{len(self.files)}  {im.width}×{im.height}  {int(round(s*100))}%{tag}')
+        # 按实际模式显示：滚轮手动缩放后不再标「适应」。
+        self._set_status(
+            f'{self.idx+1}/{len(self.files)}  {im.width}×{im.height}  {int(round(s*100))}%',
+            fit=self.scale_mode == 'fit',
+        )
 
     def _has_transparency(self, path, im):
         flag = self._alpha.get(path)
@@ -1213,7 +1228,11 @@ class Viewer:
         if chrome < TITLE_H:
             chrome = TITLE_H + 22
         work_x, work_y, work_w, work_h = self._work_area()
-        shown = float(self._shown_scale or 1.0)
+        # 相邻两张适应后窗口尺寸相同时 _hug_fit 会跳过，这里不能沿用上一张的 _shown_scale，
+        # 否则窗口按旧比例缩小、图却按新比例画，只能看到局部。按当前这张图和当前模式重算。
+        cw, ch = max(self.cv.winfo_width(), 1), max(self.cv.winfo_height(), 1)
+        shown = display_scale(im.width, im.height, cw, ch, self.scale_mode, self.zoom,
+                              work_w, max(1, work_h - chrome))
         new_w, new_h, new_s = hug_window_geometry(
             im.width, im.height, shown, chrome, work_w, work_h)
         cur_w, cur_h = self.root.winfo_width(), self.root.winfo_height()

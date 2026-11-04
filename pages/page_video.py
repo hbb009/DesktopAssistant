@@ -414,6 +414,8 @@ class PageVideo(QWidget):
             "liblib": (False, 0, ""),
             "qishui": (False, 0, ""),
             "xvideos": (False, 0, ""),
+            "pornhub": (False, 0, ""),
+            "missav": (False, 0, ""),
             "other": (False, 0, ""),
         }
 
@@ -625,6 +627,8 @@ class PageVideo(QWidget):
                 "jimeng": getattr(self, "page_other", None),
                 "liblib": getattr(self, "page_other", None),
                 "xvideos": getattr(self, "page_other", None),
+                "pornhub": getattr(self, "page_other", None),
+                "missav": getattr(self, "page_other", None),
                 "other": getattr(self, "page_other", None),
             }.get(source)
             ok = bool(p is not None and getattr(p, "_last_download_ok", False))
@@ -1001,6 +1005,12 @@ class PageVideo(QWidget):
             return "liblib"
         if re.search(r"xvideos\d*\.com/video", low):
             return "xvideos"
+        try:
+            from utils.missav import looks_like_missav
+            if looks_like_missav(url):
+                return "missav"
+        except Exception:
+            pass
         if ("bilibili.com" in low or "b23.tv" in low or "bili2233.cn" in low
                 or bool(re.search(r"\bBV[0-9A-Za-z]{10}\b|\bav\d+\b", url or "", re.I))):
             return "bilibili"
@@ -1119,7 +1129,7 @@ class PageVideo(QWidget):
         # 开跑前清目标页成功标志，避免混链时读到上一次的成功结果
         self._batch_reset_ok_flag(platform)
         # 视频三平台：清其它源残留 active，避免侧栏逻辑干扰（批处理续跑已不依赖此）
-        if platform in ("douyin", "bilibili", "youtube", "jimeng", "liblib", "xvideos"):
+        if platform in ("douyin", "bilibili", "youtube", "jimeng", "liblib", "xvideos", "missav"):
             for k in list(self._nav_sources.keys()):
                 if k != platform:
                     self._nav_sources[k] = (False, 0, "")
@@ -1127,7 +1137,7 @@ class PageVideo(QWidget):
             self.handoff_to_douyin(url, auto_start=True)
         elif platform == "qishui":
             self._start_qishui_batch(url)
-        elif platform in ("jimeng", "liblib", "xvideos", "other"):
+        elif platform in ("jimeng", "liblib", "xvideos", "missav", "other"):
             self.handoff_to_other(url, auto_start=True)
         elif platform == "bilibili":
             self.handoff_to_bilibili(url, auto_start=True)
@@ -1194,7 +1204,7 @@ class PageVideo(QWidget):
             page = getattr(self, "page_douyin", None)
         elif platform == "qishui":
             page = self._qishui_page()
-        elif platform in ("jimeng", "liblib", "xvideos", "other"):
+        elif platform in ("jimeng", "liblib", "xvideos", "missav", "other"):
             page = getattr(self, "page_other", None)
         elif platform == "bilibili":
             page = getattr(self, "page_bilibili", None)
@@ -1529,7 +1539,7 @@ class PageVideo(QWidget):
             page = getattr(self, "page_youtube", None)
         elif plat == "qishui":
             page = self._qishui_page()
-        elif plat in ("jimeng", "liblib", "xvideos", "other"):
+        elif plat in ("jimeng", "liblib", "xvideos", "missav", "other"):
             page = getattr(self, "page_other", None)
         elif plat in ("ehentai", "pixiv", "hitomi"):
             eh, pixiv, hitomi, _pg = self._get_gallery_pages()

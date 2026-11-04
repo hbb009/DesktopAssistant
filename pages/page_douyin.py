@@ -56,6 +56,7 @@ from styles.style_all import (
 )
 from utils.logger import get_logger
 from utils.xvideos import looks_like_xvideos as _looks_like_xvideos
+from utils.missav import looks_like_missav as _looks_like_missav
 from utils.cursor_toast import (
     show_cursor_toast, in_batch_download, batch_progress_prefix,
 )
@@ -3223,6 +3224,7 @@ class PageDouyin(QWidget):
             self._looks_like_jimeng(probe)
             or self._looks_like_liblib(probe)
             or _looks_like_xvideos(probe)
+            or _looks_like_missav(probe)
         ):
             handoff = text or raw_clip
             self._log(

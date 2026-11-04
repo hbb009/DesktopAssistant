@@ -976,6 +976,90 @@ def apply_medium_button(btn: QPushButton) -> QPushButton:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 【标准按钮 · kind="std"】全站「新建按钮一律用它」（以像素画板 · 画板页「批量导入」为准）
+# ───────────────────────────────────────────────────────────────────────────
+# 用法：
+#   from styles.style_all import apply_std_button
+#   btn = apply_std_button(QPushButton("批量导入"))   # 或 btn.setProperty("kind", "std")
+# 规则：QPushButton[kind="std"]，由 build_std_button_qss() 生成（亮/暗两套），
+#       已随 build_func_card_qss() 挂到全站 QSS；只匹配 kind="std"，不影响其它按钮。
+# 外观：高 22（含 1px 边框）· pad 1px 4px · 字 12px/600 · 圆角 7 · 半透明底 + 细描边；
+#       悬停/按下加亮，禁用变淡（配色同 kind=medium）。需要强调色时可在本按钮上
+#       再叠一段本地 setStyleSheet（只改底色/字色），高度仍由本规则统一。
+# 例外：纯图标按钮、可勾选的选项按钮、对话框默认键保持各自样式。
+# ═══════════════════════════════════════════════════════════════════════════
+
+STD_BUTTON_H = 22
+
+_STD_BUTTON_COLORS = {
+    "dark": dict(bg="rgba(255,255,255,0.06)", border="rgba(255,255,255,0.22)", color="#cfe0ff",
+                 hbg="rgba(255,255,255,0.10)", hborder="rgba(255,255,255,0.30)", hcolor="#e6edff",
+                 pbg="rgba(255,255,255,0.14)", pborder="rgba(255,255,255,0.40)",
+                 dcolor="rgba(207,224,255,0.45)", dbg="rgba(255,255,255,0.04)", dborder="rgba(255,255,255,0.10)"),
+    "light": dict(bg="#f8fafc", border="#e2e8f0", color="#334155",
+                  hbg="rgba(0,0,0,0.06)", hborder="rgba(0,0,0,0.25)", hcolor="#1e293b",
+                  pbg="rgba(0,0,0,0.10)", pborder="rgba(0,0,0,0.35)",
+                  dcolor="rgba(0,0,0,0.35)", dbg="rgba(0,0,0,0.02)", dborder="rgba(0,0,0,0.08)"),
+}
+
+
+def build_std_button_qss(is_dark: bool = None) -> str:
+    """标准按钮 QSS（只作用于 QPushButton[kind="std"]，增量、不改别的按钮）。"""
+    if is_dark is None:
+        is_dark = theme.is_dark
+    c = _STD_BUTTON_COLORS["dark" if is_dark else "light"]
+    sel = 'QPushButton[kind="std"]'
+    inner = STD_BUTTON_H - 2 - 2   # 去掉上下 1px 边框与 1px 内边距
+    return f"""
+/* ════ 标准按钮 · style_all.build_std_button_qss · kind=std · 高 {STD_BUTTON_H} ════ */
+{sel} {{
+    background: {c["bg"]};
+    border: 1px solid {c["border"]};
+    color: {c["color"]};
+    padding: 1px 4px;
+    min-height: {inner}px;
+    max-height: {inner}px;
+    min-width: 0px;
+    font-size: 12px;
+    font-weight: 600;
+    border-radius: 7px;
+}}
+{sel}:hover {{
+    background: {c["hbg"]};
+    border-color: {c["hborder"]};
+    color: {c["hcolor"]};
+}}
+{sel}:pressed {{
+    background: {c["pbg"]};
+    border-color: {c["pborder"]};
+}}
+{sel}:disabled {{
+    color: {c["dcolor"]};
+    background: {c["dbg"]};
+    border-color: {c["dborder"]};
+}}
+{sel}::menu-indicator {{ image: none; width: 0px; }}
+"""
+
+
+def apply_std_button(btn: QPushButton) -> QPushButton:
+    """把 QPushButton 打成全站「标准按钮」（kind=std，高 22）。返回同一按钮。"""
+    btn.setProperty("kind", "std")
+    try:
+        btn.setStyleSheet("")
+        btn.setCursor(Qt.PointingHandCursor)
+        btn.setFlat(False)
+    except Exception:
+        pass
+    st = btn.style()
+    if st is not None:
+        st.unpolish(btn)
+        st.polish(btn)
+    btn.update()
+    return btn
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 活按钮（宽度随布局「活」：吃掉本行剩余宽度，高度固定）
 # ───────────────────────────────────────────────────────────────────────────
 # 用法：
@@ -1452,7 +1536,7 @@ QGroupBox[titleVariant="accent"]::title {{
     font-size: {CARD_TITLE_FONT_SIZE}px;
     font-weight: {CARD_TITLE_FONT_WEIGHT};
 }}
-"""
+""" + build_std_button_qss(is_dark)   # 标准按钮 kind=std 随全站 QSS 一起挂载
 
 
 def _title_qss(color: str) -> str:

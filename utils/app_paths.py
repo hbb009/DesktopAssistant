@@ -1157,7 +1157,7 @@ def _convert_pre_download_json_to_txt(src: str, dst_txt: str) -> bool:
                         by[k] = [str(x) for x in v]
         plats = (
             "douyin", "qishui", "bilibili", "youtube", "jimeng",
-            "liblib", "xvideos", "pornhub", "ehentai", "pixiv", "hitomi",
+            "liblib", "xvideos", "pornhub", "missav", "ehentai", "pixiv", "hitomi",
         )
         for plat in plats:
             lines.append(f"# {plat}")

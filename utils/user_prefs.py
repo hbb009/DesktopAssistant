@@ -148,7 +148,7 @@ def default_clipboard_whitelist() -> Dict[str, list]:
     """预下载域名白名单默认值（关于页可编辑，按下载子页分组）。
 
     视频 4 条（抖音 / B站 / YouTube / 其它视频）+ 音频 1 条（汽水音乐）+ 图集 3 条。
-    其它视频含即梦、LibTV、XVideos、Pornhub。汽水单独成键，检测时必须早于 douyin.com。
+    其它视频含即梦、LibTV、XVideos、Pornhub、MissAV。汽水单独成键，检测时必须早于 douyin.com。
     匹配规则：只认剪贴板里 https 链接。条目可以是主机名（www.douyin.com 可命中 douyin.com），
     也可以带路径前缀（music.douyin.com/qishui）。正文里提到域名不算。
     """
@@ -166,6 +166,7 @@ def default_clipboard_whitelist() -> Dict[str, list]:
             "liblib.tv",
             "xvideos.com",
             "pornhub.com",
+            "missav.live",
         ],
         "gallery_eh": ["e-hentai.org", "exhentai.org"],
         "gallery_pixiv": ["pixiv.net"],
@@ -177,8 +178,9 @@ def default_clipboard_whitelist() -> Dict[str, list]:
 # 2 = 其它视频追加 xvideos.com（只补一次；之后用户删掉不再加回）。
 # 3 = 汽水音乐从「其它视频」拆到独立键 qishui（只搬走已有条目，不把删掉的加回）。
 # 4 = 其它视频追加 pornhub.com（只补一次；之后用户删掉不再加回）。
+# 5 = 其它视频追加 missav.live（只补一次；之后用户删掉不再加回）。
 # 不放进 default_prefs：否则旧档合并默认值后会被误认为已迁移。
-_WHITELIST_REV = 4
+_WHITELIST_REV = 5
 _QISHUI_WHITELIST = (
     "music.douyin.com/qishui",
     "qishui.douyin.com",
@@ -187,6 +189,7 @@ _QISHUI_WHITELIST = (
 _OTHER_NEW_DOMAINS = {
     2: ("xvideos.com",),
     4: ("pornhub.com",),
+    5: ("missav.live",),
 }
 
 
@@ -235,6 +238,17 @@ def migrate_clipboard_whitelist(prefs: Dict[str, Any]) -> bool:
         other = _clean_whitelist_patterns(other)
         have = {str(x or "").strip().lower() for x in other}
         for dom in _OTHER_NEW_DOMAINS[4]:
+            if dom not in have:
+                other.append(dom)
+        wl["other"] = other
+        changed = True
+    if rev < 5:
+        other = wl.get("other")
+        if not isinstance(other, list):
+            other = other_whitelist_patterns(wl)
+        other = _clean_whitelist_patterns(other)
+        have = {str(x or "").strip().lower() for x in other}
+        for dom in _OTHER_NEW_DOMAINS[5]:
             if dom not in have:
                 other.append(dom)
         wl["other"] = other
@@ -377,8 +391,8 @@ def default_prefs() -> Dict[str, Any]:
             "whitelist": default_clipboard_whitelist(),
         },
         # 视频下载页（抖音/B站/YouTube/其它视频）：各子页保存路径 + Cookie路径
-        # 其它视频（即梦 / LibTV / XVideos / Pornhub）共用 other，统一落到公共保存根下 Video
-        # check_records：页底已下记录开关。开=按即梦/LibTV/XVideos/Pornhub 的类型和画质跳过 other_video.txt 里已有的那一档
+        # 其它视频（即梦 / LibTV / XVideos / Pornhub / MissAV）共用 other，统一落到公共保存根下 Video
+        # check_records：页底已下记录开关。开=按即梦/LibTV/XVideos/Pornhub/MissAV 的类型和画质跳过 other_video.txt 里已有的那一档
         "video": {
             "douyin": {"save_path": "", "cookie_path": ""},
             "bilibili": {"save_path": "", "cookie_path": ""},

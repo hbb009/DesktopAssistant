@@ -423,6 +423,13 @@ QScrollBar::handle:horizontal:hover {
 }
 QScrollBar::add-line, QScrollBar::sub-line { height:0; width:0; }
 QScrollBar::add-page, QScrollBar::sub-page { background: none; }
+/* ollama 对话区竖条：在全站 6px 上加宽 4px，圆头跟着变 */
+QTextBrowser#OllamaChatView QScrollBar:vertical {
+  width: 10px;
+}
+QTextBrowser#OllamaChatView QScrollBar::handle:vertical {
+  border-radius: 5px;
+}
 
 /* ===== SideBar 主菜单：悬停/选中热区更明显；字重/内边距固定防文字闪动 ===== */
 #SideBar QPushButton[kind="side"] {

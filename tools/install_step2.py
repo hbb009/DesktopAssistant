@@ -36,7 +36,7 @@ def main() -> int:
     print("桌面助手 v9.18")
     print("=" * 60)
     print()
-    print("本步只下载权重；模型相关 pip 包已在 1安装-组件.bat 装好。")
+    print("本步只下载权重；模型相关 pip 包由 B安装.bat 一起安装。")
     print("AuK、Qwen2.5-Omni-3B、BiRefNet、Upscayl 需手动放入 model/（见 README「手动安装的可选组件」）。")
     print()
     print("model/ 下均为开源内容，下载清单：")

@@ -18,11 +18,16 @@
 
 ## 安装与启动
 
-1. `1安装-组件.bat`（或 `pip install -r requirements.txt`）
-2. 需要 OCR / 语音转写 / 语音克隆时：`2安装-模型.bat`（或 `pip install -r requirements-models.txt` 后 `python tools/download_models.py`）
-3. `3启动-程序.bat`（或 `python mainv918.py`）
+从 GitHub 克隆后按电脑配置选一个。需要 Python 3.10 或 3.11。
 
-系统组件：ffmpeg（`winget install Gyan.FFmpeg`）、Deno（`winget install DenoLand.Deno`，部分视频下载需要）。
+- `A安装.bat`：低配。只装程序组件（`requirements.txt`、ffmpeg、Deno），不装 torch / paddle / 语音克隆，也不下载 `model/` 权重。下载、速存、粘贴、文本、看图、阅读这些基本功能可以用。
+- `B安装.bat`：高配。在低配之上安装模型运行库，并下载截图 OCR、三档语音转写、中英翻译、语音克隆权重。AuK、Qwen2.5-Omni-3B、BiRefNet、Upscayl 仍需手动放进 `model/`。
+
+两个安装脚本结束时会打开一次程序。以后每天启动用 `3启动-程序.bat`（或 `python mainv918.py`）。
+
+等价命令：`python tools/install_ab.py basic` 或 `python tools/install_ab.py full`。
+
+系统组件：ffmpeg（`winget install Gyan.FFmpeg`）、Deno（`winget install DenoLand.Deno`，部分视频下载需要）。高配克隆 CosyVoice 源码时还需要 Git。
 
 ## 密钥
 
