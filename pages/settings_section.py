@@ -1,5 +1,5 @@
 # pages/settings_section.py
-# 「ACDSeeMini / 文件阅读器 / 界面缩放 / Cookie设置 / 公共保存 / 预下载 / 数据管理 / 功能与说明」设置区。
+# 「看图器 / 文件阅读器 / 界面缩放 / 公共保存 / 预下载 / 数据管理 / 功能与说明」设置区。
 # 原属「关于」页，现搬到「系统总览」页，抽成可复用组件。
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ from styles.style_all import (
     apply_mini_button,
 )
 from utils.app_paths import (
-    user_downloads_dir, user_documents_dir,
+    user_downloads_dir,
     is_usable_public_save_dir, is_other_user_profile_path,
     apply_public_save_base, this_machine_downloads_dir,
     PUBLIC_SAVE_SUBDIRS, resolved_subdir_name,
@@ -31,23 +31,6 @@ from utils.flow_layout import FlowLayout
 from utils.logger import get_logger
 
 log = get_logger(__name__)
-
-# (显示名, section, sub_key|None, cookie 域名匹配)
-_COOKIE_ITEMS = (
-    ("抖音", "video", "douyin", "douyin.com"),
-    ("B站", "video", "bilibili", "bilibili.com"),
-    ("YouTube", "video", "youtube", "youtube.com"),
-    ("汽水音乐", "audio", "qishui", "qishui.douyin.com"),
-    ("e-hentai.org", "gallery", None, "e-hentai.org"),
-    ("pixiv", "gallery_pixiv", None, "pixiv.net"),
-)
-
-# 两行布局：分组标题 + 该行按钮显示名（与 _COOKIE_ITEMS 一致）
-_COOKIE_ROWS = (
-    ("视频下载", ("抖音", "B站", "YouTube")),
-    ("音频下载", ("汽水音乐",)),
-    ("图集下载", ("e-hentai.org", "pixiv")),
-)
 
 _CK_BTN_H = 22
 
@@ -369,14 +352,12 @@ def _list_guide_image_paths() -> List[str]:
 
 
 class SettingsSection(QWidget):
-    """左：功能与说明；右：ACDSeeMini + 界面缩放 + Cookie设置 + 公共保存 + 预下载 + 数据管理。
+    """左：功能与说明；右：看图器 + 界面缩放 + 公共保存 + 预下载 + 数据管理。
 
     系统总览页用 ``install_into(left_layout, right_layout)`` 把两栏
     嵌进整页两列，使「功能与说明」与「环境信息」同列、始终等宽。
     独立使用时仍可整块挂载本控件（左右 1:1，忽略 sizeHint 干扰）。
     """
-
-    cookies_configured = pyqtSignal()
 
     # ===== 窗口高度 BUG 防护（与截图/速存/时区汇率页同一套路）=====
     # FlowLayout / wordWrap 会让整页 hasHeightForWidth()=True，Qt 拖窗口时抬高推荐高度。
@@ -400,10 +381,6 @@ class SettingsSection(QWidget):
         super().__init__(parent)
         self._mw = None
         self._theme_titles: List[QLabel] = []
-        self._cookie_paths: Dict[str, str] = {}
-        self._cookie_btns: Dict[str, QPushButton] = {}
-        self._cookie_row_labels: List[QLabel] = []
-        self._cookie_auto_failed = False  # 自动查找 cookie 目录失败 → 手动按钮橙色
         self._save_path_autofilled = False
         self._loading = False
         self._guide_paths: List[str] = []
@@ -434,14 +411,13 @@ class SettingsSection(QWidget):
         left_col.setContentsMargins(0, 0, 0, 0)
         left_col.setSpacing(8)
         left_col.setAlignment(Qt.AlignTop)
-        # 右栏设置卡：ACDSeeMini → 文件阅读器 → 界面缩放 → Cookie → 预下载 → 数据管理
-        # 「公共保存」默认插在 Cookie 后；总览 take 后改挂到左列热键下方
+        # 右栏设置卡：看图器 → 文件阅读器 → 界面缩放 → 预下载 → 数据管理
+        # 「公共保存」总览 take 后改挂到左列热键下方
         self._public_save_card = self._build_public_save_card()
         self._settings_cards = [
             self._build_photo_viewer_card(),
             self._build_md_reader_card(),
             self._build_scale_card(),
-            self._build_cookie_card(),
             self._public_save_card,
             self._build_pre_dl_card(),
             self._build_data_card(),
@@ -521,50 +497,17 @@ class SettingsSection(QWidget):
         self._loading = True
         try:
             self._load_save_path(prefs)
-            self._load_cookies(prefs)
             self._load_scale()
             self._load_pre_dl_auto(prefs)
             self._load_photo_viewer(prefs)
             self._load_md_reader(prefs)
         finally:
             self._loading = False
-        # 启动/刷新后：空的公共保存目录补成系统「下载」；未齐的 Cookie 自动搜目录
+        # 启动/刷新后：空的公共保存目录补成系统「下载」
         try:
             self._auto_fill_downloads_if_needed()
         except Exception:
             log.exception("自动识别下载目录失败")
-        try:
-            self._auto_scan_cookies_if_needed()
-        except Exception:
-            log.exception("自动查找 Cookie 目录失败")
-
-    def set_cookie_alert(self, on: bool, text: str = None):
-        """显示/隐藏「Cookie设置」卡内的缺失提示条。"""
-        bar = getattr(self, "alert_bar", None)
-        if bar is None:
-            return
-        if text:
-            bar.setText(str(text))
-        elif on:
-            bar.setText("⚠ 检测到 Cookie 文件缺失，请重新配置")
-        bar.setVisible(bool(on))
-        self._apply_alert_style()
-        QTimer.singleShot(0, self._sync_guide_to_settings_height)
-
-    def _apply_alert_style(self):
-        bar = getattr(self, "alert_bar", None)
-        if bar is None:
-            return
-        try:
-            warn = tk("warn")
-        except Exception:
-            warn = "#f59e0b"
-        bar.setStyleSheet(
-            f"QLabel#PathsCookieAlert{{"
-            f"color:{warn};font-size:12px;font-weight:600;"
-            f"background:rgba(245,158,11,0.12);border:1px solid {warn};"
-            f"border-radius:8px;padding:8px 12px;}}"
-        )
 
     def restyle_theme(self):
         """主题切换后重刷本组件内联样式。"""
@@ -574,9 +517,7 @@ class SettingsSection(QWidget):
             except Exception:
                 pass
         self._style_path_buttons()
-        self._style_cookie_row_labels()
         self._style_subdir_rows()
-        self._apply_alert_style()
         self._style_guide_placeholder()
         self._style_guide_dots()
         self._style_pv_labels()
@@ -604,7 +545,7 @@ class SettingsSection(QWidget):
         self.sw_pre_dl_auto.setToolTip(
             "关：当前图集/视频下完后停止，不再开下一条\n"
             "开：空闲时按队列自动处理（打开后先等 3 秒）\n"
-            "状态写入 user.txt；启动时若本机未加载 Cookie 会警告并关闭"
+            "状态写入 user.txt"
         )
         self.sw_pre_dl_auto.clicked.connect(self._on_pre_dl_auto_clicked)
         title_row.addWidget(self.sw_pre_dl_auto, 0, Qt.AlignVCenter)
@@ -1024,7 +965,7 @@ class SettingsSection(QWidget):
         box = QVBoxLayout(card)
         box.setContentsMargins(CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
         box.setSpacing(6)
-        self._theme_titles.append(install_card_title(card, box, "ACDSeeMini"))
+        self._theme_titles.append(install_card_title(card, box, "看图器"))
 
         self._pv_labels: List[QLabel] = []
         self._pv_checks: Dict[str, QCheckBox] = {}
@@ -1131,6 +1072,7 @@ class SettingsSection(QWidget):
             ("D / 空格 / PageDown", "下一张"),
             ("Home", "第一张"),
             ("End", "最后一张"),
+            ("Del", "删除当前图片"),
             ("Esc", "退出"),
         )
         self._pv_hk_keys: List[QLabel] = []
@@ -1364,7 +1306,7 @@ class SettingsSection(QWidget):
         box = QVBoxLayout(card)
         box.setContentsMargins(CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
         box.setSpacing(6)
-        self._theme_titles.append(install_card_title(card, box, "文件阅读器"))
+        self._theme_titles.append(install_card_title(card, box, "阅读器"))
 
         self._md_labels: List[QLabel] = []
         self._md_names: List[QLabel] = []
@@ -1396,7 +1338,7 @@ class SettingsSection(QWidget):
             row.addWidget(sw, 0, Qt.AlignVCenter)
             box.addWidget(line)
 
-        hint = QLabel("打开后，这类文件双击用文件阅读器打开。")
+        hint = QLabel("打开后，这类文件双击用阅读器打开。")
         hint.setWordWrap(True)
         self._md_labels.append(hint)
         box.addWidget(hint)
@@ -1593,63 +1535,6 @@ class SettingsSection(QWidget):
         except Exception:
             log.exception("切换界面缩放失败")
 
-    # ── 卡片：Cookie设置 ──────────────────────────────────────
-    def _build_cookie_card(self):
-        card = self._shrinkable_card(make_card("CardAboutPaths"))
-        box = QVBoxLayout(card)
-        box.setContentsMargins(CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
-        self._theme_titles.append(install_card_title(card, box, "Cookie设置"))
-
-        # Cookie 缺失提示条（启动检测发现配置路径无效时显示）
-        self.alert_bar = QLabel("⚠ 检测到 Cookie 文件缺失，请重新配置")
-        self.alert_bar.setObjectName("PathsCookieAlert")
-        self.alert_bar.setWordWrap(True)
-        self.alert_bar.setVisible(False)
-        box.addWidget(self.alert_bar)
-        self._apply_alert_style()
-
-        hint = QLabel("Netscape .txt，可用浏览器扩展导出。")
-        hint.setWordWrap(True)
-        hint.setStyleSheet(
-            f"QLabel{{color:{tk('text_mut')};font-size:12px;"
-            f"background:transparent;border:none;}}"
-        )
-        box.addWidget(hint)
-
-        self.btn_cookie_dir = QPushButton("手动指定Cookie目录")
-        self.btn_cookie_dir.setCursor(Qt.PointingHandCursor)
-        self.btn_cookie_dir.setMinimumWidth(0)
-        self.btn_cookie_dir.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
-        self.btn_cookie_dir.clicked.connect(self._pick_cookie_dir_manual)
-        box.addWidget(self.btn_cookie_dir, 0, Qt.AlignLeft)
-
-        # 两行 Cookie：视频下载 → 抖音/B站/YouTube；图集下载 → e-hentai/pixiv
-        # FlowLayout：窄列时自动换行，不把最小宽度顶出窗口
-        name_to_item = {n: (n, sec, sub, dom) for n, sec, sub, dom in _COOKIE_ITEMS}
-        self._cookie_row_labels = []
-        for group_title, names in _COOKIE_ROWS:
-            row_host = QWidget()
-            row_host.setMinimumWidth(0)
-            row = FlowLayout(row_host, margin=0, h_spacing=6, v_spacing=4)
-            lab = QLabel(group_title)
-            lab.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-            self._cookie_row_labels.append(lab)
-            row.addWidget(lab)
-            for name in names:
-                if name not in name_to_item:
-                    continue
-                cb = QPushButton(name)
-                cb.setCursor(Qt.PointingHandCursor)
-                cb.setMinimumWidth(0)
-                cb.setSizePolicy(QSizePolicy.Minimum, QSizePolicy.Fixed)
-                cb.clicked.connect(lambda checked=False, n=name: self._browse_cookie(n))
-                self._cookie_btns[name] = cb
-                row.addWidget(cb)
-            box.addWidget(row_host)
-
-        self._style_cookie_row_labels()
-        self._style_path_buttons()
-        return card
 
     # ── 卡片：公共保存 ────────────────────────────────────────
     def _build_public_save_card(self):
@@ -1792,16 +1677,6 @@ class SettingsSection(QWidget):
         if field is not None:
             field.setToolTip(text)
 
-    def _style_cookie_row_labels(self):
-        try:
-            mut = tk("text_mut")
-        except Exception:
-            mut = "#94a3b8"
-        for lab in getattr(self, "_cookie_row_labels", []) or []:
-            lab.setStyleSheet(
-                f"QLabel{{color:{mut};font-size:12px;font-weight:600;"
-                f"background:transparent;border:none;padding:0 2px 0 0;}}"
-            )
 
     def _default_muted_btn_qss(self) -> str:
         try:
@@ -1824,8 +1699,6 @@ class SettingsSection(QWidget):
             btn = getattr(self, attr, None)
             if btn is not None:
                 btn.setStyleSheet(qss)
-        self._refresh_all_cookie_btns()
-        self._refresh_cookie_action_btn()
 
     def _guess_base_path(self, prefs: dict) -> str:
         try:
@@ -1906,104 +1779,11 @@ class SettingsSection(QWidget):
         self._save_path_autofilled = True
         self._persist_now()
 
-    def _load_cookies(self, prefs: dict):
-        for name, section, sub_key, _domain in _COOKIE_ITEMS:
-            if sub_key:
-                sec = prefs.get(section) or {}
-                sub = sec.get(sub_key) if isinstance(sec.get(sub_key), dict) else {}
-                ck = (sub or {}).get("cookie_path", "")
-            else:
-                sec = prefs.get(section) or {}
-                ck = (sec or {}).get("cookie_path", "") if isinstance(sec, dict) else ""
-            self._cookie_paths[name] = str(ck or "")
-        self._refresh_all_cookie_btns()
 
-    def _refresh_cookie_btn(self, name: str):
-        btn = self._cookie_btns.get(name)
-        if btn is None:
-            return
-        path = (self._cookie_paths.get(name) or "").strip()
-        loaded = bool(path and os.path.isfile(path))
-        btn.setText(name)
-        if loaded:
-            btn.setStyleSheet(
-                f"QPushButton{{background:{tk('ok')};color:#ffffff;"
-                f"border:1px solid {tk('ok')};border-radius:6px;"
-                f"padding:2px 10px;font-weight:600;font-size:11px;"
-                f"min-height:{_CK_BTN_H}px;max-height:{_CK_BTN_H}px;}}"
-                f"QPushButton:hover{{background:{tk('ok')};}}"
-            )
-        else:
-            try:
-                mut = tk("text_mut")
-                text = tk("text")
-                hover = tk("accent_hover")
-            except Exception:
-                mut, text, hover = "#94a3b8", "#e2e8f0", "#60a5fa"
-            btn.setStyleSheet(
-                f"QPushButton{{background:rgba(255,255,255,0.06);"
-                f"border:1px solid rgba(255,255,255,0.22);border-radius:6px;"
-                f"padding:2px 10px;font-weight:600;font-size:11px;"
-                f"min-height:{_CK_BTN_H}px;max-height:{_CK_BTN_H}px;color:{mut};}}"
-                f"QPushButton:hover{{border-color:{hover};color:{text};}}"
-            )
 
-    def _refresh_all_cookie_btns(self):
-        for name in self._cookie_btns:
-            self._refresh_cookie_btn(name)
-        self._refresh_cookie_action_btn()
 
-    def _cookie_path_loaded(self, name: str) -> bool:
-        path = (self._cookie_paths.get(name) or "").strip()
-        return bool(path and os.path.isfile(path))
 
-    def _cookies_all_loaded(self) -> bool:
-        # 汽水 Cookie 可选，缺了不挡住「加载成功」
-        names = [name for name, *_rest in _COOKIE_ITEMS if name != "汽水音乐"]
-        if not names:
-            return False
-        return all(self._cookie_path_loaded(name) for name in names)
 
-    def _refresh_cookie_action_btn(self):
-        btn = getattr(self, "btn_cookie_dir", None)
-        if btn is None:
-            return
-        try:
-            mut = tk("text_mut")
-            text = tk("text")
-            hover = tk("accent_hover")
-            warn = tk("warn")
-        except Exception:
-            mut, text, hover, warn = "#94a3b8", "#e2e8f0", "#60a5fa", "#f0a542"
-
-        if self._cookies_all_loaded():
-            btn.setText("Cookie加载成功")
-            btn.setStyleSheet(
-                f"QPushButton{{background:rgba(148,163,184,0.14);"
-                f"border:1px solid rgba(148,163,184,0.28);border-radius:6px;"
-                f"padding:2px 10px;font-weight:600;font-size:11px;"
-                f"min-height:{_CK_BTN_H}px;max-height:{_CK_BTN_H}px;color:{mut};}}"
-                f"QPushButton:hover{{border-color:rgba(148,163,184,0.45);color:{text};}}"
-            )
-            return
-
-        btn.setText("手动指定Cookie目录")
-        if self._cookie_auto_failed:
-            btn.setStyleSheet(
-                f"QPushButton{{background:rgba(240,165,66,0.18);"
-                f"border:1px solid rgba(240,165,66,0.55);border-radius:6px;"
-                f"padding:2px 10px;font-weight:700;font-size:11px;"
-                f"min-height:{_CK_BTN_H}px;max-height:{_CK_BTN_H}px;color:{warn};}}"
-                f"QPushButton:hover{{background:rgba(240,165,66,0.30);}}"
-            )
-        else:
-            btn.setStyleSheet(
-                f"QPushButton{{background:rgba(255,255,255,0.06);"
-                f"border:1px solid rgba(255,255,255,0.22);border-radius:6px;"
-                f"padding:2px 10px;font-weight:600;font-size:11px;"
-                f"min-height:{_CK_BTN_H}px;max-height:{_CK_BTN_H}px;color:{mut};}}"
-                f"QPushButton:hover{{border-color:{hover};color:{text};}}"
-            )
 
     def _browse_save_dir(self):
         start = self.save_edit.text().strip() or user_downloads_dir() or os.path.expanduser("~")
@@ -2121,193 +1901,14 @@ class SettingsSection(QWidget):
         self._refresh_subdir_names(cur)
         self._clear_subdir_err()
 
-    def _browse_cookie(self, name: str):
-        start = (self._cookie_paths.get(name) or "").strip() or os.path.expanduser("~")
-        p, _ = QFileDialog.getOpenFileName(
-            self, f"选择 {name} Cookie", start,
-            "Cookie 文件 (*.txt);;所有文件 (*.*)",
-        )
-        if p:
-            self._cookie_paths[name] = p.replace("\\", "/")
-            self._refresh_cookie_btn(name)
-            self._refresh_cookie_action_btn()
-            self._schedule_persist()
-            self.cookies_configured.emit()
 
-    def _list_cookie_txt_files(self, directory: str) -> list:
-        files = []
-        try:
-            for f in os.listdir(directory):
-                fp = os.path.join(directory, f)
-                if (
-                    os.path.isfile(fp)
-                    and f.lower().endswith(".txt")
-                    and os.path.getsize(fp) < 2 * 1024 * 1024
-                ):
-                    files.append(fp)
-        except Exception:
-            pass
-        return files
 
     @staticmethod
-    def _cookie_filename_score(fname: str, domain: str) -> int:
-        low = (fname or "").lower()
-        tokens = {
-            "douyin.com": ("douyin",),
-            "qishui.douyin.com": ("qishui", "汽水"),
-            "bilibili.com": ("bilibili", "bili"),
-            "youtube.com": ("youtube",),
-            "e-hentai.org": ("e-hentai", "exhentai", "e_hentai"),
-            "exhentai.org": ("exhentai", "e-hentai"),
-            "pixiv.net": ("pixiv",),
-        }
-        hits = tokens.get(domain) or (domain.split(".")[0],)
-        if not any(tok in low for tok in hits):
-            return 0
-        if low.endswith("_cookies.txt") or low.endswith("cookies.txt"):
-            return 2
-        return 1
 
-    def _pick_cookie_file(self, txt_files, domain: str, extra_domain: str = None) -> str:
-        scored = []
-        for fp in txt_files:
-            s = self._cookie_filename_score(os.path.basename(fp), domain)
-            if extra_domain:
-                s = max(s, self._cookie_filename_score(os.path.basename(fp), extra_domain))
-            if s:
-                scored.append((s, fp))
-        if scored:
-            scored.sort(key=lambda x: -x[0])
-            return scored[0][1]
-        needle = (domain or "").lower()
-        extra = (extra_domain or "").lower()
-        for fp in txt_files:
-            try:
-                with open(fp, "r", encoding="utf-8", errors="ignore") as fh:
-                    low = fh.read(4096).lower()
-                if needle and needle in low:
-                    return fp
-                if extra and extra in low:
-                    return fp
-            except Exception:
-                continue
-        return ""
 
-    def _apply_cookie_dir(self, directory: str, *, overwrite: bool = False) -> int:
-        """在目录顶层匹配 5 个 Cookie 文件。返回新写入的条数。"""
-        if not directory or not os.path.isdir(directory):
-            return 0
-        txt_files = self._list_cookie_txt_files(directory)
-        if not txt_files:
-            return 0
-        n = 0
-        for name, _section, _sub_key, domain in _COOKIE_ITEMS:
-            if domain == "e-hentai.org":
-                extra = "exhentai.org"
-            else:
-                extra = None
-            found = self._pick_cookie_file(txt_files, domain, extra)
-            if not found:
-                continue
-            if not overwrite and self._cookie_path_loaded(name):
-                continue
-            self._cookie_paths[name] = found.replace("\\", "/")
-            n += 1
-        return n
 
-    def _find_cookie_dirs(self) -> list:
-        """在系统「下载」「文档」下找名为 cookie / cookies 的目录。"""
-        dirs = []
-        seen = set()
 
-        def _add(p: str):
-            if not p or not os.path.isdir(p):
-                return
-            try:
-                key = os.path.normcase(os.path.abspath(p))
-            except Exception:
-                return
-            if key in seen:
-                return
-            seen.add(key)
-            dirs.append(p)
 
-        roots = []
-        try:
-            dl = user_downloads_dir()
-            if dl:
-                roots.append(dl)
-        except Exception:
-            pass
-        try:
-            doc = user_documents_dir()
-            if doc:
-                roots.append(doc)
-        except Exception:
-            pass
-
-        for root in roots:
-            try:
-                names = os.listdir(root)
-            except Exception:
-                continue
-            for name in names:
-                if name.lower() in ("cookie", "cookies"):
-                    _add(os.path.join(root, name))
-        return dirs
-
-    def _auto_scan_cookies_if_needed(self):
-        """5 个按钮未齐绿时，在下载/文档里找 cookie 目录并加载对应文件。"""
-        self._cookie_auto_failed = False
-        if self._cookies_all_loaded():
-            self._refresh_cookie_action_btn()
-            return
-
-        cookie_dirs = self._find_cookie_dirs()
-        if not cookie_dirs:
-            self._cookie_auto_failed = True
-            log.info("未在下载/文档目录找到 cookie 文件夹")
-            self._refresh_cookie_action_btn()
-            return
-
-        changed = 0
-        for d in cookie_dirs:
-            changed += self._apply_cookie_dir(d, overwrite=False)
-            if self._cookies_all_loaded():
-                break
-
-        self._refresh_all_cookie_btns()
-        if changed:
-            log.info("自动加载 Cookie：%d 个文件，目录=%s", changed, cookie_dirs)
-            self._persist_now()
-            self.cookies_configured.emit()
-        else:
-            self._refresh_cookie_action_btn()
-
-    def _pick_cookie_dir_manual(self):
-        start = ""
-        for name, *_rest in _COOKIE_ITEMS:
-            p = (self._cookie_paths.get(name) or "").strip()
-            if p:
-                d = os.path.dirname(p)
-                if os.path.isdir(d):
-                    start = d
-                    break
-        if not start:
-            try:
-                start = user_documents_dir() or user_downloads_dir() or ""
-            except Exception:
-                start = ""
-        if not start:
-            start = os.path.expanduser("~")
-        p = QFileDialog.getExistingDirectory(self, "选择 Cookie 目录", start)
-        if not p:
-            return
-        self._cookie_auto_failed = False
-        self._apply_cookie_dir(p, overwrite=True)
-        self._refresh_all_cookie_btns()
-        self._persist_now()
-        self.cookies_configured.emit()
 
     # ── 数据管理 ─────────────────────────────────────────────
     def _on_export(self):
@@ -2352,25 +1953,6 @@ class SettingsSection(QWidget):
                     self.save_edit.setText(shown)
                     self.save_edit.blockSignals(False)
             apply_public_save_base(new_prefs, base, mkdir=True)
-
-            for name, section, sub_key, _domain in _COOKIE_ITEMS:
-                ck = (self._cookie_paths.get(name) or "").strip()
-                if sub_key:
-                    sec = new_prefs.get(section)
-                    if not isinstance(sec, dict):
-                        sec = {}
-                        new_prefs[section] = sec
-                    s = sec.get(sub_key)
-                    if not isinstance(s, dict):
-                        s = {}
-                        sec[sub_key] = s
-                    s["cookie_path"] = ck
-                else:
-                    sec = new_prefs.get(section)
-                    if not isinstance(sec, dict):
-                        sec = {}
-                        new_prefs[section] = sec
-                    sec["cookie_path"] = ck
 
             cur.clear()
             cur.update(new_prefs)

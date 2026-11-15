@@ -27,13 +27,14 @@ log = get_logger(__name__)
 _PREFS_VERSION = 1
 
 # 侧栏主菜单出厂顺序（含分区槽位 @hdr:xxx）；ui_main._default_side_order 同源引用。
-# 只决定「画在哪」：页面分类（电子钟空闲 / 按住不切）仍按 ui_main._SIDE_SECTION_MAP。
+# 只决定「画在哪」。没有 user.txt 的新安装用这份顺序和分类。
+# 页面的空闲跳转 / 按住不切仍按 ui_main._SIDE_SECTION_MAP，不跟这里的标题槽位走。
 DEFAULT_SIDE_ORDER = (
     "video", "audio", "gallery", "fast", "shot", "region_rec",
     "@hdr:assistant",
-    "paste", "img_proc", "pixel_board", "voice", "auk", "points", "sub_usage", "ratio", "prompt", "ollama", "text_edit", "tz_fx", "dir_link",
+    "boot", "paste", "img_proc", "voice", "auk", "points", "ratio", "prompt", "text_edit",
     "@hdr:tool",
-    "gameassist", "gamebrain", "gamemeet",
+    "ollama", "tz_fx", "sub_usage", "pixel_board", "dir_link", "gameassist", "gamebrain", "gamemeet",
 )
 
 # 本程序 user.txt 必须具备的顶层段（至少命中这些才算「像本程序配置」）
@@ -148,7 +149,7 @@ def default_clipboard_whitelist() -> Dict[str, list]:
     """预下载域名白名单默认值（关于页可编辑，按下载子页分组）。
 
     视频 4 条（抖音 / B站 / YouTube / 其它视频）+ 音频 1 条（汽水音乐）+ 图集 3 条。
-    其它视频含即梦、LibTV、XVideos、Pornhub、MissAV。汽水单独成键，检测时必须早于 douyin.com。
+    其它视频含即梦、LibTV、XVideos、Pornhub、MissAV、x.com。汽水单独成键，检测时必须早于 douyin.com。
     匹配规则：只认剪贴板里 https 链接。条目可以是主机名（www.douyin.com 可命中 douyin.com），
     也可以带路径前缀（music.douyin.com/qishui）。正文里提到域名不算。
     """
@@ -167,6 +168,8 @@ def default_clipboard_whitelist() -> Dict[str, list]:
             "xvideos.com",
             "pornhub.com",
             "missav.live",
+            "x.com",
+            "twitter.com",
         ],
         "gallery_eh": ["e-hentai.org", "exhentai.org"],
         "gallery_pixiv": ["pixiv.net"],
@@ -179,8 +182,9 @@ def default_clipboard_whitelist() -> Dict[str, list]:
 # 3 = 汽水音乐从「其它视频」拆到独立键 qishui（只搬走已有条目，不把删掉的加回）。
 # 4 = 其它视频追加 pornhub.com（只补一次；之后用户删掉不再加回）。
 # 5 = 其它视频追加 missav.live（只补一次；之后用户删掉不再加回）。
+# 6 = 其它视频追加 x.com / twitter.com（只补一次；之后用户删掉不再加回）。
 # 不放进 default_prefs：否则旧档合并默认值后会被误认为已迁移。
-_WHITELIST_REV = 5
+_WHITELIST_REV = 6
 _QISHUI_WHITELIST = (
     "music.douyin.com/qishui",
     "qishui.douyin.com",
@@ -190,6 +194,7 @@ _OTHER_NEW_DOMAINS = {
     2: ("xvideos.com",),
     4: ("pornhub.com",),
     5: ("missav.live",),
+    6: ("x.com", "twitter.com"),
 }
 
 
@@ -249,6 +254,17 @@ def migrate_clipboard_whitelist(prefs: Dict[str, Any]) -> bool:
         other = _clean_whitelist_patterns(other)
         have = {str(x or "").strip().lower() for x in other}
         for dom in _OTHER_NEW_DOMAINS[5]:
+            if dom not in have:
+                other.append(dom)
+        wl["other"] = other
+        changed = True
+    if rev < 6:
+        other = wl.get("other")
+        if not isinstance(other, list):
+            other = other_whitelist_patterns(wl)
+        other = _clean_whitelist_patterns(other)
+        have = {str(x or "").strip().lower() for x in other}
+        for dom in _OTHER_NEW_DOMAINS[6]:
             if dom not in have:
                 other.append(dom)
         wl["other"] = other
@@ -366,7 +382,7 @@ def default_prefs() -> Dict[str, Any]:
             "cookie_path": "",
             "delay_ms": 1200,
             "auto_download": True,
-            # 页底「已下记录」左侧开关：开=读 gallery_eh.txt 防重下
+            # 页底「已下记录」左侧开关：开=读 downloaded.txt 的 e-hentai 段防重下
             "check_records": True,
             "hitomi": {"save_path": "", "cookie_path": "", "check_records": True},
         },
@@ -391,8 +407,8 @@ def default_prefs() -> Dict[str, Any]:
             "whitelist": default_clipboard_whitelist(),
         },
         # 视频下载页（抖音/B站/YouTube/其它视频）：各子页保存路径 + Cookie路径
-        # 其它视频（即梦 / LibTV / XVideos / Pornhub / MissAV）共用 other，统一落到公共保存根下 Video
-        # check_records：页底已下记录开关。开=按即梦/LibTV/XVideos/Pornhub/MissAV 的类型和画质跳过 other_video.txt 里已有的那一档
+        # 其它视频（即梦 / LibTV / XVideos / Pornhub / MissAV / x.com）共用 other，统一落到公共保存根下 Video
+        # check_records：页底已下记录开关。开=按即梦/LibTV/XVideos/Pornhub/MissAV/x.com 的类型和画质跳过 downloaded.txt 里已有的那一档
         "video": {
             "douyin": {"save_path": "", "cookie_path": ""},
             "bilibili": {"save_path": "", "cookie_path": ""},
@@ -401,7 +417,7 @@ def default_prefs() -> Dict[str, Any]:
         },
         # 音频下载 · 汽水音乐（公共保存根下 Audio）
         # save_subdir_names：公共保存各子目录的文件夹名，空则用出厂名
-        # check_records：页底防重开关。开=按视频/音频跳过 qishui.txt 里已有的那一项
+        # check_records：页底防重开关。开=按视频/音频跳过 downloaded.txt 汽水段里已有的那一项
         "audio": {
             "qishui": {"save_path": "", "cookie_path": "", "check_records": True},
         },
@@ -512,6 +528,12 @@ def default_prefs() -> Dict[str, Any]:
         "md_reader": {
             "exts": [],
             "prev_prog": {},
+        },
+        # 开机员：常用目录、网站、程序。程序快捷方式另存在程序目录 Boot 文件夹。
+        "boot": {
+            "dirs": [],
+            "sites": [],
+            "apps": [],
         },
     }
 

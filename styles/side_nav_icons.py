@@ -79,6 +79,7 @@ _NAV_COLORS = {
     "video":     ("#F43F5E", "#E11D48"),   # 玫红 · 视频
     "audio":     ("#14B8A6", "#0F766E"),   # 青绿 · 音频
     "gallery":   ("#A855F7", "#9333EA"),   # 紫 · 图集
+    "boot":      ("#FF8A5B", "#E85D4C"),   # 珊瑚 · 开机员
     "paste":     ("#EAB308", "#CA8A04"),   # 黄 · 粘贴（避开速存绿 / 音频下载青绿）
     "voice":     ("#8B5CF6", "#6D28D9"),   # 紫 · 语音录入（已拆出语音克隆 → 用扬声器声波图标）
     "auk":       ("#F97316", "#C2410C"),   # 橙 · 音频处理（AUK / CosVoice3）
@@ -520,6 +521,16 @@ def _draw_pixel_board(p, s):
             )
 
 
+def _draw_boot(p, s):
+    """电源键：开机员"""
+    pen = QPen(QColor("#FFFFFF"), max(1.6, s * 0.075))
+    pen.setCapStyle(Qt.RoundCap)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+    p.drawArc(QRectF(s * 0.28, s * 0.30, s * 0.44, s * 0.44), 40 * 16, 280 * 16)
+    p.drawLine(QPointF(s * 0.50, s * 0.22), QPointF(s * 0.50, s * 0.46))
+
+
 def _draw_about(p, s):
     """信息 i / 关于"""
     _w(p)
@@ -541,6 +552,7 @@ _DRAWERS = {
     "video": _draw_video,
     "audio": _draw_audio,
     "gallery": _draw_gallery,
+    "boot": _draw_boot,
     "paste": _draw_paste,
     "voice": _draw_voice_clone,
     "auk": _draw_auk,

@@ -6,7 +6,7 @@ page_image_proc.py  —  图片处理
 
 布局（比例锁定，随窗口缩放，分区不可拖拽改）：
   · 上 60% / 下 40%
-  · 上：左 70%（拖放提示+选图 / 预览） / 右 30%（缩小 · 放大 · 切割 · 抠图 · 更多修改；点中激活，其余冻结；底栏格式+保存）
+  · 上：左 70%（拖放 / 粘贴 / 选图 / 预览） / 右 30%（缩小 · 放大 · 切割 · 抠图 · 更多修改；点中激活，其余冻结；底栏格式+保存）
   · 下：全宽「输出预览」——纵向滚动图片卡（文件名 / 分辨率·大小同行），单击打开输出目录
 
 输出目录：公共保存根下 ImageProc；偏好：records/user.txt → image_proc 段。
@@ -87,6 +87,7 @@ _UPSCAYL_SCALE_MIN = 2
 _UPSCAYL_SCALE_MAX = 6
 _UPSCAYL_SCALE_DEFAULT = 4
 _OP_KEYS = ("scale", "upscale", "split", "matting", "more")
+_EMPTY_HINT = "拖拽图片到这里，或 Ctrl+V"
 _OP_STATUS_NAMES = {
     "scale": "缩小",
     "upscale": "放大",
@@ -136,6 +137,66 @@ def _unique_path(dir_path: str, base: str, ext: str) -> str:
         if not os.path.exists(candidate):
             return candidate
         n += 1
+
+
+def _mime_is_image(fmt: str) -> bool:
+    low = (fmt or "").lower()
+    if "html" in low or low.startswith("text/"):
+        return False
+    return any(k in low for k in (
+        "image/", "png", "jpeg", "jpg", "bmp", "gif", "webp", "tiff", "jfif",
+    ))
+
+
+def _clipboard_image():
+    """剪贴板里的图。先用复制的文件原件，再读位图。没有图时返回 None。"""
+    cb = QApplication.clipboard()
+    if cb is None:
+        return None
+    # 先把位图拷出来。后面再读 mime 时，Windows 剪贴板可能把上一次的句柄作废。
+    try:
+        qimg = cb.image()
+    except Exception:
+        qimg = None
+    if qimg is not None and (qimg.isNull() or qimg.width() <= 0 or qimg.height() <= 0):
+        qimg = None
+    try:
+        pm = None if qimg is not None else cb.pixmap()
+    except Exception:
+        pm = None
+    md = None
+    try:
+        md = cb.mimeData()
+    except Exception:
+        md = None
+    if md is not None and md.hasUrls():
+        for url in md.urls():
+            p = url.toLocalFile()
+            if p and os.path.isfile(p) and os.path.splitext(p)[1].lower() in _IMG_EXTS:
+                return ("path", p)
+    if qimg is not None:
+        return ("image", qimg)
+    if pm is not None and not pm.isNull():
+        return ("image", pm.toImage())
+    if md is None:
+        return None
+    try:
+        formats = [str(f) for f in (md.formats() or [])]
+    except Exception:
+        formats = []
+    for fmt in formats:
+        if not _mime_is_image(fmt):
+            continue
+        try:
+            raw = bytes(md.data(fmt))
+        except Exception:
+            continue
+        if not raw:
+            continue
+        im = QImage()
+        if im.loadFromData(raw) and not im.isNull() and im.width() > 0:
+            return ("image", im)
+    return None
 
 
 def _src_stem(path: str) -> str:
@@ -218,6 +279,21 @@ def _save_jpg(img, path: str) -> None:
         subsampling=_JPG_SUBSAMPLING,
         optimize=True,
     )
+
+
+def _qimage_to_pil(qimg: QImage):
+    """剪贴板位图交给 Pillow 存成 JPG。"""
+    from PyQt5.QtCore import QBuffer, QIODevice
+
+    buf = QBuffer()
+    buf.open(QIODevice.WriteOnly)
+    if qimg is None or qimg.isNull() or not qimg.save(buf, "PNG"):
+        raise RuntimeError("无法读取剪贴板图片")
+    data = bytes(buf.data())
+    buf.close()
+    from PIL import Image
+
+    return Image.open(io.BytesIO(data))
 
 
 def _save_png(img, path: str) -> None:
@@ -1700,6 +1776,29 @@ class PageImageProc(QWidget):
         self._op_cards = {}
         self._active_op = "scale"
         self._output_preview_pending = False
+        # 剪贴板载入时界面改选 JPG，但不把这次自动选择写进偏好。
+        self._clip_fmt_held = False
+        self._fmt_before_clip = "jpg"
+        self._clip_jpg_after_matting = False
+        self._fmt_quiet = False
+
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self)
+            import weakref
+            ref = weakref.ref(self)
+
+            def _detach_paste_filter(*_args, _ref=ref):
+                page = _ref()
+                host = QApplication.instance()
+                if page is None or host is None:
+                    return
+                try:
+                    host.removeEventFilter(page)
+                except Exception:
+                    pass
+
+            self.destroyed.connect(_detach_paste_filter)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -1733,8 +1832,14 @@ class PageImageProc(QWidget):
         self._update_actions_enabled()
 
     def _on_option_toggled(self, checked: bool):
-        if checked:
-            self._notify_prefs()
+        if not checked or getattr(self, "_fmt_quiet", False):
+            return
+        sender = self.sender()
+        if sender is getattr(self, "radio_save_jpg", None) or sender is getattr(self, "radio_save_png", None):
+            # 用户自己点了格式，就按这个选择记住，不再维持剪贴板的临时 JPG。
+            self._clip_fmt_held = False
+            self._clip_jpg_after_matting = False
+        self._notify_prefs()
 
     # ── 布局：左 ────────────────────────────────────────────
     def _build_left(self) -> QWidget:
@@ -1761,7 +1866,7 @@ class PageImageProc(QWidget):
         foot_row = QHBoxLayout()
         foot_row.setContentsMargins(0, 0, 0, 0)
         foot_row.setSpacing(8)
-        self.lbl_meta = _ElideLabel("拖拽图片到这里")
+        self.lbl_meta = _ElideLabel(_EMPTY_HINT)
         self.lbl_meta.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.lbl_meta.setStyleSheet(
             f"color:{tk('text_mut')};background:transparent;border:none;"
@@ -1775,6 +1880,9 @@ class PageImageProc(QWidget):
         )
         self.lbl_meta_info.hide()
         foot_row.addWidget(self.lbl_meta_info, 0)
+        self.btn_paste = apply_medium_button(QPushButton("粘贴"))
+        self.btn_paste.clicked.connect(self._on_paste_clicked)
+        foot_row.addWidget(self.btn_paste, 0, Qt.AlignRight | Qt.AlignVCenter)
         self.btn_pick = apply_medium_button(QPushButton("选择图片"))
         self.btn_pick.clicked.connect(self._on_pick_file)
         foot_row.addWidget(self.btn_pick, 0, Qt.AlignRight | Qt.AlignVCenter)
@@ -2265,7 +2373,10 @@ class PageImageProc(QWidget):
             pct = 25
         elif self.radio_75.isChecked():
             pct = 75
-        fmt = "jpg" if self._save_is_jpg() else "png"
+        if getattr(self, "_clip_fmt_held", False):
+            fmt = getattr(self, "_fmt_before_clip", None) or "jpg"
+        else:
+            fmt = "jpg" if self._save_is_jpg() else "png"
         return {
             "save_path": (self._save_path or "").replace("\\", "/"),
             "scale_pct": pct,
@@ -2351,7 +2462,7 @@ class PageImageProc(QWidget):
         if path:
             self._load_image(path)
 
-    def _load_image(self, path: str):
+    def _load_image(self, path: str, from_clip: bool = False):
         path = (path or "").strip()
         if not path or not os.path.isfile(path):
             self._status("无效路径", ok=False, hint="无效路径")
@@ -2370,12 +2481,16 @@ class PageImageProc(QWidget):
         self._update_actions_enabled()
         self._sync_edit_frames()
         self._set_op_status("已载入图片")
+        if from_clip:
+            self._apply_clip_jpg()
+        else:
+            self._release_clip_jpg()
 
     def _refresh_meta(self):
         p = self._src_path
         info = getattr(self, "lbl_meta_info", None)
         if not p:
-            self.lbl_meta.setFullText("拖拽图片到这里")
+            self.lbl_meta.setFullText(_EMPTY_HINT)
             if info is not None:
                 info.clear()
                 info.hide()
@@ -2390,7 +2505,7 @@ class PageImageProc(QWidget):
             if w <= 0 or h <= 0:
                 w, h = fw, fh
         elif w <= 0:
-            self.lbl_meta.setFullText("拖拽图片到这里")
+            self.lbl_meta.setFullText(_EMPTY_HINT)
             if info is not None:
                 info.clear()
                 info.hide()
@@ -2425,6 +2540,9 @@ class PageImageProc(QWidget):
             r = getattr(self, "radio_save_png", None)
             if r is not None and not r.isChecked():
                 r.setChecked(True)
+        elif getattr(self, "_clip_jpg_after_matting", False):
+            self._clip_jpg_after_matting = False
+            self._check_clip_jpg()
         self._update_actions_enabled()
         self._notify_prefs()
         self._set_op_status("已选%s" % _OP_STATUS_NAMES.get(key, "功能"))
@@ -2469,6 +2587,7 @@ class PageImageProc(QWidget):
 
         _en(getattr(self, "btn_save", None), bool(active) and ok and not busy)
         _en(getattr(self, "btn_clear", None), ok)
+        _en(getattr(self, "btn_paste", None), not busy)
         _en(getattr(self, "radio_save_png", None), not busy)
         _en(getattr(self, "radio_save_jpg", None), not busy and active != "matting")
         for b in (
@@ -2506,43 +2625,142 @@ class PageImageProc(QWidget):
         e.ignore()
 
     def keyPressEvent(self, event):
-        if event.modifiers() & Qt.ControlModifier and event.key() == Qt.Key_V:
-            if self._try_paste_clipboard():
-                event.accept()
-                return
+        if self._is_paste_shortcut(event) and self._try_paste_clipboard():
+            event.accept()
+            return
         super().keyPressEvent(event)
 
-    def _try_paste_clipboard(self) -> bool:
-        cb = QApplication.clipboard()
-        if cb is None:
-            return False
-        md = cb.mimeData()
-        if md is None:
-            return False
-        if md.hasUrls():
-            for url in md.urls():
-                p = url.toLocalFile()
-                if p and os.path.isfile(p) and os.path.splitext(p)[1].lower() in _IMG_EXTS:
-                    self._load_image(p)
-                    return True
-        if md.hasImage():
-            qimg = cb.image()
-            if qimg is not None and not qimg.isNull():
-                return self._load_from_qimage(qimg)
+    def eventFilter(self, obj, event):
+        """页面可见时，Ctrl+V 直接载入剪贴板图片。焦点在搜索框等文字框里时不拦截。"""
+        try:
+            if event is None or event.type() != QEvent.KeyPress or not self.isVisible():
+                return False
+            if not self._is_paste_shortcut(event):
+                return False
+            if self._focus_wants_text_paste():
+                return False
+            if self._upscale_busy or self._matting_busy:
+                return True
+            if self._try_paste_clipboard():
+                return True
+        except Exception:
+            log.debug("粘贴快捷键失败", exc_info=True)
         return False
 
-    def _load_from_qimage(self, qimg: QImage) -> bool:
+    @staticmethod
+    def _is_paste_shortcut(event) -> bool:
+        try:
+            if event.isAutoRepeat():
+                return False
+            if event.key() != Qt.Key_V:
+                return False
+            mods = event.modifiers()
+        except Exception:
+            return False
+        if mods & (Qt.AltModifier | Qt.ShiftModifier | Qt.MetaModifier):
+            return False
+        return bool(mods & Qt.ControlModifier)
+
+    def _focus_wants_text_paste(self) -> bool:
+        w = QApplication.focusWidget()
+        while w is not None:
+            name = type(w).__name__
+            if name in (
+                "QLineEdit", "QTextEdit", "QPlainTextEdit",
+                "QAbstractSpinBox", "QSpinBox", "QDoubleSpinBox",
+            ):
+                return True
+            w = w.parentWidget()
+        return False
+
+    def _on_paste_clicked(self):
+        if self._upscale_busy or self._matting_busy:
+            return
+        if not self._try_paste_clipboard():
+            self._status("剪贴板里没有图片", ok=False, hint="没有图片")
+
+    def _try_paste_clipboard(self) -> bool:
+        got = _clipboard_image()
+        if got is None:
+            return False
+        kind, payload = got
+        if kind == "path":
+            return self._save_pasted_jpg(path=payload)
+        return self._save_pasted_jpg(qimg=payload)
+
+    def _save_pasted_jpg(self, path: str = "", qimg: QImage = None) -> bool:
+        """剪贴板里的图直接写成输出目录里的 JPG，并出现在输出预览。"""
+        if not _has_pillow():
+            self._status("未安装 Pillow，请 pip install Pillow", ok=False, hint="缺少组件")
+            return False
         out_dir = self._ensure_out_dir()
         if not out_dir:
             return False
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        path = _unique_path(out_dir, f"clipboard_{ts}", ".png")
-        pm = QPixmap.fromImage(qimg)
-        if pm.isNull() or not pm.save(path, "PNG"):
-            self._status("剪贴板图片保存失败", ok=False, hint="剪贴失败")
+        stem = _src_stem(path) if path else "剪贴板"
+        dst = _op_save_path(out_dir, stem, "粘贴", ".jpg")
+        img = None
+        try:
+            img = _open_pil(path) if path else _qimage_to_pil(qimg)
+            _save_jpg(img, dst)
+        except Exception as e:
+            log.exception("粘贴保存失败")
+            self._status("剪贴板图片保存失败：%s" % e, ok=False, hint="保存失败")
             return False
-        self._load_image(path)
+        finally:
+            if img is not None:
+                try:
+                    img.close()
+                except Exception:
+                    pass
+        if not os.path.isfile(dst) or os.path.getsize(dst) < 32:
+            self._status("剪贴板图片保存失败", ok=False, hint="保存失败")
+            return False
+        self._add_output_cards([dst])
+        self._load_image(dst, from_clip=True)
+        self._status("已粘贴保存：%s" % os.path.basename(dst), hint="已存成JPG")
         return True
+
+    def _set_save_fmt_quiet(self, fmt: str) -> None:
+        jpg = getattr(self, "radio_save_jpg", None)
+        png = getattr(self, "radio_save_png", None)
+        target = jpg if fmt == "jpg" else png
+        if target is None or target.isChecked():
+            return
+        self._fmt_quiet = True
+        try:
+            target.blockSignals(True)
+            target.setChecked(True)
+            target.blockSignals(False)
+        finally:
+            self._fmt_quiet = False
+
+    def _hold_fmt_before_clip(self) -> None:
+        if getattr(self, "_clip_fmt_held", False):
+            return
+        self._fmt_before_clip = "jpg" if self._save_is_jpg() else "png"
+        self._clip_fmt_held = True
+
+    def _check_clip_jpg(self) -> None:
+        """剪贴板来的图用 JPG。抠图当时仍只能 PNG，离开抠图后再拨过来。"""
+        self._hold_fmt_before_clip()
+        if getattr(self, "_active_op", "") == "matting":
+            self._clip_jpg_after_matting = True
+            return
+        self._clip_jpg_after_matting = False
+        self._set_save_fmt_quiet("jpg")
+
+    def _apply_clip_jpg(self) -> None:
+        self._check_clip_jpg()
+
+    def _release_clip_jpg(self) -> None:
+        self._clip_jpg_after_matting = False
+        if not getattr(self, "_clip_fmt_held", False):
+            return
+        prev = getattr(self, "_fmt_before_clip", "jpg") or "jpg"
+        self._clip_fmt_held = False
+        if getattr(self, "_active_op", "") == "matting":
+            return
+        self._set_save_fmt_quiet(prev)
 
     # ── 输出目录 ────────────────────────────────────────────
     def _ensure_out_dir(self) -> str:
@@ -3142,6 +3360,7 @@ class PageImageProc(QWidget):
         self._set_upscale_bar(0, hide=True)
         self._set_matting_ui(mode="idle")
         self._active_op = "scale"
+        self._release_clip_jpg()
         self._refresh_meta()
         self._update_actions_enabled()
         self._sync_edit_frames()

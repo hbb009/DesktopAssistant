@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 # utils/translate_opus.py
-# 主进程侧：拉起无 Qt 的 translate_job 常驻子进程，供提示词页中/英预览调用。
+# 主进程侧：拉起 runtime/hy-mt2 里的 translate_job，供提示词页中/英预览调用。
+# 那个 Python 自带 transformers 5.6+。主环境保持 4.57，不在这里升级。
 from __future__ import annotations
 
 import json
@@ -27,10 +28,8 @@ def opus_model_dirs() -> Dict[str, str]:
         root = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "model"
         )
-    return {
-        "zh-en": os.path.join(root, "opus-mt-zh-en"),
-        "en-zh": os.path.join(root, "opus-mt-en-zh"),
-    }
+    folder = os.path.join(root, "Hy-MT2-1.8B")
+    return {"zh-en": folder, "en-zh": folder}
 
 
 def _ready(path: str) -> bool:
@@ -39,7 +38,8 @@ def _ready(path: str) -> bool:
     if not os.path.isfile(os.path.join(path, "config.json")):
         return False
     for name in ("pytorch_model.bin", "model.safetensors"):
-        if os.path.isfile(os.path.join(path, name)):
+        fp = os.path.join(path, name)
+        if os.path.isfile(fp) and os.path.getsize(fp) >= 3_000_000_000:
             return True
     try:
         for fn in os.listdir(path):
@@ -47,7 +47,7 @@ def _ready(path: str) -> bool:
             if (
                 os.path.isfile(fp)
                 and fn.endswith((".bin", ".safetensors"))
-                and os.path.getsize(fp) > 1_000_000
+                and os.path.getsize(fp) >= 3_000_000_000
             ):
                 return True
     except OSError:
@@ -79,15 +79,21 @@ def _spawn_daemon():
         frozen = bool(getattr(sys, "frozen", False)) or hasattr(sys, "_MEIPASS")
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+    py = sys.executable
+    if not frozen:
+        venv_py = os.path.join(root, "runtime", "hy-mt2", "Scripts", "python.exe")
+        if os.path.isfile(venv_py):
+            py = venv_py
     if frozen:
         cmd = [sys.executable, "--translate-server"]
     else:
-        cmd = [sys.executable, "-m", "utils.translate_job", "--server"]
+        cmd = [py, "-m", "utils.translate_job", "--server"]
 
     env = os.environ.copy()
     env.setdefault("OMP_NUM_THREADS", "1")
     env.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
     env["DESKASSIST_TRANSLATE_JOB"] = "1"
+    env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
     env.pop("QT_PLUGIN_PATH", None)
     env.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
 
@@ -126,12 +132,25 @@ def translate_batch(
     direction: str = "zh-en",
     force_cpu: bool = False,
     timeout: float = 180.0,
+    glossary: bool = True,
 ) -> List[str]:
     """阻塞调用：返回与 texts 等长的译文。失败抛 RuntimeError。"""
     direction = "zh-en" if direction == "zh-en" else "en-zh"
     if not opus_direction_ready(direction):
+        raise RuntimeError("缺少 Hy-MT2-1.8B（需要 model/Hy-MT2-1.8B）")
+    venv_py = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "runtime", "hy-mt2", "Scripts", "python.exe",
+    )
+    try:
+        from utils.app_paths import app_root, is_frozen
+        frozen = is_frozen()
+        venv_py = os.path.join(app_root(), "runtime", "hy-mt2", "Scripts", "python.exe")
+    except Exception:
+        frozen = bool(getattr(sys, "frozen", False))
+    if not frozen and not os.path.isfile(venv_py):
         raise RuntimeError(
-            f"缺少 opus-MT 模型（需要 model/opus-mt-{'zh-en' if direction == 'zh-en' else 'en-zh'}）"
+            "缺少 runtime/hy-mt2。Hy-MT2 要 transformers 5.6，不能改主环境。"
         )
     with _DAEMON_LOCK:
         daemon = _spawn_daemon()
@@ -145,6 +164,7 @@ def translate_batch(
             "texts": [str(x or "") for x in texts],
             "out": out_path,
             "force_cpu": bool(force_cpu),
+            "glossary": bool(glossary),
         }
         try:
             with open(meta_path, "w", encoding="utf-8") as f:
@@ -194,11 +214,15 @@ def make_translate_worker(parent=None):
         finished_ok = pyqtSignal(list, str)  # texts, direction
         finished_err = pyqtSignal(str, str)  # message, direction
 
-        def __init__(self, texts: List[str], direction: str, force_cpu: bool = False, parent=None):
+        def __init__(
+            self, texts: List[str], direction: str, force_cpu: bool = False,
+            parent=None, glossary: bool = True,
+        ):
             super().__init__(parent)
             self._texts = list(texts)
             self._direction = direction
             self._force_cpu = force_cpu
+            self._glossary = bool(glossary)
 
         def run(self):
             try:
@@ -206,7 +230,8 @@ def make_translate_worker(parent=None):
                     self._texts,
                     direction=self._direction,
                     force_cpu=self._force_cpu,
-                    timeout=180.0,
+                    timeout=600.0,
+                    glossary=self._glossary,
                 )
                 self.finished_ok.emit(outs, self._direction)
             except Exception as e:

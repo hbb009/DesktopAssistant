@@ -54,6 +54,7 @@ _PAGE_ATTR = {
     "video": "page_douyin",
     "audio": "page_audio",
     "gallery": "page_gallery",
+    "boot": "page_boot",
     "paste": "page_paste",
     "img_proc": "page_img_proc",
     "pixel_board": "page_pixel_board",

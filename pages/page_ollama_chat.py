@@ -1,15 +1,15 @@
 # pages/page_ollama_chat.py
-# 「本地对话」页面：连接本机 Ollama，选择模型进行多轮简单对话。
+# 「本地对话」页面：配置、工作目录、Agent。
 #   · 服务地址 / 上次模型写入 userdata/user.txt（ollama_chat 段）
-#   · /api/chat 流式输出在工作线程中进行，界面不阻塞
-#   · 对话记录只在内存中，「新对话」即清空
-#   · 对话页右下角分「记录」「文件」两页；拖进的文件随下一条发给本地模型
+#   · 普通「对话」页已去掉，聊天只走 Agent
+#   · 旧的联网 / 服从开关不再显示，已保存的值仍写回 user.txt
 
 from __future__ import annotations
 
 import base64
 import html
 import os
+import uuid
 
 from PyQt5.QtCore import QEvent, QSize, Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import (
@@ -36,6 +36,7 @@ from utils.ollama_chat import (
     DEFAULT_NUM_CTX, MIN_NUM_CTX, MAX_NUM_CTX, clamp_num_ctx, estimate_tokens, fit_history,
 )
 from utils.ollama_dirs import clear_partial_reads
+from utils.ollama_unload import reload_model
 from utils.ollama_skills import compose_skills, scan_skills, skills_dir
 from utils.qthread_util import stop_qthread
 
@@ -55,6 +56,28 @@ class _ModelsWorker(QThread):
             self.ok.emit(list_model_details(self.base))
         except Exception as e:
             self.failed.emit(str(e))
+
+
+class _ReloadWorker(QThread):
+    """新对话：等上一轮回答停稳，再卸载并重新加载同一个模型。只走 Ollama HTTP，不杀进程。"""
+    done = pyqtSignal(dict)
+
+    def __init__(self, base: str, model: str, wait_for=None, parent=None):
+        super().__init__(parent)
+        self.base, self.model = base, model
+        self.wait_for = list(wait_for or [])
+
+    def run(self):
+        for w in self.wait_for:
+            try:
+                w.wait(20000)   # 上一轮已被叫停，这里等它把连接关掉
+            except Exception:
+                pass
+        try:
+            res = reload_model(self.base, self.model)
+        except Exception as e:
+            res = {"ok": False, "text": f"重新加载模型没有完成：{e}"}
+        self.done.emit(res)
 
 
 class _ApiModelsWorker(QThread):
@@ -83,7 +106,8 @@ class _ChatWorker(QThread):
     def __init__(self, base: str, model: str, messages: list, web: bool = False,
                  dirs: bool = False, article_dir: str = "",
                  source: str = "ollama", api_base: str = "", api_key: str = "",
-                 extra_system: str = "", num_ctx: int = 0, opts: dict = None, parent=None):
+                 extra_system: str = "", num_ctx: int = 0, opts: dict = None,
+                 obedient: bool = True, session_id: str = "", parent=None):
         super().__init__(parent)
         self.num_ctx = int(num_ctx or 0)
         self.opts = {}   # 旧参数，已不再使用：分段、思考、续写都由程序自动决定
@@ -95,6 +119,8 @@ class _ChatWorker(QThread):
         self.api_base = api_base or ""
         self.api_key = api_key or ""
         self.extra_system = extra_system or ""
+        self.obedient = bool(obedient)
+        self.session_id = session_id or ""
         self._stop = False
         self._resp = None
 
@@ -122,7 +148,8 @@ class _ChatWorker(QThread):
             )
             if self.source == "api":
                 pieces = stream_openai_chat(
-                    self.api_base, self.api_key, self.model, self.messages, **common,
+                    self.api_base, self.api_key, self.model, self.messages,
+                    obedient=self.obedient, **common,
                 )
             else:
                 pieces = stream_chat(
@@ -132,6 +159,8 @@ class _ChatWorker(QThread):
                     on_think=self._on_think,
                     num_ctx=self.num_ctx,
                     on_notice=self.notice.emit,
+                    obedient=self.obedient,
+                    session_id=self.session_id,
                     **self.opts,
                     **common,
                 )
@@ -141,6 +170,7 @@ class _ChatWorker(QThread):
                 self.token.emit(piece)
         except Exception as e:
             if not self._stop:
+                log.exception("ollama 对话失败")
                 self.failed.emit(str(e))
 
     def _on_think(self, n: int):
@@ -540,10 +570,14 @@ class PageOllamaChat(QWidget):
     def __init__(self):
         super().__init__()
         self._prefs_dirty_cb = None
-        self._history = []          # [{"role":..., "content":...}]
+        self._history = []          # 旧对话页留下的内存记录，页签已去掉
+        self._web_pref = False
+        self._obey_pref = True
+        self._agent_session_id = uuid.uuid4().hex
         self._pending_model = ""    # user.txt 里记住的模型，列表回来后再选中
         self._models_worker = None
         self._chat_worker = None
+        self._reload_worker = None
         self._retired_workers = []
         self._status_lines = []
         self._attach_paths = []
@@ -575,18 +609,18 @@ class PageOllamaChat(QWidget):
             pass
         self.page_config = QWidget()
         self.page_config.setObjectName("TabOllamaConfig")
-        self.page_chat = QWidget()
-        self.page_chat.setObjectName("TabOllamaChat")
         self.page_work = QWidget()
         self.page_work.setObjectName("TabOllamaWork")
-        self.tabs.addTab(self.page_chat, "对话")
         self.tabs.addTab(self.page_config, "配置")
         self.tabs.addTab(self.page_work, "工作目录")
         self.tabs.currentChanged.connect(self._sync_tab_chrome)
         root.addWidget(self.tabs, 1)
         self._build_config_page()
-        self._build_chat_page()
         self._build_work_page()
+        from pages.agent_chat_panel import AgentChatPanel
+        self.agent_panel = AgentChatPanel(self)
+        self.tabs.addTab(self.agent_panel, "Agent")
+        self.tabs.setCurrentWidget(self.agent_panel)
         self._sync_tab_chrome()
 
         # 流式刷新节流：token 先进缓冲，定时只改最后一条气泡。
@@ -630,7 +664,7 @@ class PageOllamaChat(QWidget):
                 bar.setDrawBase(False)
             except Exception:
                 pass
-        if idx == 2:
+        if self.tabs.currentWidget() is getattr(self, "page_work", None):
             self._refresh_work_files()
 
     def _sync_side_tabs(self, *_):
@@ -801,15 +835,32 @@ class PageOllamaChat(QWidget):
         self.sw_web.setToolTip("开启后，模型可以搜索并打开网页。关闭后不能访问网络。")
         self.sw_web.clicked.connect(lambda *_: self._notify_prefs())
         bar.addWidget(self.sw_web, 0, Qt.AlignVCenter)
+        bar.addWidget(QLabel("听话"), 0, Qt.AlignVCenter)
+        self.sw_obey = SideToggleSwitch("#6366F1")
+        self.sw_obey.setChecked(True)
+        self.sw_obey.setToolTip(
+            "开启后，程序先判断你要干什么，只给对应的工具；"
+            "命令类任务关掉思考、降低随机性。听错了就关掉，恢复原来的全工具模式。"
+        )
+        self.sw_obey.clicked.connect(lambda *_: self._notify_prefs())
+        bar.addWidget(self.sw_obey, 0, Qt.AlignVCenter)
         self.btn_new = apply_medium_button(QPushButton("新对话"))
+        self.btn_new.setObjectName("OllamaBtnNew")
         self.btn_new.clicked.connect(self.new_conversation)
         self.btn_clear = apply_medium_button(QPushButton("清屏"))
+        self.btn_clear.setObjectName("OllamaBtnClear")
         self.btn_clear.clicked.connect(self.clear_screen)
         self.btn_send = apply_primary_button(QPushButton("发送"))
         self.btn_send.clicked.connect(self.send)
+        self.btn_stop = apply_medium_button(QPushButton("停止"))
+        self.btn_stop.setObjectName("OllamaBtnStop")
+        self.btn_stop.clicked.connect(self.stop_generation)
+        self.btn_stop.setEnabled(False)
+        self._fit_ollama_bar_buttons()
         bar.addWidget(self.btn_new, 0, Qt.AlignVCenter)
         bar.addWidget(self.btn_clear, 0, Qt.AlignVCenter)
         bar.addWidget(self.btn_send, 0, Qt.AlignVCenter)
+        bar.addWidget(self.btn_stop, 0, Qt.AlignVCenter)
         box.addLayout(bar)
 
         self.view = _ChatView()
@@ -843,10 +894,6 @@ class PageOllamaChat(QWidget):
         self.inp.setMinimumWidth(0)
         self.inp.send_requested.connect(self.send)
         left_lay.addWidget(self.inp, 1)
-        self.btn_stop = apply_medium_button(QPushButton("停止"))
-        self.btn_stop.clicked.connect(self.stop_generation)
-        self.btn_stop.setVisible(False)
-        left_lay.addWidget(self.btn_stop, 0, Qt.AlignTop)
         lay.addWidget(left, 3)
         self.side_tabs = _AttachTabs()
         self.side_tabs.setObjectName("OllamaSideTabs")
@@ -904,6 +951,29 @@ class PageOllamaChat(QWidget):
         self._sync_side_tabs()
         lay.addWidget(self.side_tabs, 1)
         box.addWidget(inp_row)
+
+    def _fit_ollama_bar_buttons(self):
+        """清屏、停止与发送同宽同高。新对话多一个字，在这个宽度上再加一个字宽。"""
+        send = getattr(self, "btn_send", None)
+        btn_new = getattr(self, "btn_new", None)
+        btn_clear = getattr(self, "btn_clear", None)
+        btn_stop = getattr(self, "btn_stop", None)
+        if send is None or btn_new is None or btn_clear is None or btn_stop is None:
+            return
+        for btn in (btn_new, btn_clear, send, btn_stop):
+            st = btn.style()
+            if st is not None:
+                st.unpolish(btn)
+                st.polish(btn)
+        width = send.sizeHint().width()
+        if width < 8:
+            return
+        extra = send.fontMetrics().horizontalAdvance("字")
+        if extra < 1:
+            extra = 12
+        btn_clear.setFixedWidth(width)
+        btn_stop.setFixedWidth(width)
+        btn_new.setFixedWidth(width + extra)
 
     def _build_work_page(self):
         row = QHBoxLayout(self.page_work)
@@ -1005,13 +1075,26 @@ class PageOllamaChat(QWidget):
                 chosen.append(sk)
         return compose_skills(chosen)
 
+    def _web_checked(self) -> bool:
+        sw = getattr(self, "sw_web", None)
+        if sw is not None:
+            return bool(sw.isChecked())
+        return bool(getattr(self, "_web_pref", False))
+
+    def _obey_checked(self) -> bool:
+        sw = getattr(self, "sw_obey", None)
+        if sw is not None:
+            return bool(sw.isChecked())
+        return bool(getattr(self, "_obey_pref", True))
+
     def export_settings(self) -> dict:
         model = self.cb_model.currentText().strip() or self._pending_model
         skills = list(self._enabled_skill_names)
         return {
             "server": self._base(),
             "model": model,
-            "web": bool(self.sw_web.isChecked()),
+            "web": self._web_checked(),
+            "obedient": self._obey_checked(),
             "dirs": self._save_enabled(),
             "article_dir": self._article_dir(),
             "source": "api" if self._using_api() else "ollama",
@@ -1038,7 +1121,19 @@ class PageOllamaChat(QWidget):
             web = d.get("web")
             if isinstance(web, str):
                 web = web.strip().lower() in ("1", "true", "yes", "on")
-            self.sw_web.setChecked(bool(web))
+            self._web_pref = bool(web)
+            sw_web = getattr(self, "sw_web", None)
+            if sw_web is not None:
+                sw_web.setChecked(bool(web))
+            obedient = d.get("obedient")
+            if obedient is None:
+                obedient = True
+            elif isinstance(obedient, str):
+                obedient = obedient.strip().lower() in ("1", "true", "yes", "on")
+            self._obey_pref = bool(obedient)
+            sw_obey = getattr(self, "sw_obey", None)
+            if sw_obey is not None:
+                sw_obey.setChecked(bool(obedient))
             folder = str(d.get("article_dir") or "").strip()
             if folder:
                 self.ed_article.setText(os.path.normpath(folder))
@@ -1074,10 +1169,13 @@ class PageOllamaChat(QWidget):
             self.refresh_models()
         self._reload_skills()
         self._refresh_work_files()
-        if self.tabs.currentWidget() is self.page_chat:
-            self.inp.setFocus()
+        inp = getattr(self, "inp", None)
+        if inp is not None and self.tabs.currentWidget() is getattr(self, "page_chat", None):
+            inp.setFocus()
 
     def shutdown(self):
+        if hasattr(self, 'agent_panel'):
+            self.agent_panel.shutdown()
         try:
             self._abandon_worker()
             for w in list(getattr(self, "_retired_workers", [])):
@@ -1085,6 +1183,7 @@ class PageOllamaChat(QWidget):
                 stop_qthread(w)
             stop_qthread(self._models_worker)
             stop_qthread(getattr(self, "_api_worker", None))
+            stop_qthread(getattr(self, "_reload_worker", None))
         except Exception:
             pass
 
@@ -1379,8 +1478,17 @@ class PageOllamaChat(QWidget):
 
     def _set_status(self, text: str, error: bool = False):
         color = tk("err") if error else tk("text_mut")
-        self.lbl_status.setStyleSheet(f"color:{color}; background:transparent;")
-        self.lbl_status.setText(text)
+        lbl = getattr(self, "lbl_status", None)
+        if lbl is None:
+            # 对话页已去掉。失败时写到配置页的模型计数上，避免刷新报错看不见。
+            if error:
+                count = getattr(self, "lbl_ollama_count", None)
+                if count is not None:
+                    count.setStyleSheet(f"color:{color}; background:transparent;")
+                    count.setText(text)
+            return
+        lbl.setStyleSheet(f"color:{color}; background:transparent;")
+        lbl.setText(text)
         QTimer.singleShot(0, self._scroll_status_bottom)
 
     def _scroll_status_bottom(self):
@@ -1471,12 +1579,12 @@ class PageOllamaChat(QWidget):
         if not text:
             return
         key = text
-        for prefix in ("正在思考", "正在写正文"):
+        for prefix in ("正在思考", "正在写正文", "规划中", "感知中"):
             if text.startswith(prefix):
                 key = prefix
                 break
         lines = self._status_lines
-        if lines and lines[-1][0] == key and key in ("正在思考", "正在写正文"):
+        if lines and lines[-1][0] == key and key in ("正在思考", "正在写正文", "规划中", "感知中"):
             lines[-1] = (key, text)
         elif lines and lines[-1][1] == text:
             pass
@@ -1490,7 +1598,13 @@ class PageOllamaChat(QWidget):
         return self._chat_worker is not None and self._chat_worker.isRunning()
 
     def send(self):
+        if hasattr(self, 'agent_panel') and self.agent_panel.busy:
+            self._push_status("新版 Agent 正在运行，请先暂停任务。")
+            return
         if self._busy():
+            return
+        if self._reloading():
+            self._push_status("模型正在重新加载，请稍候再发送。")
             return
         text = self.inp.toPlainText().strip()
         pending = list(self._attach_paths)
@@ -1573,11 +1687,13 @@ class PageOllamaChat(QWidget):
             self._base(), model, msgs,
             web=self.sw_web.isChecked(), dirs=self._save_enabled(),
             article_dir=self._article_dir(),
+            obedient=self.sw_obey.isChecked(),
             source="api" if self._using_api() else "ollama",
             api_base=self.ed_api_base.text().strip(),
             api_key=self.ed_api_key.text(),
             extra_system=self._extra_system(),
             num_ctx=0,   # 0 = 程序按任务自动决定
+            session_id=getattr(self, "_agent_session_id", "") or "",
             parent=self,
         )
         w.token.connect(self._on_token)
@@ -1620,6 +1736,35 @@ class PageOllamaChat(QWidget):
         self._painted = -1
         self._set_busy_ui(False)
 
+    # ── 新对话：先卸载、再重新加载当前模型（释放内存/显存和 KV 缓存）──────
+    def _reloading(self) -> bool:
+        w = getattr(self, "_reload_worker", None)
+        return w is not None and w.isRunning()
+
+    def _start_model_reload(self, wait_for=None):
+        if self._using_api():
+            return False
+        if self._reloading():
+            self._push_status("模型正在重新加载，请稍候。")
+            return False
+        model = self.cb_model.currentText().strip() or self._pending_model
+        if not model:
+            self._push_status("还没有选模型，没有重新加载。")
+            return False
+        w = _ReloadWorker(self._base(), model, wait_for=wait_for, parent=self)
+        w.done.connect(self._on_reload_done)
+        self._reload_worker = w
+        self.btn_send.setEnabled(False)   # 重新加载期间先不发送，避免和卸载撞在一起
+        self._push_status(f"正在卸载并重新加载模型：{model}…")
+        w.start()
+        return True
+
+    def _on_reload_done(self, res: dict):
+        res = res or {}
+        ok = bool(res.get("ok"))
+        self._push_status(str(res.get("text") or "重新加载模型没有完成。"), error=not ok)
+        self.btn_send.setEnabled(not self._busy())
+
     def stop_generation(self):
         running = self._chat_worker is not None
         self._abandon_worker()
@@ -1643,13 +1788,16 @@ class PageOllamaChat(QWidget):
         self._truncated = False
         self._trim_noticed = False
         clear_partial_reads()
+        self._agent_session_id = uuid.uuid4().hex
         self._render()
         self._push_status("已清屏。上一段上下文已清空。")
 
     def new_conversation(self):
+        # 停当前回答、清空对话、换新会话（不注入旧进度）。
+        # 不再执行 keep_alive=0 卸载再重载 30GB+ 大模型，保持已加载的显存分配与 30720 上下文常驻，实现秒开新对话。
         self.clear_screen()
         self._status_lines = []
-        self._push_status("已开始新对话。上一段上下文已清空。")
+        self._push_status("已开始新对话。上下文与会话进度已重置（模型保持常驻，无需重新加载）。")
 
     def _on_token(self, piece: str):
         if not self._from_current_worker():
@@ -1700,13 +1848,17 @@ class PageOllamaChat(QWidget):
                 self._history.append({"role": "notice", "content": note})
         self._set_busy_ui(False)
         self._restore_link_status = False
+        last = self._status_lines[-1][1] if self._status_lines else ""
         if not self._error_text and getattr(self, "_truncated", False):
-            last = self._status_lines[-1][1] if self._status_lines else ""
             if last != "未完成（被截断）":
                 self._push_status("未完成（被截断）", error=True)
+        elif not self._error_text and last.startswith("未完成"):
+            self._push_status(last, error=True)
         elif not self._error_text:
-            last = self._status_lines[-1][1] if self._status_lines else ""
-            if not last.startswith(("回答完成", "上下文已满", "模型仍在空转", "已停止", "未完成")):
+            if last.startswith(("回答完成", "上下文已满", "模型仍在空转", "已停止", "已完成",
+                                "没有新进展", "进度已记下", "上一轮回复被截断")):
+                pass
+            else:
                 n = 0
                 if self._history and self._history[-1].get("role") == "assistant":
                     n = len(self._history[-1].get("content") or "")
@@ -1715,8 +1867,17 @@ class PageOllamaChat(QWidget):
         self._render()
 
     def _set_busy_ui(self, busy: bool):
-        self.btn_send.setEnabled(not busy)
-        self.btn_stop.setVisible(busy)
+        btn_send = getattr(self, "btn_send", None)
+        btn_stop = getattr(self, "btn_stop", None)
+        if btn_send is None or btn_stop is None:
+            timer = getattr(self, "_render_timer", None)
+            if timer is not None:
+                timer.stop()
+            return
+        btn_send.setEnabled(not busy)
+        btn_stop.setEnabled(busy)
+        if not busy and self._reloading():
+            self.btn_send.setEnabled(False)
         self.cb_model.setEnabled(not busy)
         if busy:
             self._render_timer.start()
@@ -1916,6 +2077,8 @@ class PageOllamaChat(QWidget):
             QDesktopServices.openUrl(url)
 
     def _render(self, *_):
+        if getattr(self, "view", None) is None:
+            return
         self._render_dirty = False
         self._body_table = None
         self._painted = -1

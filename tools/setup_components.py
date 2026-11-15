@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""v9.18 组件一键安装 —— ffmpeg / torch / paddle / CosyVoice / 权重
+"""v9.19 组件一键安装 —— ffmpeg / torch / paddle / CosyVoice / 权重
 
 requirements.txt 与 requirements-models.txt 只管纯 pip 包。
 录屏要的 ffmpeg 是系统二进制，torch / paddlepaddle 要按本机 CUDA 选轮子，
@@ -27,13 +27,13 @@ import sys
 from pathlib import Path
 
 def _find_root() -> Path:
-    """定位项目根：从本文件往上找，认 mainv918.py（或任意 mainv9*.py）。
+    """定位项目根：从本文件往上找，认 mainv919.py（或任意 mainv9*.py）。
 
     这样脚本放在 tools/ 或直接放项目根都不会算错。
     """
     here = Path(__file__).resolve()
     for cand in (here.parent, *here.parents):
-        if (cand / "mainv918.py").is_file() or any(cand.glob("mainv9*.py")):
+        if (cand / "mainv919.py").is_file() or any(cand.glob("mainv9*.py")):
             return cand
     return here.parents[1] if len(here.parents) > 1 else here.parent
 
@@ -276,7 +276,7 @@ def do_git() -> bool:
 
 
 def do_deps() -> bool:
-    """requirements-models.txt：sounddevice / faster-whisper / paddleocr[doc-parser] / onnxruntime"""
+    """requirements-models.txt：sounddevice / faster-whisper / paddleocr[doc-parser] / onnxruntime-gpu"""
     hr("② 模型相关 pip 依赖（语音转写等）")
     req = ROOT / "requirements-models.txt"
     if not req.is_file():
@@ -505,10 +505,13 @@ def do_cosyvoice_code() -> bool:
 
 # CosyVoice 官方 requirements.txt 里这些不装：
 # torch/torchaudio —— 已按本机 CUDA 单独装过，版本被官方锁死会互相打架；
-# deepspeed / tensorrt-cu12* / onnxruntime-gpu —— 官方文件里标了仅 linux，Windows 用不上；
+# deepspeed / tensorrt-cu12* —— 官方文件里标了仅 linux；
+# onnxruntime / onnxruntime-gpu —— 官方 Windows 会装 CPU 版 1.18.0，Linux 才是 GPU 1.18.0。
+# 我们在 do_cosyvoice_deps 末尾统一装 onnxruntime-gpu==1.26.0（CUDA 12 + cuDNN 9）。
+# 1.27+ 是按 CUDA 13 编的，不要装。不要同时装 CPU 版 onnxruntime。
 # --extra-index-url —— 那行是给 torch 用的 pip 源，这里不装 torch 就不需要。
 _COSYVOICE_SKIP_PREFIX = ("--extra-index-url", "torch==", "torchaudio==",
-                          "deepspeed", "tensorrt-cu12", "onnxruntime-gpu")
+                          "deepspeed", "tensorrt-cu12", "onnxruntime")
 
 # requirements.txt 解析失败时的兜底清单（跟官方仓库同步过，Windows 可装的部分）
 _COSYVOICE_DEPS_FALLBACK = [
@@ -517,7 +520,7 @@ _COSYVOICE_DEPS_FALLBACK = [
     "grpcio-tools==1.57.0", "hydra-core==1.3.2", "HyperPyYAML==1.2.3",
     "inflect==7.3.1", "librosa==0.10.2", "lightning==2.2.4",
     "matplotlib==3.7.5", "modelscope==1.20.0", "networkx==3.1",
-    "omegaconf==2.3.0", "onnx==1.16.0", "onnxruntime==1.18.0",
+    "omegaconf==2.3.0", "onnx==1.16.0",
     "openai-whisper==20231117", "protobuf==4.25", "pyarrow==18.1.0",
     "pydantic==2.7.0", "pyworld==0.3.4", "rich==13.7.1", "soundfile==0.12.1",
     "tensorboard==2.14.0", "transformers==4.51.3", "x-transformers==2.11.24",
@@ -532,11 +535,10 @@ def _freeze_constraints() -> Path | None:
     没有这层约束的话，某个包的解析过程可能会把已经按你显卡装好的 CUDA 版
     torch 悄悄换成别的版本——而这几个包恰恰是最不该被动到的。
 
-    不锁 numpy：CosyVoice 要求的 onnxruntime==1.18.0 是按 NumPy 1.x
-    的 ABI 编译的，装在 NumPy 2.x 环境里会在 import 时报
-    `AttributeError: _ARRAY_API not found`。CosyVoice 官方 requirements.txt
-    本来就把 numpy 锁在 1.26.4，就是为了配这个 onnxruntime 版本——
-    如果这里连 numpy 也锁死，反而会挡住这个必要的降级。
+    不锁 numpy：官方 CosyVoice 会把 numpy 钉在 1.26.4。本项目的
+    onnxruntime-gpu==1.26.0 支持 numpy 1.x（>=1.21.6），与 1.26.4 兼容。
+    1.27+ 是按 CUDA 13 编的，不要装。这里不把 numpy 写进 constraints，
+    以免和官方 requirements 里的 numpy==1.26.4 打架。
     """
     try:
         from importlib.metadata import version, PackageNotFoundError
@@ -579,7 +581,7 @@ def do_cosyvoice_deps() -> bool:
     3. 单独装的每个包自己也会拉依赖（很多都不锁 torch 版本），
        解析过程可能悄悄把你按显卡装好的 torch 换掉。用 constraints
        文件把 torch/torchaudio 钉死，只允许装、不允许动版本（numpy 不锁，
-       原因见 _freeze_constraints 的说明——这里恰恰需要让它能降级）。
+       原因见 _freeze_constraints 的说明）。
     """
     hr("⑥ CosyVoice 自身依赖（hyperpyyaml 等，clone 源码不会带上）")
     req = MODEL / "CosyVoice" / "requirements.txt"
@@ -599,14 +601,14 @@ def do_cosyvoice_deps() -> bool:
 
     cons = _freeze_constraints()
     if cons:
-        print("  已钉住 torch/torchaudio/numpy 当前版本，避免被子依赖悄悄换掉")
+        print("  已钉住 torch/torchaudio 当前版本，避免被子依赖悄悄换掉")
     cons_args = ("-c", str(cons)) if cons else ()
 
     # 用老式 setup.py + pkg_resources 的包，需要 --no-build-isolation 才装得上
     legacy_pkg_prefix = ("openai-whisper", "pyworld")
 
-    print(f"  共 {len(pkgs)} 个包（已跳过 torch/torchaudio/deepspeed/tensorrt，"
-          "这些要么单独装过要么只给 Linux 用），逐个装，互不连累：")
+    print(f"  共 {len(pkgs)} 个包（已跳过 torch/torchaudio/deepspeed/tensorrt/官方 onnxruntime，"
+          "这些要么单独装过要么由下面统一处理），逐个装，互不连累：")
     failed = []
     try:
         for spec in pkgs:
@@ -620,6 +622,13 @@ def do_cosyvoice_deps() -> bool:
                 cons.unlink()
             except OSError:
                 pass
+
+    # 官方 Windows 会装 CPU 版 1.18.0，和 GPU 版不能同时装。
+    # 统一装 1.26.0（CUDA 12 + cuDNN 9）。1.27+ 是按 CUDA 13 编的，不装。
+    print("  安装 onnxruntime-gpu==1.26.0（CUDA 12 + cuDNN 9；不与 CPU 版 onnxruntime 同时装）")
+    run([PY, "-m", "pip", "uninstall", "-y", "onnxruntime"], check=False)
+    if not pip("onnxruntime-gpu==1.26.0"):
+        failed.append("onnxruntime-gpu==1.26.0")
 
     if failed:
         print(f"\n  ! {len(failed)} 个没装上：" + "、".join(failed))
@@ -917,7 +926,7 @@ def main() -> int:
     args = ap.parse_args()
     ASSUME_YES = args.yes
 
-    print("桌面助手 v9.18 · 组件安装")
+    print("桌面助手 v9.19 · 组件安装")
     print("项目根：", ROOT)
     print("Python：", PY)
 

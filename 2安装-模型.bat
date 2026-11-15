@@ -1,14 +1,14 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title DesktopAssistant v9.18 - Step2 Models
+title DesktopAssistant v9.19 - Step2 Models
 chcp 65001 >nul
 set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
 echo.
 echo ========================================
 echo   Step 2/3  Download models
-echo   DesktopAssistant v9.18
+echo   DesktopAssistant v9.19
 echo ========================================
 echo.
 where python >nul 2>&1

@@ -11,7 +11,7 @@ import ctypes
 # ── 打包后语音转写子进程：必须在 import PyQt5 之前退出 ──────────────
 # Windows 上 QApplication/Qt DLL 与 ctranslate2 同进程会 access violation。
 # 开发：python -m utils.whisper_job <meta.json>
-# 打包：mainv918.exe --whisper-job <meta.json>
+# 打包：mainv919.exe --whisper-job <meta.json>
 if "--whisper-job" in sys.argv:
     _wj_args = [a for a in sys.argv[1:] if a != "--whisper-job"]
     from utils.whisper_job import main as _whisper_job_main
@@ -21,14 +21,14 @@ if "--whisper-job" in sys.argv:
 # 主进程里的 Qt 会与 Paddle / OpenCV 抢 DLL，
 # 常见表现是空 ImportError，「检测」和识字都失败。
 # 开发：python -m utils.ocr_job <meta.json>
-# 打包：mainv918.exe --ocr-job <meta.json>
+# 打包：mainv919.exe --ocr-job <meta.json>
 if "--ocr-job" in sys.argv:
     _oj_args = [a for a in sys.argv[1:] if a != "--ocr-job"]
     from utils.ocr_job import main as _ocr_job_main
     raise SystemExit(_ocr_job_main(_oj_args))
 
 # 常驻 OCR 服务（管线只加载一次，后续截图识别复用）：
-# 打包：mainv918.exe --ocr-server
+# 打包：mainv919.exe --ocr-server
 if "--ocr-server" in sys.argv:
     from utils.ocr_job import server_main as _ocr_server_main
     raise SystemExit(_ocr_server_main())
@@ -36,17 +36,24 @@ if "--ocr-server" in sys.argv:
 # ── 语音克隆子进程：同样必须在 import PyQt5 之前退出 ──────────────
 # 主进程里的 Qt 会与 PyTorch / onnxruntime 抢 DLL。
 # 开发：python -m utils.cosyvoice_job <meta.json>
-# 打包：mainv918.exe --cosyvoice-job <meta.json>
+# 打包：mainv919.exe --cosyvoice-job <meta.json>
 if "--cosyvoice-job" in sys.argv:
     _cj_args = [a for a in sys.argv[1:] if a != "--cosyvoice-job"]
     from utils.cosyvoice_job import main as _cosyvoice_job_main
     raise SystemExit(_cosyvoice_job_main(_cj_args))
 
+# 阅读器朗读：模型常驻，避免每点一次都重新加载。
+# 开发：python -m utils.cosyvoice_job --serve
+# 打包：mainv919.exe --cosyvoice-serve
+if "--cosyvoice-serve" in sys.argv:
+    from utils.cosyvoice_job import serve_main as _cosyvoice_serve_main
+    raise SystemExit(_cosyvoice_serve_main())
+
 # AuK 同样不能和 Qt 待在一个进程里。
 # 加新功能不要动已经在用的语音克隆 / 听写 / 下载。为 AuK 升级全局
 # transformers 曾让 CosyVoice 生成乱声，缺的包装在这个子进程里解决。
 # 开发：python -m utils.auk_job --serve
-# 打包：mainv918.exe --auk-job --serve
+# 打包：mainv919.exe --auk-job --serve
 if "--auk-job" in sys.argv:
     _aj_args = [a for a in sys.argv[1:] if a != "--auk-job"]
     from utils.auk_job import main as _auk_job_main
@@ -55,7 +62,7 @@ if "--auk-job" in sys.argv:
 # ── 抠图子进程：同样必须在 import PyQt5 之前退出 ──────────────
 # 主进程里的 Qt 会与 onnxruntime 抢 DLL。
 # 开发：python -m utils.matting_job <meta.json>
-# 打包：mainv918.exe --matting-job <meta.json>
+# 打包：mainv919.exe --matting-job <meta.json>
 if "--matting-job" in sys.argv:
     _mj_args = [a for a in sys.argv[1:] if a != "--matting-job"]
     from utils.matting_job import main as _matting_job_main
@@ -63,7 +70,7 @@ if "--matting-job" in sys.argv:
 
 # ── 界面缩放：必须在创建 QApplication 之前写入 QT_SCALE_FACTOR ──────────
 # 「关于」弹窗改倍数 → 写 user.txt → 重启；此处读偏好并设全局缩放。
-# v9.13 重构时曾漏掉这段，导致选 1.5× 等后重启仍停在 1×；入口为 mainv918.py。
+# v9.13 重构时曾漏掉这段，导致选 1.5× 等后重启仍停在 1×；入口为 mainv919.py。
 _UI_SCALE_OPTIONS = (0.75, 1.0, 1.25, 1.5)
 
 
@@ -215,7 +222,7 @@ def _relaunch_as_admin():
     """用管理员权限重新启动当前脚本，然后退出当前进程。
 
     默认不再自动提权（减少 UAC 弹窗与杀软误报）。
-    需要时：python mainv918.py --as-admin
+    需要时：python mainv919.py --as-admin
     目录映射页的 mklink 也可单独勾选「以管理员权限执行」。
     """
     script = os.path.abspath(sys.argv[0])
@@ -291,7 +298,7 @@ def _patch_windows_fonts(app):
 
 if __name__ == "__main__":
     log.info(
-        "启动桌面助手 v9.18 admin=%s frozen=%s argv=%s "
+        "启动桌面助手 v9.19 admin=%s frozen=%s argv=%s "
         "ui_scale=%s QT_SCALE_FACTOR=%s",
         _is_admin(),
         getattr(sys, "frozen", False),

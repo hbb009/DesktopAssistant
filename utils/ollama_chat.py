@@ -1,7 +1,10 @@
 # utils/ollama_chat.py
 # ---------------------------------------------------------------------------
 # 本地 Ollama 对话：模型列表 + /api/chat 流式输出（纯函数，不碰 Qt）
-# 参考 D:\API\utils\ollama_client.py，地址可配置、错误转成中文提示。
+# 针对本地 30B+ GGUF 模型（如 qwen3.6-jailbreak:q6）升级：
+#   1. 自动拦截并分流混在 content 中的 <think>...</think> 标签，避免思考文本刷屏或被误存进文件；
+#   2. 限制单轮思考上限（2400 字），防止模型长篇空想挤占 30720 上下文；
+#   3. 兼容没有配置原生 Tools 模板的自定义 GGUF 模型（在系统提示中注入精简工具定义，并支持多种工具调用格式解析）。
 # ---------------------------------------------------------------------------
 
 from __future__ import annotations
@@ -23,38 +26,38 @@ from utils import ollama_auto as _A
 from utils.ollama_auto import OUTPUT_RESERVE
 from utils.ollama_dirs import TOOL_NAMES as _DIR_TOOL_NAMES
 from utils.ollama_dirs import DirBudget, run_dir_tool, status_text as _dir_status
+from utils.ollama_intent import classify as classify_intent
+from utils.ollama_intent import folder_system as intent_folder_system
 
 log = get_logger("deskassist.ollama")
 
 DEFAULT_BASE = "http://127.0.0.1:11434"
-# 思考超过这么多字还没有正文，就停下，改为直接写。避免占满上下文后把稿子写好几遍。
-_THINK_CAP = 12000
+# 收紧单轮思考上限，防止推理模型长篇空想撑爆 30720 上下文
+_THINK_CAP = 2400
 
-# 上下文长度（token）。Ollama 默认只有 2048/4096，长网页会被悄悄从前面截掉。
-DEFAULT_NUM_CTX = 16384
+# 上下文长度（token）。默认对齐 30720 稳态窗口。
+DEFAULT_NUM_CTX = 30720
 MIN_NUM_CTX = 2048
 MAX_NUM_CTX = 131072
-# 这一次请求的设置与回调（工作线程各自一份）。
 _CTX = threading.local()
 _CJK_RE = re.compile(r"[\u3000-\u303f\u3400-\u9fff\uf900-\ufaff\uff00-\uffef]")
 
-
-DEFAULT_THINK_RATIO = 0.28     # 思考最多占上下文的比例（按字折算）
+DEFAULT_THINK_RATIO = 0.08     # 思考最多占上下文的比例（按字折算）
 DEFAULT_MAX_CONTINUE = 8       # 回答被长度截断后自动续写的次数
 _THINK_HANDOVER = (
-    "你已经思考得足够多，现在直接输出正文，不要再调用读取工具；材料已在上文。"
-    "写完正文后如需保存，调用 save_article（只写 filename，程序会把你的正文存进去）。"
+    "你已经思考得足够多，现在直接输出正文或调用工具，不要再重复读取已读文件；材料已在上文。"
+    "保存时调用 save_article，必须同时传 filename 与 content 正文。"
 )
 
 
 def _think_cap() -> int:
-    """思考字数上限：随上下文长度变化，约占 28%，最少 4000 字。"""
+    """思考字数上限：控制在 1500–3600 字以内，避免长考挤占正文空间。"""
     n = _ctx_num() or DEFAULT_NUM_CTX
     try:
         r = float(getattr(_CTX, "think_ratio", 0) or DEFAULT_THINK_RATIO)
     except Exception:
         r = DEFAULT_THINK_RATIO
-    return max(4000, int(n * r * 1.5))
+    return max(1500, min(4000, int(n * r * 1.2)))
 
 
 def clamp_num_ctx(value) -> int:
@@ -66,17 +69,14 @@ def clamp_num_ctx(value) -> int:
 
 
 def estimate_tokens(text) -> int:
-    """粗估 token：中日韩字约 1.5 字/token，其他约 3.5 字符/token。"""
+    """保守估计 token：中日韩按一字一个，其余按三字符一个；包含工具参数。"""
     s = str(text or "")
     cjk = len(_CJK_RE.findall(s))
-    return int(cjk / 1.5 + (len(s) - cjk) / 3.5) + 1
+    return int(cjk + (len(s) - cjk) / 3) + 1
 
 
 def fit_history(messages: list, num_ctx: int, reserve_tokens: int = 0, ratio: float = 0.8):
-    """按上下文长度裁掉最早的几轮。system 和最后一条用户消息永远保留。
-
-    返回 (保留的消息, 丢掉的条数, 最后一条用户消息的 token 估计, 是否单条就超长)。
-    """
+    """按上下文长度裁掉最早的几轮。system 和最后一条用户消息永远保留。"""
     msgs = [dict(m) for m in (messages or []) if isinstance(m, dict)]
     if not msgs:
         return [], 0, 0, False
@@ -117,9 +117,9 @@ def _ctx_num() -> int:
 
 
 def _ctx_char_cap() -> int:
-    """单个工具结果最多给模型多少字：约占上下文的 40%。"""
+    """限制阅读片段，给分析笔记、工具协议和文件输出预留空间。"""
     n = _ctx_num() or DEFAULT_NUM_CTX
-    return max(3000, int(n * 0.4 * 1.5))
+    return max(512, min(4000, int(n * 0.15)))
 
 
 def _cap_text(text: str, cap: int) -> str:
@@ -145,7 +145,7 @@ def _mark_truncated() -> None:
     n = _ctx_num() or DEFAULT_NUM_CTX
     saved = "，所以没有保存文件" if getattr(_CTX, "dirs", False) else ""
     _notice(
-        f"回答太长没能写完{saved}：程序已自动关闭思考、把上下文放大到 {n}，并自动续写，仍然被截断。"
+        f"回答太长没能写完{saved}：程序已自动关闭思考、使用上下文 {n}，并自动续写，仍然被截断。"
         "已写出的部分在上面；发送「继续」可以接着写，内容很长时可以让我分段处理。"
     )
     fn = getattr(_CTX, "on_status", None)
@@ -280,7 +280,6 @@ _UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 )
 
-# 只有「联网」打开时才放进 /api/chat。关闭时不声明工具，模型无法发起访问。
 _WEB_TOOLS = [
     {
         "type": "function",
@@ -318,27 +317,97 @@ _WEB_SYSTEM = (
     "用户说「今天」时，按下面给出的本地日期理解，不要改成别的日期。"
 )
 
-# 只有「目录」打开时才放进 /api/chat。文件只能进用户选定的那一个文件夹。
 _DIR_TOOLS = [
     {
         "type": "function",
         "function": {
             "name": "list_articles",
-            "description": "列出用户指定的文章目录里有哪些文件。不要传别的路径。",
-            "parameters": {"type": "object", "properties": {}},
+            "description": (
+                "列出工作目录里的文件和子文件夹。默认递归列出子目录中的 .md/.txt，每项带 #编号 和 path=完整相对路径。"
+                "要只看某个子文件夹，传入 path 或 index。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "要列出的子文件夹相对路径"},
+                    "index": {"type": "integer", "description": "清单中的文件夹编号"},
+                    "recursive": {"type": "boolean", "description": "是否递归列出子目录，默认 true"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "rename_article",
+            "description": (
+                "只改工作目录里的文件名，不读取、不改写文件内容。"
+                "filename 或 index 指定原文件；new_filename 可省略（省略时程序只保留原名中的汉字和数字，并保留扩展名）。"
+                "也可传入 renames 列表，或 mode=\"han_digits\" 批量处理清单中的文件。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string", "description": "原文件的完整相对路径"},
+                    "index": {"type": "integer", "description": "list_articles 清单中的编号，从 1 开始"},
+                    "new_filename": {"type": "string", "description": "新文件名（可省略）"},
+                    "mode": {"type": "string", "description": "han_digits 表示按「只留汉字和数字」批量处理"},
+                    "renames": {
+                        "type": "array",
+                        "description": "批量重命名列表，每项含 filename/index 及可选 new_filename",
+                        "items": {"type": "object"},
+                    },
+                },
+            },
         },
     },
     {
         "type": "function",
         "function": {
             "name": "read_article",
-            "description": "阅读文章目录里的一篇 .md 或 .txt。filename 只写文件名。文件很长时只返回前面一部分，这时不能整篇覆盖它。",
+            "description": (
+                "阅读工作目录里的一篇 .md 或 .txt（可含子目录）。"
+                "优先传 index=清单编号（如 1），或把 path= 引号内的完整相对路径原样复制到 filename（不要拆开空格或标点）。"
+                "文件很长时返回里会提示 start=数字，请用同一 filename/index 带上该 start 继续读完。"
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "filename": {"type": "string", "description": "文件名，例如 春日随笔.md"},
+                    "filename": {"type": "string", "description": "完整相对路径，不要拆开空格和标点"},
+                    "index": {"type": "integer", "description": "清单中的编号，从 1 开始（与 filename 二选一）"},
+                    "start": {"type": "integer", "description": "从第几个字继续读，默认 0"},
                 },
-                "required": ["filename"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_unread_batch",
+            "description": "读取下一个尚未处理完的文件（一次只读一个）。一般请直接用 read_article 指定 index 或 filename。",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read_notes",
+            "description": "分页读取已保存的分析笔记，续做任务或原始上下文被压缩时使用。",
+            "parameters": {"type": "object", "properties": {"start": {"type": "integer", "description": "起始字符位置，默认0"}}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_notes",
+            "description": "记录当前阅读片段的分析笔记，阅读下一片段前调用。content 写关键发现与下一步计划。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "content": {"type": "string", "description": "阶段性发现与下一步计划"},
+                    "files": {"type": "string", "description": "覆盖的文件相对路径（可选）"},
+                },
+                "required": ["content"],
             },
         },
     },
@@ -347,21 +416,25 @@ _DIR_TOOLS = [
         "function": {
             "name": "save_article",
             "description": (
-                "把文章保存到用户指定的目录。filename 只写文件名，不要写盘符。"
-                "只传 filename（和可选的 mode）：程序把你这一轮回复里写的正文原样存进文件，不要把全文再写进参数。"
-                "mode=overwrite（默认）覆盖同名文件；mode=append 追加到文件末尾，长文可以分几次保存。"
+                "把文章保存到用户指定的工作目录。filename 写相对路径（可含子目录，程序会自动创建）。"
+                "必须传入 content 实际正文，不能只传 filename；长文分段，每段不超过1000字。"
+                "仅保存已抓取网页时允许 content 为空字符串，须同时传入 url 以使用网页缓存。"
+                "mode=\"overwrite\"（默认）覆盖；mode=\"append\" 追加。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "filename": {"type": "string", "description": "文件名，例如 春日随笔.md"},
+                    "filename": {"type": "string", "description": "完整相对路径，例如 第一章.md 或 子目录/说明.md"},
+                    "content": {"type": "string", "description": "正文，长文每次不超过1000字，分段追加"},
+                    "url": {"type": "string", "description": "若保存刚打开的网页，填该页网址"},
+                    "complete": {"type": "boolean", "description": "文件是否全部写完，分段写入的中间段必须为 false，最后一段为 true，默认 true"},
                     "mode": {
                         "type": "string",
                         "enum": ["overwrite", "append"],
                         "description": "overwrite 覆盖（默认），append 追加到末尾",
                     },
                 },
-                "required": ["filename"],
+                "required": ["filename", "content"],
             },
         },
     },
@@ -371,22 +444,46 @@ _DIR_TOOLS = [
 def _dir_system(folder: str) -> str:
     where = (folder or "").strip() or "（还没有选择）"
     return (
-        "你在帮用户写文章。正文用简体中文，除非用户要求别的语言。"
-        f"文章只能保存到这个目录：{where}。"
-        "用户要求保存，或文章已经写完并适合落成文件时，调用 save_article。"
-        "filename 只写文件名，例如「春日随笔.md」，不要写盘符，也不要写这个目录以外的路径。"
-        "全文只写一次：先在回复里直接写出全文，然后调用 save_article，只写 filename，"
-        "程序会把这一轮回复的正文原样存进文件。不要把全文再写进工具参数。"
-        "不要在思考里把同一篇文章再写一遍，思考尽量短。"
-        "文章很长时可以分段：第一段 mode=overwrite，后面每段 mode=append 追加。"
-        "保存会直接写入这个目录，同名文件会被覆盖，不要再向用户确认。"
-        "要查看目录里已有的文章，用 list_articles；要改旧文，先 read_article。"
-        "read_article 提示「只读了前面一部分」时，不能整篇覆盖那个文件，只能追加或另存为新文件名。"
-        "不要假装已经保存，以工具返回为准；保存后用一两句话说明存了哪个文件、多少字。"
+        f"工作目录：{where}。所有文件读写都限定在此目录内，filename 写相对路径（不要写盘符）。\n"
+        "查看目录用 list_articles；读取文章用 read_article（优先传 index=编号 或完整 filename）；"
+        "保存文章用 save_article（必须同时传 filename 和 content 正文；长文可用 mode=\"append\" 分段追加）；"
+        "若只改文件名不改内容，只用 list_articles 和 rename_article。\n"
+        "请以工具实际返回为准，未调用 save_article 并收到「已保存：」前不要声称已保存。"
     )
+
+
+def _format_tools_prompt_fallback(tools: list) -> str:
+    """针对自定义 GGUF 模型（如 qwen3.6-jailbreak:q6，其 Modelfile 可能未包含 {{ .Tools }} 渲染）：
+    在 system 提示词末尾附上精简工具签名说明，确保即使底层模板丢弃 tools 字段，模型也能准确发起 <tool_call>。"""
+    if not tools:
+        return ""
+    lines = [
+        "【可用工具与调用格式】",
+        "如需调用工具，请优先使用原生 tool_calls；若直接输出文本工具调用，请严格按以下格式输出：",
+        "<tool_call>",
+        "{\"name\": \"工具名\", \"arguments\": {\"参数名\": \"参数值\"}}",
+        "</tool_call>",
+        "当前可用工具列表：",
+    ]
+    for t in tools:
+        fn = (t or {}).get("function") or {}
+        name = fn.get("name")
+        if not name:
+            continue
+        props = ((fn.get("parameters") or {}).get("properties")) or {}
+        req = set(((fn.get("parameters") or {}).get("required")) or [])
+        arg_bits = []
+        for k, v in props.items():
+            mark = "*" if k in req else ""
+            arg_bits.append(f"{k}{mark}:{v.get('type', 'string')}")
+        lines.append(f"- {name}({', '.join(arg_bits)}): {(fn.get('description') or '')[:90]}")
+    return "\n".join(lines)
+
 
 _TOOL_OPEN = "<tool_call>"
 _TOOL_CLOSE = "</tool_call>"
+_THINK_OPEN = "<think>"
+_THINK_CLOSE = "</think>"
 _FN_RE = re.compile(r"<function=([^\s>/]+)>(.*?)</function>", re.S | re.I)
 _PARAM_RE = re.compile(
     r"<parameter=(?:name=)?[\"']?([^\s>\"']+)[\"']?>(.*?)</parameter>",
@@ -496,47 +593,38 @@ def web_search(query: str, limit: int = 5) -> str:
 
 
 def web_fetch(url: str, limit: int = 20000) -> str:
-    """打开网页并抽出正文。只接受 http/https。"""
+    """打开网页并抽出正文和链接。只接受 http/https。"""
     url = (url or "").strip()
     if url.startswith("www."):
         url = "https://" + url
     if not url.startswith(("http://", "https://")):
         return "只能打开 http 或 https 地址。"
     try:
-        r = requests.get(
-            url,
-            headers={"User-Agent": _UA, "Accept-Language": "zh-CN,zh;q=0.9"},
-            timeout=15,
-            stream=True,
-            allow_redirects=True,
-        )
-        r.raise_for_status()
-        ctype = (r.headers.get("Content-Type") or "").lower()
-        if ctype and not any(k in ctype for k in ("text/", "html", "xml", "json", "javascript")):
-            return f"这个地址不是网页正文（{ctype.split(';')[0]}），没有读取。"
-        buf = b""
-        for chunk in r.iter_content(8192):
-            if not chunk:
-                continue
-            buf += chunk
-            if len(buf) >= 1_200_000:
-                break
+        page = _A.fetch_page(url)
+        title = (page.get("title") or "").strip()
+        text = (page.get("text") or "").strip()
+        links = page.get("links") or []
+        from utils.ollama_agent import remember_fetch
+        remember_fetch(page.get("url") or url, title, text)
+        full_n = len(text)
+        keep = 600
+        if full_n > keep:
+            shown = (
+                text[:keep].rstrip()
+                + f"\n…（正文共 {full_n} 字，已缓存。保存时调用 save_article，传 filename、content=空字符串，"
+                "需要时加上这个 url。不要把正文抄进回复。）"
+            )
+        else:
+            shown = text or "页面没有读到正文。"
+        head = f"【已打开网页】标题：《{title or '无标题'}》 字数：{full_n}\n网址：{page.get('url') or url}\n\n"
+        if links:
+            lines = [f"- {name}\n  {href}" for name, href in links[:40]]
+            shown = (shown + "\n\n页面上的链接：\n" + "\n".join(lines)).strip()
+        if limit and len(shown) > limit:
+            shown = shown[:limit] + "\n…（后面已截断）"
+        return (head + shown).strip()
     except Exception as e:
         return f"打开网页失败：{e}"
-    finally:
-        try:
-            r.close()
-        except Exception:
-            pass
-    if b"\x00" in buf[:200]:
-        return "这个地址不是文本网页，没有读取。"
-    enc = r.encoding or "utf-8"
-    text = _html_text(buf.decode(enc, "replace"))
-    if not text:
-        return "页面没有读到正文。"
-    if len(text) > limit:
-        text = text[:limit] + "\n…（后面已截断）"
-    return text
 
 
 def _normalize_call(call: dict) -> dict:
@@ -591,6 +679,7 @@ def _run_tool(
     article_dir: str = "",
     reply_body: str = "",
     notices: Optional[list] = None,
+    progress=None,
 ) -> str:
     cap = _ctx_char_cap()
     if name in _DIR_TOOL_NAMES:
@@ -602,6 +691,7 @@ def _run_tool(
             name, args, article_dir=article_dir,
             should_stop=should_stop, budget=budget,
             reply_body=reply_body, read_chars=cap, notices=notices,
+            progress=progress,
         )
     if name == "web_search":
         query = str(args.get("query") or args.get("q") or "").strip()
@@ -651,8 +741,23 @@ def _last_assistant_text(messages: list) -> str:
     return ""
 
 
+_NO_TOOLS_RE = re.compile(
+    r"does not support tools|doesn't support tools|do not support tools|"
+    r"not support(?:ed)?\s+(?:for\s+)?tools?|tools?\s+(?:are|is)\s+not\s+supported|"
+    r"no tool support|tool(?:s| use| calling)? (?:is |are )?unsupported",
+    re.I,
+)
+
+
 def _no_tool_support(exc: Exception) -> bool:
-    return "tool" in str(exc).lower()
+    text = str(exc or "")
+    try:
+        from utils.ollama_agent import bad_tool_args_error
+        if bad_tool_args_error(text):
+            return False
+    except Exception:
+        pass
+    return bool(_NO_TOOLS_RE.search(text))
 
 
 def _tag_prefix_suffix(text: str, tag: str) -> str:
@@ -680,33 +785,30 @@ def _json_tool_calls(text: str) -> list:
             i = j + 1
             continue
         i = j + max(end, 1)
-        if not isinstance(obj, dict) or not obj.get("name"):
+        if not isinstance(obj, dict):
+            continue
+        name = obj.get("name") or obj.get("tool") or obj.get("action")
+        if not name:
             continue
         args = obj.get("arguments")
         if args is None:
-            args = obj.get("parameters") or {}
-        if isinstance(args, str):
+            args = obj.get("parameters") or obj.get("args")
+        if args is None:
+            # 扁平 JSON：把除 name/tool/action 外的键作为参数
+            args = {k: v for k, v in obj.items() if k not in ("name", "tool", "action")}
+        elif isinstance(args, str):
             try:
                 args = json.loads(args) if args.strip() else {}
             except Exception:
                 args = {"query": args}
         if not isinstance(args, dict):
             args = {}
-        out.append({"type": "function", "function": {"name": str(obj["name"]).strip(), "arguments": args}})
+        out.append({"type": "function", "function": {"name": str(name).strip(), "arguments": args}})
     return out
 
 
 def _parse_text_tool_calls(text: str) -> list:
-    """识别写在正文里的工具调用。当前模型不会走接口字段，而是输出：
-
-    <tool_call>
-    <function=web_search>
-    <parameter=query>
-    关键词
-    </parameter>
-    </function>
-    </tool_call>
-    """
+    """识别写在正文里的工具调用（支持 <tool_call>、<function=...> 等格式）。"""
     if not text:
         return []
     low = text.lower()
@@ -752,41 +854,77 @@ def _parse_text_tool_calls(text: str) -> list:
 
 
 class _ToolTextFilter:
-    """流式正文里先扣下 <tool_call>，不显示给用户。"""
+    """流式正文里先扣下 <tool_call> 与混在 content 中的 <think>...</think>，不直接刷到聊天界面。"""
 
     def __init__(self):
         self.buf = ""
         self.calls: list = []
+        self.thinking: list = []
+        self._in_think = False
 
     def feed(self, piece: str) -> str:
         if not piece:
             return ""
         self.buf += piece
         out = []
-        while True:
+        while self.buf:
             low = self.buf.lower()
-            start = low.find(_TOOL_OPEN)
-            if start < 0:
-                keep = _tag_prefix_suffix(self.buf, _TOOL_OPEN)
+            if self._in_think:
+                end = low.find(_THINK_CLOSE)
+                if end < 0:
+                    keep = _tag_prefix_suffix(self.buf, _THINK_CLOSE)
+                    emit_think = self.buf[:-len(keep)] if keep else self.buf
+                    if emit_think:
+                        self.thinking.append(emit_think)
+                    self.buf = keep
+                    break
+                if end > 0:
+                    self.thinking.append(self.buf[:end])
+                self.buf = self.buf[end + len(_THINK_CLOSE):].lstrip("\r\n")
+                self._in_think = False
+                continue
+
+            t_start = low.find(_THINK_OPEN)
+            c_start = low.find(_TOOL_OPEN)
+            starts = [x for x in (t_start, c_start) if x >= 0]
+            if not starts:
+                keep_t = _tag_prefix_suffix(self.buf, _THINK_OPEN)
+                keep_c = _tag_prefix_suffix(self.buf, _TOOL_OPEN)
+                keep = keep_t if len(keep_t) >= len(keep_c) else keep_c
                 emit = self.buf[:-len(keep)] if keep else self.buf
                 self.buf = keep
                 if emit:
                     out.append(emit)
                 break
-            if start:
-                out.append(self.buf[:start])
-            end = low.find(_TOOL_CLOSE, start + len(_TOOL_OPEN))
+
+            first = min(starts)
+            if first > 0:
+                out.append(self.buf[:first])
+                self.buf = self.buf[first:]
+                low = self.buf.lower()
+
+            if low.startswith(_THINK_OPEN):
+                self.buf = self.buf[len(_THINK_OPEN):]
+                self._in_think = True
+                continue
+
+            # _TOOL_OPEN
+            end = low.find(_TOOL_CLOSE, len(_TOOL_OPEN))
             if end < 0:
-                self.buf = self.buf[start:]
                 break
             end += len(_TOOL_CLOSE)
-            self.calls.extend(_parse_text_tool_calls(self.buf[start:end]))
+            self.calls.extend(_parse_text_tool_calls(self.buf[:end]))
             self.buf = self.buf[end:]
         return "".join(out)
 
     def finish(self) -> str:
         rest = self.buf
         self.buf = ""
+        if self._in_think:
+            if rest:
+                self.thinking.append(rest)
+            self._in_think = False
+            return ""
         if rest and ("<tool_call>" in rest.lower() or "<function=" in rest.lower()):
             self.calls.extend(_parse_text_tool_calls(rest))
             return ""
@@ -824,9 +962,17 @@ def _stream_round(
     if getattr(_CTX, "auto", False):
         _auto_ctx(messages, tools, think)
     num_ctx = _ctx_num()
+    options = {}
     if num_ctx:
-        # num_predict 不设：Ollama 默认 -1，不限长度，只受上下文约束。
-        payload["options"] = {"num_ctx": num_ctx}
+        options["num_ctx"] = num_ctx
+    temp = getattr(_CTX, "temperature", None)
+    if temp is not None:
+        try:
+            options["temperature"] = float(temp)
+        except (TypeError, ValueError):
+            pass
+    if options:
+        payload["options"] = options
     if tools:
         payload["tools"] = tools
     if think is not None:
@@ -837,14 +983,18 @@ def _stream_round(
             f"{base}/api/chat", json=payload, stream=True,
             timeout=(connect_timeout, read_timeout),
         )
+        if r.status_code >= 400:
+            # Consume error bodies before closing the streamed response.
+            log.warning("ollama HTTP %s: %s", r.status_code, _http_detail(r))
         r.raise_for_status()
     except Exception as e:
+        error = _friendly(e, base)
         try:
             if r is not None:
                 r.close()
         except Exception:
             pass
-        raise _friendly(e, base)
+        raise error
     if on_response is not None:
         try:
             on_response(r)
@@ -871,16 +1021,23 @@ def _stream_round(
                 msg = obj.get("message") or {}
                 _merge_tool_calls(sink["calls"], msg.get("tool_calls"))
                 thinking = msg.get("thinking") or ""
+                content = msg.get("content") or ""
+                visible = ""
+                if content:
+                    prev_think_len = len(text_filter.thinking)
+                    visible = text_filter.feed(content)
+                    if len(text_filter.thinking) > prev_think_len:
+                        thinking += "".join(text_filter.thinking[prev_think_len:])
                 if thinking:
                     sink["thinking"].append(thinking)
                     think_n += len(thinking)
-                    if on_think is not None and think_n - think_mark >= 800:
+                    if on_think is not None and think_n - think_mark >= 400:
                         think_mark = think_n
                         try:
                             on_think(think_n)
                         except Exception:
                             pass
-                    if think_n >= _think_cap() and not sink["content"] and not sink["calls"]:
+                    if think_n >= _think_cap() and not sink["content"] and not sink["calls"] and not text_filter.calls:
                         sink["think_runaway"] = True
                         if on_status is not None:
                             try:
@@ -888,19 +1045,16 @@ def _stream_round(
                             except Exception:
                                 pass
                         return
-                content = msg.get("content") or ""
-                if content:
-                    visible = text_filter.feed(content)
-                    if visible:
-                        sink["content"].append(visible)
-                        write_n += len(visible)
-                        yield visible
-                        if on_status is not None and write_n - write_mark >= 400:
-                            write_mark = write_n
-                            try:
-                                on_status(f"正在写正文…已 {write_n} 字")
-                            except Exception:
-                                pass
+                if visible:
+                    sink["content"].append(visible)
+                    write_n += len(visible)
+                    yield visible
+                    if on_status is not None and write_n - write_mark >= 400:
+                        write_mark = write_n
+                        try:
+                            on_status(f"正在写正文…已 {write_n} 字")
+                        except Exception:
+                            pass
                 if obj.get("done"):
                     sink["done_reason"] = str(obj.get("done_reason") or "")
                     sink["prompt_eval_count"] = int(obj.get("prompt_eval_count") or 0)
@@ -917,7 +1071,10 @@ def _stream_round(
             r.close()
         except Exception:
             pass
+    prev_think_len = len(text_filter.thinking)
     tail = text_filter.finish()
+    if len(text_filter.thinking) > prev_think_len:
+        sink["thinking"].append("".join(text_filter.thinking[prev_think_len:]))
     sink["text_calls"] = list(text_filter.calls)
     if tail:
         sink["content"].append(tail)
@@ -940,15 +1097,11 @@ def _round_with_continue(
     base, model, messages, tools, should_stop, on_response,
     connect_timeout, read_timeout, sink, think=None, on_think=None, on_status=None,
 ) -> Iterator[str]:
-    """一轮回答；被 done_reason=length 截断时自动「继续」，最多 DEFAULT_MAX_CONTINUE 次。
-
-    续写时把已写内容的结尾当锚点发回去，接缝处重复的部分去掉。
-    sink 里是拼好的全文；仍没写完时 sink["incomplete"]=True，并留下截断提示。
-    """
+    """一轮回答；被 done_reason=length 截断时自动「继续」，最多 DEFAULT_MAX_CONTINUE 次。"""
     from utils.ollama_chunk import continue_prompt, trim_overlap
     on_status = on_status or getattr(_CTX, "on_status", None)
     prev_flag = getattr(_CTX, "truncated", False)
-    _CTX.truncated = True   # 先压住截断提示：续写成功就不需要提示
+    _CTX.truncated = True
     k = 0
     retry = 0
     try:
@@ -958,23 +1111,25 @@ def _round_with_continue(
         )
         written = "".join(sink.get("content") or [])
         while (
-            sink.get("done_reason") == "length" and not written.strip() and not sink.get("calls")
+            (sink.get("done_reason") == "length" or sink.get("think_runaway"))
+            and not written.strip() and not sink.get("calls") and not sink.get("text_calls")
             and retry < 2 and not _stopped(should_stop)
         ):
-            # 还没写出正文就被截断（多半是思考太长或工具参数太长）：关思考、放大上下文、只留最短的指令。
             retry += 1
-            if getattr(_CTX, "auto", False):
+            if getattr(_CTX, "auto", False) and not getattr(_CTX, "loaded", 0):
                 _CTX.floor = _A.escalate(_ctx_num(), getattr(_CTX, "max_ctx", 0), getattr(_CTX, "loaded", 0))
             if on_status:
-                on_status("内容较长，已自动关闭思考、放大上下文重试…")
-            thread0 = list(messages) + [{"role": "user", "content": _EMPTY_RETRY}]
+                on_status("思考较长，已切换为直接输出模式重试…")
+            digest = _thinking_text(sink)[-600:]
+            prompt_retry = _EMPTY_RETRY + (f"\n\n刚才的思考要点：\n{digest}" if digest else "")
+            thread0 = list(messages) + [{"role": "user", "content": prompt_retry}]
             sink.clear()
             yield from _stream_round(
                 base, model, thread0, tools, should_stop, on_response,
                 connect_timeout, read_timeout, sink, think=False, on_status=on_status,
             )
             written = "".join(sink.get("content") or [])
-            log.info("ollama 空正文截断重试第 %d 次 正文=%d done=%s", retry, len(written), sink.get("done_reason"))
+            log.info("ollama 空正文重试第 %d 次 正文=%d done=%s", retry, len(written), sink.get("done_reason"))
         try:
             max_k = int(getattr(_CTX, "max_continue", DEFAULT_MAX_CONTINUE))
         except Exception:
@@ -986,7 +1141,7 @@ def _round_with_continue(
             k += 1
             if on_status:
                 on_status(f"内容较长，已自动续写第 {k} 次…")
-            if getattr(_CTX, "auto", False) and k >= 2:
+            if getattr(_CTX, "auto", False) and k >= 2 and not getattr(_CTX, "loaded", 0):
                 _CTX.floor = _A.escalate(_ctx_num(), getattr(_CTX, "max_ctx", 0), getattr(_CTX, "loaded", 0))
             shown = written if len(written) <= 4000 else "……（前文已写，这里省略）" + written[-4000:]
             thread = list(messages) + [
@@ -1031,11 +1186,7 @@ def _round_calls(sink: dict) -> list:
 
 
 def _one_copy(text: str) -> str:
-    """思考里把同一篇稿子原样连写两三遍时，只留第一遍。
-
-    只处理「整篇一模一样地重复」：去掉空白后全文正好是同一块的 k 倍。
-    长文里正常重复的段落、列表行不会被删。
-    """
+    """思考里把同一篇稿子原样连写两三遍时，只留第一遍。"""
     s = (text or "").strip()
     if len(s) < 240:
         return s
@@ -1046,7 +1197,6 @@ def _one_copy(text: str) -> str:
         unit = flat[: len(flat) // k]
         if len(unit) < 80 or unit * k != flat:
             continue
-        # 找原文里第二遍的起点：按非空白字符计数。
         seen = 0
         for i, ch in enumerate(s):
             if not ch.isspace():
@@ -1081,30 +1231,37 @@ def _log_round(kind: str, sink: dict, calls: list) -> None:
 
 
 _EMPTY_RETRY = (
-    "上一次回答在写出正文之前就被长度截断了。这次不要思考，直接写出正文。"
-    "需要保存时，先把完整正文写在回复里，再调用 save_article，只写 filename。"
+    "上一次回答在写出正文之前就被截断或思考超限了。这次请不要输出 <think> 思考过程，直接输出正文或调用工具。"
+    "需要保存时，把实际正文放进 save_article 的 content 参数。"
 )
 
 
 def _auto_ctx(messages: list, tools, think) -> int:
-    """按这一轮要发的内容自动选上下文长度：输入 + 预计输出 + 余量。同一次请求里只增不减。"""
+    """根据本轮全部消息、工具调用和输出预留选择上下文档位。"""
+    loaded = getattr(_CTX, "loaded", 0)
     need = 0
     for m in messages or []:
-        need += estimate_tokens(str(m.get("content") or "")) + 8
+        need += estimate_tokens(json.dumps(m, ensure_ascii=False)) + 8
         need += 800 * len(m.get("images") or [])
     if tools:
         need += estimate_tokens(json.dumps(tools, ensure_ascii=False))
     out = OUTPUT_RESERVE
     if getattr(_CTX, "dirs", False):
-        # 写文章/改写：输出可能和最后一条输入一样长
         last = next((str(m.get("content") or "") for m in reversed(messages or []) if m.get("role") == "user"), "")
         out = max(out, min(estimate_tokens(last), 16384))
     if think is not False:
         out += int(_THINK_CAP / 1.5)
     floor = max(int(getattr(_CTX, "last_ctx", 0) or 0), int(getattr(_CTX, "floor", 0) or 0))
-    n = _A.choose_ctx(need + out, getattr(_CTX, "max_ctx", 0), getattr(_CTX, "loaded", 0), floor)
+    n = _A.choose_ctx(need + out, getattr(_CTX, "max_ctx", 0), loaded, floor)
     _CTX.num_ctx = _CTX.last_ctx = n
     return n
+
+
+def _tools_named(names) -> list:
+    allow = set(names or ())
+    if not allow:
+        return []
+    return [t for t in list(_WEB_TOOLS) + list(_DIR_TOOLS) if t["function"]["name"] in allow]
 
 
 def _stream_dirs(
@@ -1121,16 +1278,30 @@ def _stream_dirs(
     extra_system: str = "",
     on_think: Optional[Callable[[int], None]] = None,
     think: Optional[bool] = None,
+    tool_names=None,
 ) -> Iterator[str]:
-    """写文章并直接保存到用户指定的目录。保存类任务 think=False。"""
-    tools = list(_DIR_TOOLS)
-    notes = [_dir_system(article_dir)]
+    """写文章并直接保存到用户指定的目录。"""
+    if tool_names is None:
+        tools = list(_DIR_TOOLS)
+        notes = [_dir_system(article_dir)]
+        if web:
+            tools = list(_WEB_TOOLS) + tools
+            notes.insert(0, _WEB_SYSTEM + f"今天的公历日期是 {date.today().isoformat()}。")
+    else:
+        tools = _tools_named(tool_names)
+        notes = []
+        if any(n in tool_names for n in ("web_search", "web_fetch")):
+            notes.append(_WEB_SYSTEM + f"今天的公历日期是 {date.today().isoformat()}。")
+        folder = intent_folder_system(article_dir, tuple(tool_names))
+        if folder:
+            notes.append(folder)
     if (extra_system or "").strip():
         notes.append(extra_system.strip())
-    if web:
-        tools = list(_WEB_TOOLS) + tools
-        notes.insert(0, _WEB_SYSTEM + f"今天的公历日期是 {date.today().isoformat()}。")
-    thread = [{"role": "system", "content": "\n".join(notes)}] + original
+    if tools:
+        notes.append(_format_tools_prompt_fallback(tools))
+    thread = list(original)
+    if notes:
+        thread = [{"role": "system", "content": "\n".join(notes)}] + thread
     budget = DirBudget()
     yielded = False
     need_gap = False
@@ -1158,17 +1329,12 @@ def _stream_dirs(
             if _stopped(should_stop):
                 return
             if sink.get("think_runaway") and not "".join(sink.get("content") or []):
-                # 思考超限：留一份思考结尾当交接，关掉思考，明确让它直接写正文。
-                # 材料已经读进上文时，这一轮起不再给读取工具，避免回头重读文件。
                 _log_round("目录·思考超限", sink, _round_calls(sink))
                 digest = _thinking_text(sink)[-800:]
-                has_material = any(
-                    m.get("role") == "user" and str(m.get("content") or "").startswith("下面是工具结果")
-                    for m in thread
-                )
+                has_material = any(m.get("role") == "tool" for m in thread)
                 if has_material:
-                    tools = [t for t in tools if t["function"]["name"] not in ("read_article", "list_articles")]
-                    blocked.update({"read_article", "list_articles"})
+                    tools = [t for t in tools if t["function"]["name"] not in ("read_article", "read_unread_batch", "list_articles")]
+                    blocked.update({"read_article", "read_unread_batch", "list_articles"})
                 if on_status:
                     on_status("改为直接写正文" + ("（材料已在上文，这一轮不再读文件）。" if has_material else "。"))
                 retry = list(thread) + [{
@@ -1206,8 +1372,6 @@ def _stream_dirs(
                     return
             spoken = "".join(sink.get("content") or [])
             if sink.get("done_reason") == "length":
-                # 回答被截断：一个工具都不执行，尤其不能把半截内容存进文件。
-                # _stream_round 已在对话里留下提示，并标成「未完成（被截断）」。
                 if calls:
                     log.info("ollama 截断轮跳过 %d 个工具调用", len(calls))
                 return
@@ -1230,7 +1394,7 @@ def _stream_dirs(
                 return
             long_bodies = [b for b in bodies if len(b) >= 100]
             reply_body = max(long_bodies, key=len) if long_bodies else _last_assistant_text(original)
-            chunks = []
+            thread.append({"role": "assistant", "content": spoken or "", "tool_calls": calls})
             for call in calls:
                 if _stopped(should_stop):
                     return
@@ -1244,18 +1408,7 @@ def _stream_dirs(
                 )
                 for note in notes:
                     _notice(note)
-                chunks.append(f"【{fn['name']}】\n{result}")
-            result_text = "\n\n".join(chunks)
-            thread.append({"role": "assistant", "content": spoken or "我先看一下。"})
-            hint = (
-                "还可以继续调用工具。不需要再查时，用简体中文直接回答。"
-                if attempt < 2 else
-                "请直接用简体中文回答，不要再调用工具。"
-            )
-            thread.append({
-                "role": "user",
-                "content": "下面是工具结果。\n" + hint + "\n\n" + result_text,
-            })
+                thread.append({"role": "tool", "name": fn["name"], "content": result})
             if on_status:
                 on_status("正在整理结果…")
             if yielded:
@@ -1292,10 +1445,12 @@ def stream_openai_chat(
     should_stop: Optional[Callable[[], bool]] = None,
     on_response: Optional[Callable[[object], None]] = None,
     extra_system: str = "",
-    connect_timeout: float = 8.0,
+    connect_timeout: float = 30.0,
     read_timeout: float = 300.0,
+    obedient: bool = True,
 ) -> Iterator[str]:
     """OpenAI 兼容 /chat/completions 流式输出。不含本机目录工具。"""
+    from utils.ollama_intent import OBEY_CHAT
     base = (base or "").strip().rstrip("/")
     if not base:
         raise OllamaError("还没有填写 API 地址。")
@@ -1303,8 +1458,11 @@ def stream_openai_chat(
         raise OllamaError("还没有选择 API 模型。")
     url = base if base.endswith("/chat/completions") else base + "/chat/completions"
     payload_msgs = []
-    if (extra_system or "").strip():
-        payload_msgs.append({"role": "system", "content": extra_system.strip()})
+    sys_txt = (extra_system or "").strip()
+    if obedient:
+        sys_txt = (OBEY_CHAT + "\n" + sys_txt).strip() if sys_txt else OBEY_CHAT
+    if sys_txt:
+        payload_msgs.append({"role": "system", "content": sys_txt})
     for m in messages:
         if not isinstance(m, dict):
             continue
@@ -1318,9 +1476,12 @@ def stream_openai_chat(
         headers["Authorization"] = "Bearer " + key
     r = None
     try:
+        body = {"model": model, "messages": payload_msgs, "stream": True}
+        if obedient:
+            body["temperature"] = 0.4
         r = requests.post(
             url,
-            json={"model": model, "messages": payload_msgs, "stream": True},
+            json=body,
             headers=headers,
             stream=True,
             timeout=(connect_timeout, read_timeout),
@@ -1382,7 +1543,6 @@ def _web_page_job(url, last, original, dirs, article_dir, seg_ctx, should_stop, 
     try:
         page = _A.fetch_page(url, should_stop=should_stop, on_status=on_status)
     except Exception as e:
-        _notice(f"没能抓取网页 {url}：{e}")
         log.info("ollama 抓取网页失败 %s：%s", url, e)
         return None
     if _stopped(should_stop):
@@ -1390,7 +1550,6 @@ def _web_page_job(url, last, original, dirs, article_dir, seg_ctx, should_stop, 
     text, title = page["text"], page["title"] or "网页正文"
     stem = _A.safe_name(title)
     if _A.is_save_original(last, _CH._TASK_RE):
-        # 保存原文：不经过模型，直接写进工作目录。
         folder = _out_folder(dirs, article_dir)
         path = _A.unique_path(folder, stem)
         n = _A.write_text(path, text)
@@ -1398,10 +1557,14 @@ def _web_page_job(url, last, original, dirs, article_dir, seg_ctx, should_stop, 
         _notice(f"已保存：{path}（{n} 字）")
         if on_status:
             on_status(f"已保存，{n} 字。")
-        yield f"已把网页《{title}》的正文完整保存到 {path}，共 {n} 字（抓取 {page['pages']} 页）。\n"
+        yield f"已把网页《{title}》的正文完整保存到 {path}，共 {n} 字（打开 {page['pages']} 页）。\n"
         return True
     seg = _CH.segment_chars(seg_ctx, _CH.DEFAULT_CHUNK_RATIO)
-    if _CH._TASK_RE.search(last) and len(text) > seg:
+    if (
+        _CH._TASK_RE.search(last)
+        and len(text) > seg
+        and not _A.wants_page_nav(last)
+    ):
         src = _A.stash_source(stem, text)
         folder = _out_folder(dirs, article_dir)
         job = {
@@ -1411,15 +1574,22 @@ def _web_page_job(url, last, original, dirs, article_dir, seg_ctx, should_stop, 
         }
         yield from run(job)
         return True
-    # 能一次放下：把正文当材料放进对话，模型直接读，不用再调用 web_fetch。
     cap = max(seg * 2, 6000)
     body = text if len(text) <= cap else text[:cap] + f"\n…（正文共 {len(text)} 字，这里只给了前 {cap} 字）"
+    link_lines = []
+    for name, href in (page.get("links") or [])[:40]:
+        link_lines.append(f"- {name}\n  {href}")
+    link_block = ""
+    if link_lines:
+        link_block = "\n\n页面上的链接：\n" + "\n".join(link_lines)
+    note = (
+        f"【程序已打开网页 {url}，标题《{title}》，{len(text)} 字。"
+        "正文只出现在对话里，没有存进工作目录。】"
+    )
     msgs = [dict(m) for m in original]
     for m in reversed(msgs):
         if m.get("role") == "user":
-            m["content"] = (
-                f"{m.get('content') or ''}\n\n【程序已抓取网页 {url} 的正文，标题《{title}》，共 {len(text)} 字】\n{body}"
-            )
+            m["content"] = f"{m.get('content') or ''}\n\n{note}\n{body}{link_block}"
             break
     return msgs
 
@@ -1428,7 +1598,6 @@ def _pasted_job(last, original, dirs, article_dir, seg_ctx):
     """用户直接粘贴了一大段文字：太长放不进一轮时，先存成工作文件再分段处理。"""
     from utils import ollama_chunk as _CH
     seg = _CH.segment_chars(seg_ctx, _CH.DEFAULT_CHUNK_RATIO)
-    # 输入 + 差不多一样长的输出放得进上限，就按普通对话一次处理
     if estimate_tokens(last) * 2 + 2048 <= seg_ctx:
         return None
     paras = [p for p in re.split(r"\n\s*\n", last.strip()) if p.strip()]
@@ -1458,13 +1627,45 @@ def _pasted_job(last, original, dirs, article_dir, seg_ctx):
     }
 
 
+def _continue_task_text(last: str, original: list, dirs: bool, article_dir: str, session_id: str = "") -> str:
+    """用户只说「继续」时，找出要接着做的原任务文字（本对话里更早的任务，或进度记录里的任务卡）。"""
+    if not dirs:
+        return ""
+    import os
+    try:
+        from utils.ollama_progress import (
+            _is_continue_message, load_latest_prior, load_progress, progress_path,
+        )
+    except Exception:
+        return ""
+    if not _is_continue_message(last):
+        return ""
+    users = [str(m.get("content") or "").strip() for m in (original or [])
+             if isinstance(m, dict) and m.get("role") == "user"]
+    for text in reversed(users[:-1]):
+        if text and not _is_continue_message(text):
+            return text
+    if not (article_dir or "").strip():
+        return ""
+    try:
+        data = None
+        if session_id:
+            data = load_progress(progress_path(os.path.abspath(article_dir), session_id=session_id))
+        if not data:
+            data, _path = load_latest_prior(os.path.abspath(article_dir))
+        card = (data or {}).get("task_card") or {}
+        return str(card.get("user_input") or card.get("goal") or (data or {}).get("goal") or "").strip()
+    except Exception:
+        return ""
+
+
 def stream_chat(
     base: str,
     model: str,
     messages: list,
     should_stop: Optional[Callable[[], bool]] = None,
     on_response: Optional[Callable[[object], None]] = None,
-    connect_timeout: float = 5.0,
+    connect_timeout: float = 30.0,
     read_timeout: float = 300.0,
     web: bool = False,
     on_status: Optional[Callable[[str], None]] = None,
@@ -1478,20 +1679,11 @@ def stream_chat(
     max_continue: int = DEFAULT_MAX_CONTINUE,
     chunk_ratio: float = 0,
     chunk_think: bool = False,
+    obedient: bool = True,
+    session_id: str = "",
 ) -> Iterator[str]:
-    """POST /api/chat（stream=true），逐段 yield 文本。
-
-    num_ctx：上下文长度，写进 options.num_ctx；0 表示用 Ollama 默认。
-    on_notice(text)：需要在对话里长期显示的提示（截断、保存结果、拒绝覆盖）。
-
-    should_stop() 返回 True 时立即关闭连接并结束。
-    on_response(resp) 拿到响应对象，便于其他线程 close() 打断阻塞读。
-    web 为真时声明 web_search / web_fetch，模型可以搜索并打开网页。
-    dirs 为真时，模型可以把文章直接保存到 article_dir。
-    模型不支持工具时，联网改为先搜索用户最后一句话，再把结果交给模型。
-    """
+    """POST /api/chat（stream=true），逐段 yield 文本。"""
     base = normalize_base(base)
-    # num_ctx=0（界面默认）：程序每一轮按任务大小自动选；传了具体数字就固定用它。
     _CTX.auto = not num_ctx
     _CTX.num_ctx = clamp_num_ctx(num_ctx) if num_ctx else 0
     _CTX.last_ctx = 0
@@ -1503,6 +1695,7 @@ def stream_chat(
     _CTX.dirs = bool(dirs)
     _CTX.truncated = False
     _CTX.think_ratio = think_cap_ratio or 0
+    _CTX.temperature = None
     try:
         _CTX.max_continue = max(0, int(max_continue))
     except Exception:
@@ -1525,24 +1718,47 @@ def stream_chat(
         )
 
     def _run(job):
-        # 分段/保存/抓取类任务一律不开思考。
         return _CH.run_job(
             job, _round, should_stop=should_stop, on_status=on_status,
             on_notice=_notice, think=False, extra_system=extra_system or "",
         )
 
     last = _last_user_text(original)
-    # ① 消息里有网址：程序自己抓整页正文。
-    url = _A.find_url(last) if (web or dirs) else ""
-    if url and (web or _A.is_save_like(last) or _CH._TASK_RE.search(last)):
+    url = _A.find_url(last)
+    if url and _A.chapter_save_plan(last) and not _A.is_convert_to_txt(last):
+        if not dirs:
+            yield "还没有打开工作目录，无法按目录保存章节。\n"
+            return
+        if on_status:
+            on_status("正在按目录保存章节…")
+        try:
+            note = _A.save_catalog_chapters(
+                article_dir or "", last, should_stop=should_stop, on_status=on_status,
+            )
+        except Exception as e:
+            log.info("ollama 目录保存失败：%s", e)
+            if on_status:
+                on_status("未完成：没有按目录保存。")
+            yield f"未完成：没有按目录保存。{e}\n"
+            return
+        if note:
+            log.info("ollama 意图 catalog_save")
+            first = (note.split("\n", 1)[0] or note).strip()
+            if on_status:
+                on_status(first)
+            _notice(first)
+            yield note if note.endswith("\n") else note + "\n"
+            return
+    page_injected = False
+    if url:
         handled = yield from _web_page_job(
             url, last, original, dirs, article_dir or "", seg_ctx, should_stop, on_status, _run,
         )
         if handled is True:
             return
         if handled:
-            original = handled   # 网页正文已经放进对话，按普通对话继续
-    # ② 粘贴的长文：超过一段能放下的量就交给分段驱动。
+            original = handled
+            page_injected = True
     elif not url:
         pasted = _pasted_job(last, original, dirs, article_dir or "", seg_ctx)
         if pasted and pasted.get("saved"):
@@ -1556,127 +1772,184 @@ def stream_chat(
         if side:
             yield from _run({"resume": side, "root": _A.work_dir()})
             return
-    if dirs:
-        # 长文处理：程序自己分段驱动，不靠模型一遍遍 read_article。
-        job = _CH.detect_job(
-            original, article_dir or "", seg_ctx,
-            chunk_ratio or _CH.DEFAULT_CHUNK_RATIO,
-        )
+    if _A.is_convert_to_txt(last):
+        if not dirs:
+            yield "还没有打开工作目录，无法把文件转成 txt。\n"
+            return
+        from utils.ollama_dirs import export_txt
+        try:
+            note = export_txt(article_dir or "", last)
+        except Exception as e:
+            log.info("ollama 转为txt失败：%s", e)
+            yield f"没有转成 txt：{e}\n"
+            return
+        log.info("ollama 意图 convert_txt")
+        if on_status:
+            on_status("已按原文转成 txt。")
+        yield note if note.endswith("\n") else note + "\n"
+        return
+
+    route_text = _continue_task_text(last, original, dirs, article_dir or "", session_id) or last
+    route = classify_intent(route_text, web=web, dirs=dirs, obedient=obedient)
+    _CTX.temperature = route.temperature
+    extra = (extra_system or "").strip()
+    if route.system:
+        extra = (route.system + "\n" + extra).strip() if extra else route.system
+    log.info(
+        "ollama 意图 %s tools=%s temp=%s",
+        route.name, ",".join(route.tools) or "-", route.temperature,
+    )
+    if on_status and route.label:
+        on_status(route.label)
+
+    if dirs and not page_injected:
+        from utils.ollama_intent import is_rename_only_task
+        job = None
+        if not is_rename_only_task(last):
+            job = _CH.detect_job(
+                original, article_dir or "", seg_ctx,
+                chunk_ratio or _CH.DEFAULT_CHUNK_RATIO,
+            )
         if job:
             yield from _run(job)
             return
-        yield from _stream_dirs(
-            base, model, original, should_stop, on_response,
-            connect_timeout, read_timeout, web, on_status,
-            article_dir or "", extra_system or "", on_think,
-            think=False if (_A.is_save_like(last) or url) else None,
-        )
-        return
-    plain = list(original)
-    if (extra_system or "").strip():
-        plain = [{"role": "system", "content": extra_system.strip()}] + plain
-    if not web:
+
+    from utils.ollama_agent import CATALOG_DONE_MARK, run_fncall
+    from utils.ollama_dirs import DirBudget
+    tools = _tools_named(route.tools)
+    if tools:
+        folder_note = intent_folder_system(article_dir or "", tuple(route.tools))
+        if folder_note:
+            extra = (extra + "\n" + folder_note).strip() if extra else folder_note
+        tool_fallback = _format_tools_prompt_fallback(tools)
+        if tool_fallback:
+            extra = (extra + "\n\n" + tool_fallback).strip() if extra else tool_fallback
+
+    thread = list(original)
+    if extra:
+        thread = [{"role": "system", "content": extra}] + thread
+    if not route.tools:
         yield from _round_with_continue(
-            base, model, plain, None,
+            base, model, thread, None,
             should_stop, on_response, connect_timeout, read_timeout, {},
+            think=route.think, on_think=on_think, on_status=on_status,
         )
         return
 
-    web_note = _WEB_SYSTEM + f"今天的公历日期是 {date.today().isoformat()}。"
-    if (extra_system or "").strip():
-        web_note += "\n" + extra_system.strip()
-    thread = [{"role": "system", "content": web_note}] + original
-    yielded = False
+    budget = DirBudget()
+
+    goal = ""
+    for _m in reversed(original or []):
+        if isinstance(_m, dict) and _m.get("role") == "user":
+            goal = str(_m.get("content") or "").strip()
+            break
+    # Preserve the full request: output names and constraints may occur at the end.
+    goal = goal.strip()
+    progress = None
+    if dirs and (article_dir or "").strip():
+        try:
+            from utils.ollama_progress import ProgressSession
+            progress = ProgressSession(
+                article_dir, goal=goal,
+                session_id=(session_id or "").strip() or None,
+                user_text=goal,
+            )
+            if not (progress.data.get("listed") or []):
+                progress.mark_listed()
+            try:
+                progress.ensure_task_card(goal, listed=progress.data.get("listed") or [])
+            except Exception:
+                log.info("ollama 任务卡未能写入", exc_info=True)
+            if progress.data.get("listed") or progress.task_card():
+                progress.save()
+        except Exception:
+            log.info("ollama 进度记录未能开始", exc_info=True)
+            progress = None
+
+    def _round_iter(msgs, toolset, sink, think):
+        from utils.ollama_agent import _compact_old_tools
+        if getattr(_CTX, "auto", False):
+            _auto_ctx(msgs, toolset, think)
+        ctx = _ctx_num() or DEFAULT_NUM_CTX
+        reserve = min(4096, max(512, ctx // 4))
+        def cost():
+            return estimate_tokens(json.dumps(msgs, ensure_ascii=False)) + estimate_tokens(json.dumps(toolset, ensure_ascii=False))
+        if cost() > ctx - reserve:
+            _compact_old_tools(msgs, digest=progress.digest() if progress else "", aggressive=True, progress=progress)
+        if cost() > ctx - reserve:
+            raise OllamaError("上下文预算不足：未压缩的材料或任务要求过长，已保留进度；需要缩小单次任务。")
+        return _round_with_continue(
+            base, model, msgs, toolset,
+            should_stop, on_response, connect_timeout, read_timeout, sink,
+            think=think, on_think=on_think, on_status=on_status,
+        )
+
+    def _exec(name, args, spoken=""):
+        notes = []
+        result = _run_tool(
+            name, args or {}, on_status,
+            should_stop=should_stop, budget=budget,
+            dirs=dirs, article_dir=article_dir or "",
+            reply_body=spoken or "", notices=notes,
+            progress=progress,
+        )
+        if progress is not None and name in ("web_search", "web_fetch"):
+            try:
+                progress.after_tool(name, args or {}, result)
+            except Exception:
+                log.info("ollama 进度记录失败", exc_info=True)
+        for note in notes:
+            _notice(note)
+        if name == "web_fetch" and dirs and _A.chapter_save_plan(last):
+            fetched = str((args or {}).get("url") or "").strip()
+            probe = last if _A.find_url(last) else f"{last}\n{fetched}".strip()
+            if _A.find_url(probe):
+                try:
+                    saved = _A.save_catalog_chapters(
+                        article_dir or "", probe,
+                        should_stop=should_stop, on_status=on_status,
+                    )
+                except Exception as e:
+                    log.info("ollama 目录执行失败：%s", e)
+                    saved = f"未完成：没有按目录保存。{e}"
+                if saved:
+                    return CATALOG_DONE_MARK + "\n" + saved
+        return result
+
+    def _stop_review(spoken: str) -> str:
+        if progress is not None:
+            if progress.success_met():
+                return ""
+            pending = progress.required_unread()
+            if pending:
+                return "要求读取的材料尚未完成：" + "、".join(pending[:12]) + "。请继续分段读取并保存笔记。"
+            missing = progress.missing_outputs()
+            if missing:
+                return "成功标准尚未满足：还没有保存 " + "、".join(missing) + "（须有正文）。请继续完成，不要在这里结束。"
+        if not _A.chapter_save_plan(last):
+            return ""
+        return "目录里的章节还没有存进工作目录。请调用 web_fetch 打开目录页，不要在这里结束。"
+
     try:
-        result_text = ""
-        for _attempt in range(2):
-            if _stopped(should_stop):
-                return
-            sink: dict = {}
-            for piece in _round_with_continue(
-                base, model, thread, _WEB_TOOLS,
-                should_stop, on_response, connect_timeout, read_timeout, sink,
-            ):
-                yielded = True
-                yield piece
-            if _stopped(should_stop):
-                return
-            calls = _round_calls(sink)
-            _log_round("提问", sink, calls)
-            spoken = "".join(sink.get("content") or [])
-            if sink.get("done_reason") == "length":
-                return
-            if not calls:
-                if not spoken:
-                    thought = _thinking_text(sink)
-                    if thought:
-                        yielded = True
-                        yield thought
-                return
-            chunks = []
-            for call in calls:
-                if _stopped(should_stop):
-                    return
-                fn = call["function"]
-                result = _run_tool(fn["name"], fn.get("arguments") or {}, on_status)
-                chunks.append(f"【{fn['name']}】\n{result}")
-            result_text = "\n\n".join(chunks)
-            thread.append({"role": "assistant", "content": spoken or "我先查一下。"})
-            thread.append({
-                "role": "user",
-                "content": (
-                    "下面是联网结果。请直接用简体中文回答，不要再调用工具。\n\n"
-                    + result_text
-                ),
-            })
-            if on_status:
-                on_status("正在整理联网结果…")
-            # 关掉思考，避免答案只写在思考里、正文为空。
-            answer: dict = {}
-            for piece in _round_with_continue(
-                base, model, thread, None,
-                should_stop, on_response, connect_timeout, read_timeout, answer,
-                think=False,
-            ):
-                yielded = True
-                yield piece
-            if _stopped(should_stop):
-                return
-            again = _round_calls(answer)
-            _log_round("作答", answer, again)
-            answer_text = "".join(answer.get("content") or [])
-            if answer_text and not again:
-                return
-            if answer.get("done_reason") == "length":
-                return
-            if again and _attempt == 0:
-                continue
-            thought = _thinking_text(answer)
-            if thought:
-                yielded = True
-                yield thought
-                return
-            if result_text:
-                yielded = True
-                yield "联网查到这些内容：\n\n" + result_text[:2000]
-            return
+        yield from run_fncall(
+            round_iter=_round_iter,
+            exec_tool=_exec,
+            messages=thread,
+            tools=tools,
+            should_stop=should_stop,
+            on_status=on_status,
+            think=route.think,
+            stop_review=_stop_review,
+            progress=progress,
+            read_chars=_ctx_char_cap(),
+        )
     except OllamaError as e:
-        if yielded or not _no_tool_support(e):
+        if not _no_tool_support(e):
             raise
         if on_status:
-            on_status("当前模型不能调用工具，改为先搜索再回答。")
-        query = _last_user_text(original)
-        found = web_search(query) if query else "没有可搜索的内容。"
-        injected = [{
-            "role": "system",
-            "content": (
-                "联网已开启，但当前模型不能自己调用工具。"
-                "下面是根据用户最后一句话搜索到的网页。请据此回答；"
-                "结果里没有的内容要说明没查到，不要编造。用简体中文回答。\n\n"
-                + found
-            ),
-        }] + original
-        yield from _stream_round(
-            base, model, injected, None,
+            on_status("当前模型不支持原生 tools 参数，切换为文本工具模式重试…")
+        yield from _round_with_continue(
+            base, model, thread, None,
             should_stop, on_response, connect_timeout, read_timeout, {},
+            think=False, on_status=on_status,
         )

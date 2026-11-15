@@ -7,10 +7,11 @@ from __future__ import annotations
 import os
 import re
 
-from PyQt5.QtCore import Qt, pyqtSignal
+from PyQt5.QtCore import Qt, pyqtSignal, QRectF, QPointF
+from PyQt5.QtGui import QPainter, QColor, QPen, QBrush
 from PyQt5.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QCheckBox,
-    QSizePolicy, QFileDialog, QLineEdit,
+    QSizePolicy, QFileDialog, QLineEdit, QToolButton,
 )
 
 from styles.style_all import (
@@ -19,6 +20,59 @@ from styles.style_all import (
     theme, tk, CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP,
 )
 from utils.cursor_toast import show_cursor_toast
+
+
+class _DupClearBtn(QToolButton):
+    """「开始」左侧：一次清掉下面拖入的文件夹。没有文件夹时冻结。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("SeqDupClearBtn")
+        self.setCursor(Qt.ArrowCursor)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setToolTip("清除下面的文件夹")
+        self.setAutoRaise(True)
+        self.setEnabled(False)
+
+    def enterEvent(self, e):
+        super().enterEvent(e)
+        self.update()
+
+    def leaveEvent(self, e):
+        super().leaveEvent(e)
+        self.update()
+
+    def paintEvent(self, _e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        w, h = float(self.width()), float(self.height())
+        try:
+            bd = QColor(tk("border"))
+            acc = QColor(tk("accent"))
+            fg = QColor(tk("text") if self.isEnabled() else tk("text_mut"))
+        except Exception:
+            bd = QColor("#25345c")
+            acc = QColor("#3a8ee0")
+            fg = QColor("#d7def7") if self.isEnabled() else QColor("#6f7fa8")
+        if not self.isEnabled():
+            bd.setAlpha(90)
+            fg.setAlpha(120)
+        hover = self.underMouse() and self.isEnabled()
+        rect = QRectF(0.5, 0.5, w - 1.0, h - 1.0)
+        if hover:
+            fill = QColor(acc)
+            fill.setAlpha(40)
+            p.setBrush(QBrush(fill))
+            p.setPen(QPen(acc, 1))
+        else:
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(bd, 1))
+        p.drawRoundedRect(rect, 6.0, 6.0)
+        m = min(w, h) * 0.30
+        p.setPen(QPen(fg, 1.8, Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(QPointF(m, m), QPointF(w - m, h - m))
+        p.drawLine(QPointF(w - m, m), QPointF(m, h - m))
+        p.end()
 
 
 class SeqDupPanel(QFrame):
@@ -82,6 +136,9 @@ class SeqDupPanel(QFrame):
                     w.refresh_theme()
                 except Exception:
                     pass
+        btn = getattr(self, "btn_dup_clear", None)
+        if btn is not None:
+            btn.update()
 
     def _build_ui(self):
         # 顶对齐：底部拖放区 stretch=1 占满剩余高度，上方内容保持自然高度堆叠
@@ -190,13 +247,18 @@ class SeqDupPanel(QFrame):
         row_dup_btns = QHBoxLayout()
         row_dup_btns.setContentsMargins(0, 0, 0, 0)
         row_dup_btns.setSpacing(6)
+        self.btn_dup_clear = _DupClearBtn()
+        self.btn_dup_clear.clicked.connect(self._dup_clear_folders)
         self.btn_dup_multi = QPushButton("开始")
         _style_action_btn(self.btn_dup_multi)
         self.btn_dup_multi.setToolTip(
             "对下方拖入的目录一起查重。同名看大小，不同名但一样大标为疑似。"
         )
         self.btn_dup_multi.clicked.connect(self._dup_multi_start)
-        row_dup_btns.addWidget(self.btn_dup_multi, 0)
+        side = max(22, self.btn_dup_multi.sizeHint().height())
+        self.btn_dup_clear.setFixedSize(side, side)
+        row_dup_btns.addWidget(self.btn_dup_clear, 0, Qt.AlignVCenter)
+        row_dup_btns.addWidget(self.btn_dup_multi, 0, Qt.AlignVCenter)
         row_dup_btns.addStretch(1)
         check_box.addLayout(row_dup_btns)
 
@@ -363,6 +425,16 @@ class SeqDupPanel(QFrame):
             except Exception:
                 n = 0
         btn.setEnabled((not scanning) and n > 0)
+        clr = getattr(self, "btn_dup_clear", None)
+        if clr is not None:
+            clr.setEnabled(n > 0)
+            clr.setCursor(Qt.PointingHandCursor if n > 0 else Qt.ArrowCursor)
+
+    def _dup_clear_folders(self):
+        drop = getattr(self, "dup_multi_drop", None)
+        if drop is None or not drop.paths():
+            return
+        drop.clear_paths()
 
     def _dup_multi_paths_changed(self):
         self._dup_sync_multi_btn()

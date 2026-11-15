@@ -5,8 +5,8 @@ where python >nul 2>&1
 if errorlevel 1 goto no_python
 python -c "import PyQt5.QtWidgets, psutil, requests" >nul 2>&1
 if errorlevel 1 goto no_deps
-if not exist "mainv918.py" goto no_main
-start "" pythonw "%~dp0mainv918.py"
+if not exist "mainv919.py" goto no_main
+start "" pythonw "%~dp0mainv919.py"
 exit /b 0
 
 :no_python
@@ -21,6 +21,6 @@ pause
 exit /b 1
 
 :no_main
-echo [FAIL] mainv918.py not found in %~dp0
+echo [FAIL] mainv919.py not found in %~dp0
 pause
 exit /b 1

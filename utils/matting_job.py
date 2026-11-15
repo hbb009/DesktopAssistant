@@ -4,7 +4,7 @@
 # 切勿在本文件 import PyQt5 —— 主进程 Qt 会与 onnxruntime 抢 DLL。
 #
 # 开发：python -m utils.matting_job <meta.json>
-# 打包：mainv918.exe --matting-job <meta.json>
+# 打包：mainv919.exe --matting-job <meta.json>
 # meta.json:
 #   { "image": "输入图", "out": "输出 png", "model": "可选 onnx 路径" }
 # 进度：stdout 打印 PCT 0–100
@@ -234,17 +234,15 @@ def run_job(meta: dict) -> int:
     _pct(25)
     rgba = _open_rgb(image)
     ow, oh = rgba.size
-    inp = _preprocess(rgba)
-    _pct(40)
-
     in_name = sess.get_inputs()[0].name
     try:
+        inp = _preprocess(rgba)
+        _pct(40)
         raw = sess.run(None, {in_name: inp})[0]
+        alpha = _postprocess_mask(raw, ow, oh)
     except Exception as e:
         return _fail("推理失败：%s: %s" % (type(e).__name__, e))
     _pct(85)
-
-    alpha = _postprocess_mask(raw, ow, oh)
     rgba.putalpha(alpha)
     os.makedirs(os.path.dirname(os.path.abspath(out)) or ".", exist_ok=True)
     rgba.save(out, format="PNG", optimize=True)

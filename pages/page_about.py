@@ -485,8 +485,7 @@ _MODEL_ROWS = (
     ("w_tiny", "语音转写 · 轻量", "faster-whisper-tiny"),
     ("w_small", "语音转写 · 推荐", "faster-whisper-small"),
     ("w_large", "语音转写 · 高精度", "faster-whisper-large-v3"),
-    ("opus_zh_en", "中英翻译 · 中→英", "opus-mt-zh-en"),
-    ("opus_en_zh", "中英翻译 · 英→中", "opus-mt-en-zh"),
+    ("hy_mt", "中英翻译 · Hy-MT2", "Hy-MT2-1.8B"),
     ("cv_w", "克隆权重", "Fun-CosyVoice3-0.5B"),
     ("cv_src", "克隆源码", "CosyVoice"),
     ("auk", "音频处理权重", "AuK"),
@@ -610,13 +609,14 @@ def _fmt_size(n: int) -> str:
 
 
 def _opus_mt_ready(path: str) -> bool:
-    """Helsinki opus-MT：目录内有 config + 权重文件即视为就位。"""
+    """Hy-MT2：目录内有 config + 权重文件即视为就位。"""
     if not path or not os.path.isdir(path):
         return False
     if not os.path.isfile(os.path.join(path, "config.json")):
         return False
     for name in ("pytorch_model.bin", "model.safetensors", "tf_model.h5"):
-        if os.path.isfile(os.path.join(path, name)):
+        p = os.path.join(path, name)
+        if os.path.isfile(p) and os.path.getsize(p) >= 3_000_000_000:
             return True
     try:
         for fn in os.listdir(path):
@@ -624,7 +624,7 @@ def _opus_mt_ready(path: str) -> bool:
             if (
                 os.path.isfile(p)
                 and fn.endswith((".bin", ".safetensors"))
-                and os.path.getsize(p) > 1_000_000
+                and os.path.getsize(p) >= 3_000_000_000
             ):
                 return True
     except OSError:
@@ -700,15 +700,14 @@ def _model_state(key: str):
         if path:
             return True, "已就位", f"抠图模型：\n{path}"
         return False, "未放入", f"还没有 BiRefNet 的 onnx。\n放到：\n{expect}"
-    if key in ("opus_zh_en", "opus_en_zh"):
-        folder = {"opus_zh_en": "opus-mt-zh-en", "opus_en_zh": "opus-mt-en-zh"}[key]
-        path = os.path.join(root, folder)
+    if key == "hy_mt":
+        path = os.path.join(root, "Hy-MT2-1.8B")
         if _opus_mt_ready(path):
             sz = _fmt_size(_dir_size_bytes(path))
             detail = "翻译模型：\n" + path + "\n体积：" + sz
             return True, "已就位 · " + sz, detail
         miss = (
-            "还没有 " + folder + "（Helsinki-NLP opus-MT，约 0.3GB）。\n"
+            "还没有 Hy-MT2-1.8B（腾讯混元翻译，约 4GB）。\n"
             "放到：\n" + path
         )
         return False, "未放入", miss
@@ -755,18 +754,22 @@ def _model_guide(key: str):
         "w_tiny": "whisper-tiny",
         "w_small": "whisper-small",
         "w_large": "whisper-large",
-        "opus_zh_en": "opus-mt-zh-en",
-        "opus_en_zh": "opus-mt-en-zh",
+        "hy_mt": "hy-mt2",
         "cv_w": "cosyvoice",
     }
     if key in auto:
-        return f"{title} · 安装教程", [
+        lines = [
             head,
             "可自动下载：",
             ("cmd", _guide_download(auto[key])),
             "国内网络可在命令末尾加上：--mirror modelscope",
             "下完重新打开本程序，回到「模型」点「检测」。",
         ]
+        if key == "hy_mt":
+            lines.append(
+                "翻译进程用 runtime\\hy-mt2（单独的 transformers 5.6），不要升级主环境，否则语音克隆会受影响。"
+            )
+        return f"{title} · 安装教程", lines
     if key == "cv_src":
         from utils.cosyvoice_clone import clone_cmd
         return "克隆源码 · 安装教程", [
@@ -1235,7 +1238,7 @@ class PageAbout(QWidget):
         self._mw = mw
 
     def on_enter(self, cookie_alert: bool = False):
-        # cookie_alert 参数保留兼容旧调用；提示条在系统总览「Cookie设置」
+        # cookie_alert 参数保留兼容旧调用
         del cookie_alert
         self.reload_from_prefs()
         QTimer.singleShot(0, self._refresh_all_component_status)
@@ -1277,7 +1280,7 @@ class PageAbout(QWidget):
         self._refresh_git_status()
 
     def reload_from_prefs(self):
-        """从主窗口内存偏好刷新控件（软件信息/界面缩放/保存与Cookie 在系统总览上半）。"""
+        """从主窗口内存偏好刷新控件（软件信息；界面缩放和保存目录在系统总览）。"""
         prefs = {}
         if self._mw is not None:
             prefs = getattr(self._mw, "_user_prefs", None) or {}
@@ -1879,7 +1882,7 @@ class PageAbout(QWidget):
     def _on_matting_runtime_install(self):
         self._show_install_guide("抠图运行库 · 安装教程", [
             "图片抠图的模型是 BiRefNet-general，在上面「模型」里。这里装的是跑它的运行库。",
-            ("cmd", _guide_pip("install onnxruntime Pillow")),
+            ("cmd", _guide_pip("install onnxruntime-gpu==1.26.0 Pillow")),
             "装好后重新打开本程序，回到这里点「检测」。",
         ])
 

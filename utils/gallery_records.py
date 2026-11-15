@@ -11,25 +11,15 @@ log = get_logger(__name__)
 _KEYS = ("gallery_eh", "gallery_hitomi")
 
 
-def _ensure_dir() -> str:
-    try:
-        from utils.app_paths import gallery_dir
-        return gallery_dir()
-    except Exception:
-        d = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-            "userdata",
-        )
-        os.makedirs(d, exist_ok=True)
-        return d
-
-
 def _records_path(key: str) -> str:
-    return os.path.join(_ensure_dir(), f"{key}.txt")
+    """总表路径。key 只决定读写哪一段，弹窗点文件名时打开这一份。"""
+    del key
+    from utils.downloaded_records import downloaded_path
+    return downloaded_path()
 
 
 def records_path(key: str) -> str:
-    """当前 key 对应的记录文件路径（records/gallery_eh.txt 等）。"""
+    """已下记录总表 userdata/downloaded.txt。"""
     return _records_path(key)
 
 
@@ -100,20 +90,12 @@ def merge_record_lines(existing, incoming) -> tuple:
 
 
 def load_records(key: str) -> list:
-    path = _records_path(key)
-    if not os.path.isfile(path):
-        return []
     try:
-        with open(path, "r", encoding="utf-8") as f:
-            lines = [
-                line.strip()
-                for line in f
-                if line.strip() and not is_record_sep(line)
-            ]
+        from utils.downloaded_records import read_gallery_lines
+        return read_gallery_lines(key)
     except Exception:
         log.exception(f"读取 {key} 记录失败")
         return []
-    return lines
 
 
 def has_record(key: str, folder_name: str) -> bool:
@@ -124,32 +106,14 @@ def has_record(key: str, folder_name: str) -> bool:
     return name in records
 
 
-def _ensure_trailing_newline(path: str, f) -> None:
-    """如果文件末尾没有换行符，先补一个，防止追加到上一行末尾。"""
-    try:
-        f.seek(0, os.SEEK_END)
-        size = f.tell()
-        if size > 0:
-            f.seek(size - 1)
-            if f.read(1) != "\n":
-                f.write("\n")
-    except Exception:
-        pass
-
-
 def add_record(key: str, folder_name: str) -> bool:
     """追加一条下载记录；已存在则跳过。新写入返回 True。"""
     name = (folder_name or "").strip()
     if not name:
         return False
-    if has_record(key, name):
-        return False
-    path = _records_path(key)
     try:
-        with open(path, "a", encoding="utf-8") as f:
-            _ensure_trailing_newline(path, f)
-            f.write(name + "\n")
-        return True
+        from utils.downloaded_records import append_gallery_names
+        return name in append_gallery_names(key, [name])
     except Exception:
         log.exception(f"写入 {key} 记录失败")
         return False
@@ -221,21 +185,13 @@ def dedupe_record_lines(lines) -> tuple:
 
 
 def save_records(key: str, lines) -> bool:
-    """整表覆盖写入记录文件（去空行）。"""
+    """覆盖这一段的记录（去空行）。其它段不动。"""
     key = (key or "").strip()
     if not key:
         return False
-    path = _records_path(key)
     try:
-        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            for ln in lines or []:
-                s = (ln or "").strip()
-                if s:
-                    f.write(s + "\n")
-        os.replace(tmp, path)
-        return True
+        from utils.downloaded_records import write_gallery_lines
+        return write_gallery_lines(key, lines)
     except Exception:
         log.exception(f"覆盖写入 {key} 记录失败")
         return False
@@ -252,29 +208,22 @@ def scan_dir_records(key: str, save_dir: str, mode: str = "dir") -> set:
     d = (save_dir or "").strip()
     if not d or not os.path.isdir(d):
         return set()
-    existing = set(load_records(key))
-    added: set[str] = set()
     try:
         entries = os.listdir(d)
     except OSError:
         return set()
+    found = []
     for name in entries:
         entry = os.path.join(d, name)
         if mode == "dir":
-            if os.path.isdir(entry) and name not in existing:
-                existing.add(name)
-                added.add(name)
+            if os.path.isdir(entry):
+                found.append(name)
         elif mode == "zip":
-            if os.path.isfile(entry) and name.lower().endswith(".zip") and name not in existing:
-                existing.add(name)
-                added.add(name)
-    if added:
-        try:
-            path = _records_path(key)
-            with open(path, "a", encoding="utf-8") as f:
-                _ensure_trailing_newline(path, f)
-                for n in sorted(added):
-                    f.write(n + "\n")
-        except Exception:
-            log.exception(f"写入 {key} 扫描记录失败")
-    return added
+            if os.path.isfile(entry) and name.lower().endswith(".zip"):
+                found.append(name)
+    try:
+        from utils.downloaded_records import append_gallery_names
+        return append_gallery_names(key, found)
+    except Exception:
+        log.exception(f"写入 {key} 扫描记录失败")
+        return set()

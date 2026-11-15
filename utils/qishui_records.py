@@ -4,7 +4,7 @@
 分段和预下载一样用「# 汽水音乐」，段内再分成视频、音频。
 下过音频不会挡住视频。
 
-文件：records/qishui.txt
+文件：userdata/downloaded.txt 里的 # 汽水音乐 段。
 普通记录在上，----- 下面是带 _2 / (2) 的另存名（不参与跳过）。
 """
 
@@ -267,8 +267,16 @@ def _read_text(path: str):
         return None
 
 
+def _is_store(path: str) -> bool:
+    from utils.downloaded_records import is_downloaded_file
+    return is_downloaded_file(path)
+
+
 def load_entries(path: str = None) -> list:
     path = path or _records_path()
+    if _is_store(path):
+        from utils.downloaded_records import QISHUI_SECTION, read_sections_text
+        return parse_entries(read_sections_text((QISHUI_SECTION,)))
     if not path or not os.path.isfile(path):
         return []
     text = _read_text(path)
@@ -279,11 +287,15 @@ def load_entries(path: str = None) -> list:
 
 def save_entries(entries, path: str = None) -> bool:
     path = path or _records_path()
+    payload = format_entries(entries)
+    if _is_store(path):
+        from utils.downloaded_records import QISHUI_SECTION, write_sections_text
+        return write_sections_text((QISHUI_SECTION,), payload)
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            f.write(format_entries(entries))
+            f.write(payload)
         os.replace(tmp, path)
         return True
     except Exception:

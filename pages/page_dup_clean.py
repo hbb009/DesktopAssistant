@@ -2253,6 +2253,15 @@ class MultiDirDrop(QFrame):
     def paths(self) -> list:
         return list(self._paths)
 
+    def clear_paths(self):
+        """一次清掉已拖入的文件夹，不删除磁盘上的目录。"""
+        if not self._paths and not self._keys:
+            return
+        self._paths = []
+        self._keys = set()
+        self._rebuild()
+        self.paths_changed.emit()
+
     def _watch(self, w):
         if w is None:
             return

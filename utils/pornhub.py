@@ -16,6 +16,8 @@
 #      故只取 hls 条目，避免出现一张「1080P」标签却下到 240P 的卡。
 #   2. pornhub 的 HLS 是 fMP4（.m4s 分片 + EXT-X-MAP 初始化段），
 #      拼接由 utils.xvideos.hls_segments 处理，本模块只负责给清单地址。
+#   3. phncdn 上「…/1080P_….mp4/master.m3u8」会 400（页面写着 Header Too Large）。
+#      同一查询串换成 index-v1-a1.m3u8 才是这一档的媒体清单。
 # 本模块不依赖 Qt，便于单测与命令行自检。
 # ---------------------------------------------------------------------------
 
@@ -77,6 +79,23 @@ def _meta(body: str, prop: str) -> str:
     ):
         return _html.unescape(mm.group(1)).strip()
     return ""
+
+
+def _person_name(value) -> str:
+    """ld+json 的 author 有时是字符串，有时是 Person 对象或数组。"""
+    if isinstance(value, dict):
+        return str(value.get("name") or "").strip()
+    if isinstance(value, list):
+        names = [n for n in (_person_name(v) for v in value) if n]
+        return "、".join(names)
+    return str(value or "").strip()
+
+
+def ph_media_playlist(url: str) -> str:
+    """主清单 master.m3u8 在 phncdn 上会 400，换成这一档的媒体清单。"""
+    if not url or "/master.m3u8" not in url:
+        return url or ""
+    return url.replace("/master.m3u8", "/index-v1-a1.m3u8", 1)
 
 
 def _ld_video(body: str) -> dict:
@@ -157,7 +176,7 @@ def parse_pornhub_page(
 
     ld = _ld_video(body)
     title = str(ld.get("name") or "").strip() or _meta(body, "og:title") or "pornhub"
-    author = str(ld.get("author") or "").strip() or "pornhub"
+    author = _person_name(ld.get("author")) or "pornhub"
     cover = _meta(body, "og:image") or str(ld.get("thumbnailUrl") or "").strip()
     info = {
         "title": _html.unescape(title),
@@ -189,12 +208,14 @@ def parse_pornhub_page(
     for h, master in ordered:
         if not master:
             continue
-        # 每档的主清单通常只有 1 个 variant；拉下来只为拿到真实分辨率做标签
+        # phncdn 的 master.m3u8 直接 400。每档页面上已经给了高度，
+        # 媒体清单就是同地址的 index-v1-a1.m3u8，不必再请求那条会失败的主清单。
+        media = ph_media_playlist(master)
         variants = []
-        if fetch_text is not None:
+        if fetch_text is not None and media == master:
             try:
                 variants = parse_hls_master(fetch_text(master, page_url), master)
-            except Exception as e:  # 清单拉不到时仍把主清单地址给出去
+            except Exception as e:  # 清单拉不到时仍把地址给出去
                 hls_err = str(e) or repr(e)
         if variants:
             for v in variants:
@@ -212,7 +233,7 @@ def parse_pornhub_page(
         else:
             specs.append({
                 "label": f"{h}p · HLS" if h else "HLS",
-                "url": master,
+                "url": media,
                 "ext": ".mp4",
                 "hls": True,
                 "height": h,

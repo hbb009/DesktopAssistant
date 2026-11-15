@@ -63,7 +63,7 @@ class _ClickableFileLabel(QLabel):
 
 
 class RecordsTotalBar(QWidget):
-    """`other_video.txt  共 12 条 · …`：文件名在前且可点击。"""
+    """`downloaded.txt  共 12 条 · …`：文件名在前且可点击。"""
 
     def __init__(self, file_path: str, parent=None, object_name: str = None):
         super().__init__(parent)

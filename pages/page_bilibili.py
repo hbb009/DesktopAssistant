@@ -22,6 +22,7 @@ from PyQt5.QtWidgets import (
 from pages.page_douyin import MediaCard, MediaItem, _ElideLabel, DouyinProgressLine
 from utils.xvideos import looks_like_xvideos as _looks_like_xvideos
 from utils.missav import looks_like_missav as _looks_like_missav
+from utils.xcom import looks_like_xcom as _looks_like_xcom
 
 from styles.style_all import (
     theme,
@@ -801,9 +802,8 @@ def _base_ydl_opts(
     }
     if not download:
         opts["skip_download"] = True
-    cookie_path = (cookie_path or "").strip()
-    if use_cookie and cookie_path and os.path.isfile(cookie_path):
-        opts["cookiefile"] = cookie_path
+    # 不把 Cookie 交给 yt-dlp。参数保留，调用方仍可传入。
+    del cookie_path, use_cookie
     if extractor_args:
         opts["extractor_args"] = extractor_args
     return opts
@@ -945,9 +945,8 @@ def extract_with_strategies(url: str, cookie_path: str = "", log=None):
     if not HAS_YTDLP:
         raise RuntimeError("未安装 yt-dlp")
 
-    cookie_path = (cookie_path or "").strip()
-    has_cookie = bool(cookie_path and os.path.isfile(cookie_path))
-    strategies = [s for s in EXTRACT_STRATEGIES if (not s["use_cookie"]) or has_cookie]
+    cookie_path = ""
+    strategies = [s for s in EXTRACT_STRATEGIES if not s["use_cookie"]]
     if not strategies:
         raise RuntimeError("没有可用的解析策略")
 
@@ -1077,34 +1076,8 @@ class YtParseWorker(QThread):
             self.err.emit(str(e))
             return
         self.log.emit(f"提取链接：{url}", "info")
-        if self.cookie_path and os.path.isfile(self.cookie_path):
-            # 粗检 Cookie 是否像「已登录」——关键字段 SESSDATA
-            try:
-                raw = open(self.cookie_path, encoding="utf-8", errors="ignore").read()
-                strong = any(
-                    k in raw
-                    for k in (
-                        "SESSDATA",
-                        "bili_jct",
-                        "DedeUserID",
-                    )
-                )
-                if strong:
-                    self.log.emit(
-                        "已配置 Cookie（检测到 SESSDATA/登录字段；"
-                        "有 Cookie 策略优先使用）",
-                        "ok",
-                    )
-                else:
-                    self.log.emit(
-                        "Cookie 文件可能不完整（未发现 SESSDATA/bili_jct 等登录字段）。"
-                        "大会员/高画质内容可能失败——请在已登录 bilibili.com 后重新导出。",
-                        "warn",
-                    )
-            except Exception:
-                self.log.emit("已配置 Cookie 文件", "info")
-        else:
-            self.log.emit("未配置 Cookie，将尝试公开稿件解析（高画质可能受限）", "info")
+        self.cookie_path = ""
+        self.log.emit("本次不使用 Cookie", "info")
         if not _which_exe("ffmpeg"):
             self.log.emit(
                 "未检测到 ffmpeg — 高清 DASH 合并可能失败，建议 winget install Gyan.FFmpeg",
@@ -1528,20 +1501,16 @@ class YtDownloadWorker(QThread):
             )
         self.log.emit(f"保存到：{save_dir}", "info")
 
-        # 复用解析策略；若无 profile（旧状态）则尽量安全降级
+        # 复用解析时的客户端，但不附带 Cookie。
         profile = self.extract_profile or {}
-        use_cookie = bool(profile.get("use_cookie"))
-        ck = (profile.get("cookie_path") or self.cookie_path or "").strip()
-        if use_cookie and not (ck and os.path.isfile(ck)):
-            use_cookie = False
+        use_cookie = False
+        ck = ""
         ea = profile.get("extractor_args")
         if profile.get("name"):
-            self.log.emit(f"复用解析策略：{profile['name']}", "info")
+            self.log.emit(f"复用解析策略：{profile['name']}（不使用 Cookie）", "info")
         else:
-            # 无 profile：默认客户端（更易出高清自适应），有 Cookie 则带上
-            use_cookie = bool(ck and os.path.isfile(ck))
             ea = None
-            self.log.emit("无解析策略缓存，回退：默认客户端", "warn")
+            self.log.emit("无解析策略缓存，回退：默认客户端（不使用 Cookie）", "warn")
 
         title = self.video_meta.get("title") or "bilibili_video"
         vid = self.video_meta.get("id") or ""
@@ -2698,7 +2667,7 @@ class PageBilibili(QWidget):
 
 
         # XVideos / MissAV 链接 → 「其它视频」
-        if probe and (_looks_like_xvideos(probe) or _looks_like_missav(probe)):
+        if probe and (_looks_like_xvideos(probe) or _looks_like_missav(probe) or _looks_like_xcom(probe)):
             handoff = text or raw_clip
             self._log(
                 "检测到其它视频链接，已自动切换到「其它视频」分页并开始解析…",

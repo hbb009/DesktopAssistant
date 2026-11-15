@@ -188,26 +188,7 @@ class PageQishui(PageDouyin):
         return card
 
     def _effective_cookie_path(self) -> str:
-        """本页 Cookie 优先；没配时用抖音 Cookie（同属 douyin 域）。"""
-        ck = ""
-        try:
-            ck = (self.ck_path.text() or "").strip()
-        except Exception:
-            ck = ""
-        if ck and os.path.isfile(ck):
-            return ck
-        win = self.window()
-        pv = getattr(win, "page_douyin", None)
-        sub = getattr(pv, "page_douyin", None) if pv is not None else None
-        alt = ""
-        edit = getattr(sub, "ck_path", None) if sub is not None else None
-        if edit is not None:
-            try:
-                alt = (edit.text() or "").strip()
-            except Exception:
-                alt = ""
-        if alt and os.path.isfile(alt):
-            return alt
+        """汽水解析不读取 Cookie，也不借用抖音页的 Cookie。"""
         return ""
 
     def _start_flow(self, use_clipboard=True):
@@ -238,10 +219,7 @@ class PageQishui(PageDouyin):
                 self._set_status("不是汽水音乐链接", "#f97316")
             return
         self.url_edit.setText(url)
-        if not self._effective_cookie_path():
-            self._log("未配置 Cookie，公开曲目仍会尝试解析", "warn")
-        elif not (self.ck_path.text() or "").strip():
-            self._log("未单独配置汽水 Cookie，改用抖音 Cookie", "info")
+        self._log("本次不使用 Cookie", "info")
         self._auto_dl = True
         self._parse(url)
 

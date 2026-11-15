@@ -1,4 +1,4 @@
-# Desktop Assistant v9.18 - model-related dependencies
+# Desktop Assistant v9.19 - model-related dependencies
 # (screenshot OCR / speech-to-text / voice cloning / image matting)
 # Python 3.10 / 3.11 only.
 # 1) pip install -r requirements.txt
@@ -22,9 +22,10 @@ paddleocr[doc-parser]>=3.6.0
 # ---- Voice cloning (CosyVoice3) + image matting (BiRefNet ONNX) ----
 # Install PyTorch for your CUDA version separately, e.g.:
 #   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu124
-# onnxruntime: CosyVoice's own requirements pin onnxruntime==1.18.0 (NumPy 1.x),
-# so keep it below 1.19 to avoid a downgrade/upgrade fight.
-onnxruntime>=1.16,<1.19
+# onnxruntime-gpu 1.26.0: CUDA 12 + cuDNN 9, works with torch 2.6.0+cu124 and numpy 1.26.4.
+# Do not also install the CPU package ``onnxruntime`` (both at once breaks provider selection).
+# 1.27+ is built for CUDA 13; do not use it with this stack.
+onnxruntime-gpu==1.26.0
 # CosyVoice weights and source code:
 #   python tools/download_models.py --only cosyvoice-code
 #   python tools/download_models.py --only cosyvoice --mirror modelscope
@@ -41,8 +42,8 @@ onnxruntime>=1.16,<1.19
 #   Upscayl          -> model/upscayl/upscayl-bin.exe + models (image upscaling)
 # Note: AuK expects transformers 4.57, while CosyVoice pins transformers==4.51.3.
 
-# ---- Translation (Helsinki opus-MT Marian) ----
-sacremoses>=0.0.53
-# MarianTokenizer (opus-MT) needs sentencepiece
+# ---- Translation (Tencent Hy-MT2-1.8B) ----
+# 主环境保持 transformers 4.57（AuK / CosyVoice）。翻译子进程用 runtime/hy-mt2，
+# 那里单独装 transformers>=5.6，不要在这里升级。
 sentencepiece>=0.1.99
 

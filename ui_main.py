@@ -40,7 +40,7 @@ log = get_logger(__name__)
 # ── 页面集合：当前主程序包含的全部页面 ───────────────────────────────────
 _PAGES_MAIN = {
     "overview", "fast", "video", "audio", "gallery",
-    "paste", "img_proc", "pixel_board", "voice", "auk", "text_edit", "gameassist", "gamebrain", "gamemeet", "prompt", "points", "sub_usage", "shot", "region_rec",
+    "boot", "paste", "img_proc", "pixel_board", "voice", "auk", "text_edit", "gameassist", "gamebrain", "gamemeet", "prompt", "points", "sub_usage", "shot", "region_rec",
     "ratio", "dir_link", "tz_fx", "ollama",
     "about",
 }
@@ -61,7 +61,7 @@ _NAV_WHEEL_COALESCE_S = 0.09
 _SIDE_SECTION_MAP = {
     "fast": "pinned", "video": "pinned", "audio": "pinned", "gallery": "pinned",
     "shot": "pinned", "region_rec": "pinned",
-    "paste": "assistant", "img_proc": "assistant", "pixel_board": "assistant", "points": "assistant", "sub_usage": "assistant",
+    "boot": "assistant", "paste": "assistant", "img_proc": "assistant", "pixel_board": "assistant", "points": "assistant", "sub_usage": "assistant",
     "voice": "assistant", "auk": "assistant", "gameassist": "assistant", "gamebrain": "assistant", "gamemeet": "assistant", "prompt": "assistant", "ollama": "assistant",
     "ratio": "assistant",
     "text_edit": "tool", "tz_fx": "tool", "dir_link": "tool",
@@ -70,7 +70,7 @@ _SIDE_SECTION_MAP = {
 # 导航 key → 按钮属性名（key 与按钮属性名并非一一对应）
 _NAV_BTN_ATTR = {
     "fast": "btn_fast", "video": "btn_douyin", "audio": "btn_audio",
-    "gallery": "btn_gallery", "paste": "btn_paste", "img_proc": "btn_img_proc",
+    "gallery": "btn_gallery", "boot": "btn_boot", "paste": "btn_paste", "img_proc": "btn_img_proc",
     "pixel_board": "btn_pixel_board",
     "voice": "btn_voice", "auk": "btn_auk", "text_edit": "btn_text_edit",
     "gameassist": "btn_gameassist", "gamebrain": "btn_gamebrain", "gamemeet": "btn_gamemeet", "prompt": "btn_prompt",
@@ -83,6 +83,7 @@ _NAV_BTN_ATTR = {
 _PAGE_LOADERS = {
     "overview": ("pages.page_overview", "PageOverview", "page_overview"),
     "fast": ("pages.page_fast_save", "PageFastSave", "page_fast"),
+    "boot": ("pages.page_boot", "PageBoot", "page_boot"),
     "paste": ("pages.page_paste", "PagePaste", "page_paste"),
     "img_proc": ("pages.page_image_proc", "PageImageProc", "page_img_proc"),
     "pixel_board": ("pages.page_pixel_board", "PagePixelBoard", "page_pixel_board"),
@@ -119,7 +120,7 @@ _DEFAULT_SECTION_TITLES = {
 # 与按钮一起参与拖拽占位计算，只是分项名本身不可被拖拽。
 _SIDE_SECTIONS = [
     ("pinned",    None,                  ["video", "audio", "gallery", "fast", "shot", "region_rec"]),
-    ("assistant", "助手 · 主手脚",          ["paste", "img_proc", "pixel_board", "voice", "auk", "points", "sub_usage", "gameassist", "gamebrain", "gamemeet", "ratio", "prompt", "ollama"]),
+    ("assistant", "助手 · 主手脚",          ["boot", "paste", "img_proc", "pixel_board", "voice", "auk", "points", "sub_usage", "gameassist", "gamebrain", "gamemeet", "ratio", "prompt", "ollama"]),
     ("tool",      "工具 · 小偏门",          ["text_edit", "tz_fx", "dir_link"]),
 ]
 
@@ -1645,7 +1646,7 @@ class MainWindow(QWidget):
 
         # 默认深色；浅色仍可通过侧栏 ☀/🌙 切换
         self.is_light_theme = False
-        # 界面缩放由启动时 QT_SCALE_FACTOR 整窗放大（见 mainv918）；此处只记偏好值
+        # 界面缩放由启动时 QT_SCALE_FACTOR 整窗放大（见 mainv919）；此处只记偏好值
         self._ui_scale = self._read_active_qt_scale()
         # 内部 sp()/写死像素保持设计稿 1×，避免与 QT_SCALE_FACTOR 叠乘
         try:
@@ -1656,7 +1657,7 @@ class MainWindow(QWidget):
         theme.set_theme("dark")
 
         self.setWindowIcon(QIcon(os.path.join(ASSETS_DIR, 'star.ico')))
-        self.setWindowTitle("桌面助手 v9.18")
+        self.setWindowTitle("桌面助手 v9.19")
         # 主窗最小 960×776（与 user.txt 当前一致）；不设最大，可自由放大
         self.setMinimumSize(_WIN_MIN_W, _WIN_MIN_H)
         self.resize(_WIN_MIN_W, _WIN_MIN_H)
@@ -1703,7 +1704,7 @@ class MainWindow(QWidget):
         brand_txt = QVBoxLayout()
         brand_txt.setContentsMargins(0, 0, 0, 0)
         brand_txt.setSpacing(0)
-        self.lbl_brand_title = QLabel("桌面助手 v9.18")
+        self.lbl_brand_title = QLabel("桌面助手 v9.19")
         self.lbl_brand_title.setObjectName("SideBrandTitle")
         self.lbl_brand_sub = QLabel("AI口袋瑞士军刀")
         self.lbl_brand_sub.setObjectName("SideBrandSub")
@@ -1729,6 +1730,7 @@ class MainWindow(QWidget):
             return b
 
         self.btn_fast         = _nav("fast", "速存图文") if self._page_enabled("fast") else None
+        self.btn_boot         = _nav("boot", "开机员") if self._page_enabled("boot") else None
         self.btn_paste        = _nav("paste", "粘贴助手") if self._page_enabled("paste") else None
         self.btn_img_proc     = _nav("img_proc", "图片处理") if self._page_enabled("img_proc") else None
         self.btn_pixel_board  = _nav("pixel_board", "像素画板") if self._page_enabled("pixel_board") else None
@@ -1758,6 +1760,7 @@ class MainWindow(QWidget):
                 getattr(self, "btn_fast", None),
                 getattr(self, "btn_douyin", None), getattr(self, "btn_audio", None),
                 getattr(self, "btn_gallery", None),
+                getattr(self, "btn_boot", None),
                 getattr(self, "btn_paste", None), getattr(self, "btn_img_proc", None),
                 getattr(self, "btn_pixel_board", None),
                 getattr(self, "btn_voice", None), getattr(self, "btn_auk", None),
@@ -2181,7 +2184,6 @@ class MainWindow(QWidget):
         self._prefs_timer.timeout.connect(self._save_user_prefs)
         self._wire_user_prefs_autosave()
         self._load_user_prefs()
-        QTimer.singleShot(800, self._check_cookie_files_startup)
         try:
             self.page_overview.on_enter()
         except Exception:
@@ -2243,9 +2245,6 @@ class MainWindow(QWidget):
             if key == "overview":
                 page.set_main_window(self)
                 self.page_about = getattr(page, "about_section", None)
-                sec = getattr(page, "settings_section", None)
-                if sec is not None and hasattr(sec, "cookies_configured"):
-                    sec.cookies_configured.connect(self._on_overview_cookies_configured)
             elif key == "fast":
                 page.chk_imgonly.toggled.connect(self._sync_fast_led)
                 page.chk_manual.toggled.connect(self._sync_fast_led)
@@ -2362,7 +2361,7 @@ class MainWindow(QWidget):
                 cb = getattr(page, "set_prefs_dirty_callback", None)
                 if callable(cb):
                     cb(self._schedule_save_user_prefs)
-            elif key in ("tz_fx", "ollama", "sub_usage"):
+            elif key in ("tz_fx", "ollama", "sub_usage", "boot"):
                 cb = getattr(page, "set_prefs_dirty_callback", None)
                 if callable(cb):
                     cb(self._schedule_save_user_prefs)
@@ -2450,6 +2449,8 @@ class MainWindow(QWidget):
                 page.apply_settings(prefs.get("ollama_chat") or {})
             elif key == "dir_link" and hasattr(page, "apply_settings"):
                 page.apply_settings(prefs.get("dir_link") or {})
+            elif key == "boot" and hasattr(page, "apply_settings"):
+                page.apply_settings(prefs.get("boot") or {})
             elif key == "overview" and hasattr(page, "reload_from_prefs"):
                 page.reload_from_prefs()
                 about = getattr(self, "page_about", None)
@@ -2475,7 +2476,7 @@ class MainWindow(QWidget):
             elif key == "auk" and hasattr(page, "on_enter"):
                 # 音频处理：进页时刷新 AUK / CosVoice3 两个子页
                 page.on_enter()
-            elif key in ("gameassist", "gamebrain", "gamemeet", "prompt", "tz_fx", "ollama", "region_rec", "overview"):
+            elif key in ("gameassist", "gamebrain", "gamemeet", "prompt", "tz_fx", "ollama", "region_rec", "overview", "boot"):
                 if hasattr(page, "on_enter"):
                     page.on_enter()
         except Exception:
@@ -2705,6 +2706,7 @@ class MainWindow(QWidget):
     def _title_for(self, w: QWidget) -> str:
         if w is getattr(self, "page_overview",     None): return "系统总览"
         if w is getattr(self, "page_fast",         None): return "速存图文"
+        if w is getattr(self, "page_boot",         None): return "开机员"
         if w is getattr(self, "page_paste",        None): return "粘贴助手"
         if w is getattr(self, "page_img_proc",     None): return "图片处理"
         if w is getattr(self, "page_pixel_board",  None): return "像素画板"
@@ -2881,7 +2883,7 @@ class MainWindow(QWidget):
 
     @staticmethod
     def _classify_other_whitelist_url(url: str) -> str:
-        """其它视频白名单命中后，仍入队到即梦 / LibTV / XVideos / Pornhub / MissAV。汽水旧条目也认。"""
+        """其它视频白名单命中后，仍入队到即梦 / LibTV / XVideos / Pornhub / MissAV / x.com。汽水旧条目也认。"""
         plat = ""
         try:
             from pages.page_other_video import detect_other_platform
@@ -2908,6 +2910,12 @@ class MainWindow(QWidget):
                 return "missav"
         except Exception:
             log.exception("MissAV 链接识别失败")
+        try:
+            from utils.xcom import looks_like_xcom
+            if looks_like_xcom(low):
+                return "xcom"
+        except Exception:
+            log.exception("x.com 链接识别失败")
         return ""
 
     def _process_global_clipboard_auto(self):
@@ -3069,6 +3077,7 @@ class MainWindow(QWidget):
                             + self._pre_dl_count("xvideos")
                             + self._pre_dl_count("pornhub")
                             + self._pre_dl_count("missav")
+                            + self._pre_dl_count("xcom")
                         ),
                     })
                 except Exception:
@@ -3105,7 +3114,7 @@ class MainWindow(QWidget):
             return 0
         if group == "video":
             keys = ("douyin", "bilibili", "youtube", "jimeng", "liblib",
-                    "xvideos", "pornhub", "missav")
+                    "xvideos", "pornhub", "missav", "xcom")
         elif group == "audio":
             keys = ("qishui",)
         elif group == "gallery":
@@ -3150,7 +3159,7 @@ class MainWindow(QWidget):
             except Exception:
                 log.exception("读取批处理剩余条数失败")
                 counts = {}
-        video_keys = ("douyin", "bilibili", "youtube", "jimeng", "liblib", "xvideos", "pornhub", "missav")
+        video_keys = ("douyin", "bilibili", "youtube", "jimeng", "liblib", "xvideos", "pornhub", "missav", "xcom")
         audio_keys = ("qishui",)
         gallery_keys = ("ehentai", "pixiv", "hitomi")
         video_n = 0
@@ -3193,6 +3202,7 @@ class MainWindow(QWidget):
                     + int(counts.get("xvideos") or 0)
                     + int(counts.get("pornhub") or 0)
                     + int(counts.get("missav") or 0)
+                    + int(counts.get("xcom") or 0)
                 )
                 pv.set_batch_counts(tab_counts)
             except Exception:
@@ -3384,7 +3394,7 @@ class MainWindow(QWidget):
                 return None
             return getattr(pa, "page_qishui", None)
         if plat in ("douyin", "bilibili", "youtube", "jimeng", "liblib", "xvideos",
-                       "pornhub", "missav"):
+                       "pornhub", "missav", "xcom"):
             if create:
                 self._ensure_page("video")
             pv = getattr(self, "page_douyin", None)
@@ -3399,6 +3409,7 @@ class MainWindow(QWidget):
                 "xvideos": getattr(pv, "page_other", None),
                 "pornhub": getattr(pv, "page_other", None),
                 "missav": getattr(pv, "page_other", None),
+                "xcom": getattr(pv, "page_other", None),
             }.get(plat)
         if plat in ("ehentai", "pixiv", "hitomi"):
             if create:
@@ -3903,7 +3914,7 @@ class MainWindow(QWidget):
 
         关闭时不中断当前条：图集/视频下完本条后再停。
         persist=True（默认）时写入 user.txt；启动恢复用 persist=False。
-        notify=None 时跟 persist：用户点开关才出气泡，启动恢复/Cookie 检测不打扰。
+        notify=None 时跟 persist：用户点开关才出气泡，启动恢复不打扰。
         """
         on = bool(on)
         if notify is None:
@@ -4039,7 +4050,7 @@ class MainWindow(QWidget):
             # 预下载静默后台开跑：不切侧栏主页、不切子 Tab（避免打断用户当前界面）
             if plat == "qishui" or plat in (
                 "douyin", "bilibili", "youtube", "jimeng", "liblib", "xvideos",
-                "pornhub", "missav",
+                "pornhub", "missav", "xcom",
             ):
                 page = self._pre_dl_page_for(plat, create=True)
                 if page is None:
@@ -5074,6 +5085,12 @@ class MainWindow(QWidget):
         except Exception:
             log.exception("导出目录映射设置失败")
         try:
+            page = getattr(self, "page_boot", None)
+            if page is not None and hasattr(page, "export_settings"):
+                prefs["boot"] = page.export_settings()
+        except Exception:
+            log.exception("导出开机员设置失败")
+        try:
             page = getattr(self, "page_voice", None)
             if page is not None:
                 prefs["voice_input"].update(page.export_settings())
@@ -5541,13 +5558,13 @@ class MainWindow(QWidget):
             except Exception:
                 log.exception("恢复视频下载设置失败")
 
-        # 关于页控件（路径/Cookie/白名单）：新建档也要刷一次，避免空白名单被 _save 写回
+        # 关于页控件（路径/白名单）：新建档也要刷一次，避免空白名单被 _save 写回
         try:
             if hasattr(self, "page_about") and hasattr(self.page_about, "reload_from_prefs"):
                 self.page_about.reload_from_prefs()
         except Exception:
             log.exception("恢复关于页设置失败")
-        # 系统总览设置卡（界面缩放 / Cookie设置 / 公共保存）
+        # 系统总览设置卡（界面缩放 / 公共保存）
         try:
             if hasattr(self, "page_overview") and hasattr(self.page_overview, "reload_from_prefs"):
                 self.page_overview.reload_from_prefs()
@@ -5570,7 +5587,7 @@ class MainWindow(QWidget):
             except Exception:
                 log.exception("恢复区域录屏设置失败")
 
-        # 界面缩放：只同步偏好显示值（真正缩放已在 mainv918 启动前设 QT_SCALE_FACTOR）
+        # 界面缩放：只同步偏好显示值（真正缩放已在 mainv919 启动前设 QT_SCALE_FACTOR）
         try:
             want_scale = float(ui_prefs.get("scale", 1.0) or 1.0)
         except (TypeError, ValueError):
@@ -5634,7 +5651,7 @@ class MainWindow(QWidget):
         except Exception:
             log.exception("恢复文本编辑设置失败")
 
-        # 预下载开关：从 user.txt 恢复；本机无 Cookie 则强制关
+        # 预下载开关：从 user.txt 恢复
         try:
             self._apply_pre_dl_auto_from_prefs(prefs, persist=False)
         except Exception:
@@ -5654,99 +5671,11 @@ class MainWindow(QWidget):
         # 首次建档 / 无效重建 / 已有文件补全新字段：都写一份当前快照
         self._save_user_prefs()
 
-    def _iter_configured_cookie_paths(self, prefs=None):
-        """视频/图集各平台 Cookie 路径：(显示名, 路径)。"""
-        prefs = prefs if isinstance(prefs, dict) else (getattr(self, "_user_prefs", None) or {})
-        items = []
-        v = prefs.get("video") or {}
-        for key, label in (("douyin", "抖音"), ("bilibili", "B站"), ("youtube", "YouTube")):
-            sub = v.get(key) if isinstance(v.get(key), dict) else {}
-            items.append((label, (sub or {}).get("cookie_path", "")))
-        for sec, label in (("gallery", "图集(EH)"), ("gallery_pixiv", "图集(Pixiv)")):
-            s = prefs.get(sec) if isinstance(prefs.get(sec), dict) else {}
-            items.append((label, (s or {}).get("cookie_path", "")))
-        return items
-
-    def _has_loaded_cookie(self, prefs=None) -> bool:
-        """本机是否已加载至少一个有效 Cookie 文件。"""
-        for _label, path in self._iter_configured_cookie_paths(prefs):
-            p = (path or "").strip()
-            if p and os.path.isfile(p):
-                return True
-        return False
-
     def _apply_pre_dl_auto_from_prefs(self, prefs=None, *, persist: bool = False):
-        """按 user.txt 恢复预下载开关；本机未加载 Cookie 则强制关闭。"""
+        """按 user.txt 恢复预下载开关。"""
         prefs = prefs if isinstance(prefs, dict) else (getattr(self, "_user_prefs", None) or {})
         want = bool((prefs.get("clipboard_auto") or {}).get("auto_process"))
-        if not self._has_loaded_cookie(prefs):
-            if want:
-                log.info("本机未加载 Cookie，预下载自动处理改为关闭")
-            want = False
-            ca = prefs.get("clipboard_auto")
-            if isinstance(ca, dict):
-                ca["auto_process"] = False
         self.set_pre_dl_auto_process_enabled(want, persist=persist)
-
-    def _check_cookie_files_startup(self):
-        """启动时检查 Cookie：缺失提示；本机一个都没加载则警告并关闭预下载。"""
-        # 仅「视频 / 图集」页存在时才有意义
-        if not self._page_enabled("video") and not self._page_enabled("gallery"):
-            return
-        prefs = getattr(self, "_user_prefs", None) or {}
-        missing = []
-        loaded = 0
-        for label, path in self._iter_configured_cookie_paths(prefs):
-            p = (path or "").strip()
-            if p and os.path.isfile(p):
-                loaded += 1
-            elif p:
-                missing.append(f"{label}（{p}）")
-
-        no_cookie = loaded == 0
-        if no_cookie:
-            try:
-                self.set_pre_dl_auto_process_enabled(False, persist=True, notify=False)
-            except Exception:
-                log.exception("无 Cookie 时关闭预下载失败")
-            log.info("启动检测：本机未加载 Cookie，预下载已关闭")
-            try:
-                self._goto_overview_page()
-                sec = getattr(
-                    getattr(self, "page_overview", None), "settings_section", None
-                )
-                if sec is not None and hasattr(sec, "set_cookie_alert"):
-                    sec.set_cookie_alert(
-                        True,
-                        "⚠ 未检测到已加载的 Cookie，预下载已关闭。请先加载 Cookie。",
-                    )
-            except Exception:
-                log.exception("显示 Cookie 未加载提示失败")
-            try:
-                from styles.style_all import message_box_warn
-                message_box_warn(
-                    self,
-                    "Cookie 未加载",
-                    "本机尚未加载 Cookie 文件。\n\n"
-                    "预下载自动处理已关闭。\n"
-                    "请到「系统总览 → Cookie设置」加载后再打开预下载开关。",
-                    auto_close_sec=5,
-                )
-            except Exception:
-                log.exception("弹出 Cookie 未加载警告失败")
-            return
-
-        if missing:
-            log.info("启动检测：%d 个 Cookie 文件缺失，在系统总览提示配置", len(missing))
-            try:
-                self._goto_overview_page()
-                sec = getattr(
-                    getattr(self, "page_overview", None), "settings_section", None
-                )
-                if sec is not None and hasattr(sec, "set_cookie_alert"):
-                    sec.set_cookie_alert(True)
-            except Exception:
-                log.exception("显示 Cookie 缺失提示失败")
 
     def _apply_window_geometry(self, ui_prefs: dict):
         """从 user.txt 恢复主窗口宽高（不得小于最小尺寸）。"""
@@ -6047,7 +5976,8 @@ class MainWindow(QWidget):
                 str(x) for x in (name, exe, *list(cmd))
             ).lower()
             if (
-                ("mainv918" in blob)
+                ("mainv919" in blob)
+                or ("mainv918" in blob)
                 or ("mainv917" in blob)
                 or ("mainv916" in blob)
                 or ("desktop assistant" in blob)
@@ -6239,7 +6169,7 @@ class MainWindow(QWidget):
 
         if save or not from_prefs:
             try:
-                # 立即落盘，保证重启后 mainv918 能读到新倍数
+                # 立即落盘，保证重启后 mainv919 能读到新倍数
                 self._save_user_prefs()
             except Exception:
                 log.exception("保存界面缩放失败")
@@ -6930,17 +6860,6 @@ class MainWindow(QWidget):
         except Exception:
             log.exception("系统总览 on_enter 失败")
 
-    def _on_overview_cookies_configured(self):
-        """系统总览配好 Cookie 后，收起「Cookie设置」卡内的缺失告警条。"""
-        try:
-            sec = getattr(
-                getattr(self, "page_overview", None), "settings_section", None
-            )
-            if sec is not None and hasattr(sec, "set_cookie_alert"):
-                sec.set_cookie_alert(False)
-        except Exception:
-            pass
-
     def _close_app_log_handlers(self):
         """关闭 app.log 文件句柄，便于删除/清空 records。"""
         import logging
@@ -7339,9 +7258,7 @@ class MainWindow(QWidget):
                 f"包含：{', '.join(bundles) if bundles else '（空）'}\n"
                 "· data：偏好 / 粘贴仓库 / 积分历史 / 时区城市 / 日志\n"
                 "· data（card_*.txt）：速存记录模式卡片\n"
-                "· 图集去重记录（gallery_eh.txt / gallery_hitomi.txt）\n"
-                "· 其它视频去重记录（other_video.txt）\n"
-                "· 汽水音乐去重记录（qishui.txt）\n"
+                "· 已下记录（downloaded.txt：图集 / 其它视频 / 汽水音乐）\n"
                 "· 知识库：游戏助手 gameassist/、游戏大脑 gamebrain/",
             )
         except Exception as e:
@@ -7374,7 +7291,7 @@ class MainWindow(QWidget):
             "导入本地数据",
             "导入将覆盖 data/ 下的本地数据：\n"
             "· 偏好 / 粘贴 / 积分 / 时区城市 / 日志\n"
-            "· 图集 / 其它视频 / 汽水音乐去重记录\n"
+            "· 已下记录（downloaded.txt，或旧的四份去重文件）\n"
             "· 速存记录卡片\n"
             "· 知识库（游戏助手 / 游戏大脑；备份里没有则保留本机）\n\n"
             "旧版 records / gallery / cards 备份仍可导入。\n"
@@ -7437,6 +7354,7 @@ class MainWindow(QWidget):
                     "user.txt", "paste_helper.txt", "points_calc.txt",
                     "app.log", "world_clock_cities.txt",
                     "pre_download.txt", "gamemeet_history.txt", "prompts_editor.txt",
+                    "downloaded.txt",
                     "gallery_eh.txt", "gallery_hitomi.txt",
                     "other_video.txt", "qishui.txt",
                 }
@@ -7550,6 +7468,11 @@ class MainWindow(QWidget):
                     _migrate_user_records_split_once()
                 except Exception:
                     log.exception("导入后拆分 records 失败")
+                try:
+                    from utils.downloaded_records import migrate_legacy_download_records
+                    migrate_legacy_download_records()
+                except Exception:
+                    log.exception("导入后合并已下记录失败")
 
                 # 旧备份没带知识库目录：本机知识库文件已保留，来源 / 分类也写回本机值
                 try:
@@ -7638,10 +7561,10 @@ class MainWindow(QWidget):
             "重置本地数据",
             "将清除 data/ 下全部本地业务数据，包括：\n"
             "· 用户偏好、粘贴仓库、积分历史、时区城市、日志\n"
-            "· 图集 / 其它视频 / 汽水音乐去重记录\n"
+            "· 已下记录（downloaded.txt）\n"
             "· 速存记录模式卡片\n"
             "· 知识库（游戏助手 gameassist/、游戏大脑 gamebrain/）\n"
-            "· 侧栏顺序 / 分区名 / 主题 / 缩放 / 各页路径与 Cookie 配置\n\n"
+            "· 侧栏顺序 / 分区名 / 主题 / 缩放 / 各页保存路径\n\n"
             "此操作不可撤销。是否继续？",
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,

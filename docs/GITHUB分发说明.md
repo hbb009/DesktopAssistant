@@ -4,7 +4,7 @@
 
 ## 仓库里有什么
 
-- 程序源码：`mainv918.py`、`ui_main.py`、`pages/`、`utils/`、`styles/`、`tools/`
+- 程序源码：`mainv919.py`、`ui_main.py`、`pages/`、`utils/`、`styles/`、`tools/`
 - 资源：`assets/`（样式表、图标、功能说明图 WebP）
 - 预设数据：`docs/提示词分类.txt`（单层【分类】列表；提示词编辑页启动时读取；>15 条时 UI 用蓝色 H3 溢出）
 - 依赖清单：`requirements.txt`（程序）、`requirements-models.txt`（OCR / 语音 / 克隆等模型相关库）
@@ -23,7 +23,7 @@
 - `A安装.bat`：低配。只装程序组件（`requirements.txt`、ffmpeg、Deno），不装 torch / paddle / 语音克隆，也不下载 `model/` 权重。下载、速存、粘贴、文本、看图、阅读这些基本功能可以用。
 - `B安装.bat`：高配。在低配之上安装模型运行库，并下载截图 OCR、三档语音转写、中英翻译、语音克隆权重。AuK、Qwen2.5-Omni-3B、BiRefNet、Upscayl 仍需手动放进 `model/`。
 
-两个安装脚本结束时会打开一次程序。以后每天启动用 `3启动-程序.bat`（或 `python mainv918.py`）。
+两个安装脚本结束时会打开一次程序。以后每天启动用 `3启动-程序.bat`（或 `python mainv919.py`）。
 
 等价命令：`python tools/install_ab.py basic` 或 `python tools/install_ab.py full`。
 

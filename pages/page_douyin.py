@@ -19,6 +19,7 @@ warnings.filterwarnings("ignore", category=urllib3.exceptions.InsecureRequestWar
 
 import os, re, json, time, threading, uuid, gzip as gzip_mod, subprocess
 import http.cookiejar, ssl, datetime
+from urllib.parse import urlsplit
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
@@ -57,6 +58,7 @@ from styles.style_all import (
 from utils.logger import get_logger
 from utils.xvideos import looks_like_xvideos as _looks_like_xvideos
 from utils.missav import looks_like_missav as _looks_like_missav
+from utils.xcom import looks_like_xcom as _looks_like_xcom
 from utils.cursor_toast import (
     show_cursor_toast, in_batch_download, batch_progress_prefix,
 )
@@ -312,7 +314,7 @@ def extract_url(text: str) -> str:
     """从纯链接或任意分享文字中提取第一个有效抖音/TikTok 链接"""
     pat = re.compile(
         r'https?://(?:v\.douyin\.com|vm\.tiktok\.com|www\.douyin\.com'
-        r'|m\.douyin\.com|www\.tiktok\.com'
+        r'|m\.douyin\.com|www\.iesdouyin\.com|www\.tiktok\.com'
         r'|music\.douyin\.com|qishui\.douyin\.com)/[^\s\u4e00-\u9fff，。！？、；：'
         r'""\'\'【】《》（）\[\]{}]*'
     )
@@ -340,9 +342,14 @@ def is_qishui_url(url: str) -> bool:
 
 
 def resolve_short(url: str, cookie_str: str) -> str:
-    return _head(url, {"User-Agent": UA_MOBILE,
-                       "Referer": "https://www.douyin.com/",
-                       "Cookie": cookie_str})
+    headers = {"User-Agent": UA_MOBILE, "Referer": "https://www.douyin.com/"}
+    if cookie_str:
+        headers["Cookie"] = cookie_str
+    resolved = _head(url, headers)
+    # 部分分享短链不响应 HEAD 的跳转；GET 只用于还原公开页面。
+    if not get_aweme_id(resolved):
+        resolved, _body, _status, _length = _get(url, headers)
+    return resolved
 
 
 def get_aweme_id(url: str):
@@ -1616,8 +1623,10 @@ def line_b_share_page(aweme_id, real_url, cookie_str, log_cb=None):
         "Accept-Language": "zh-CN,zh;q=0.9",
         "Accept-Encoding": "gzip, deflate",
         "Referer": "https://www.iesdouyin.com/",
-        "Cookie": cookie_str,
     }
+
+    if cookie_str:
+        hdrs["Cookie"] = cookie_str
 
     # 候选页面：优先 share/video（带 _ROUTER_DATA）；share/slides 页多为空壳加密 JS
     cand, seen = [], set()
@@ -1642,6 +1651,8 @@ def line_b_share_page(aweme_id, real_url, cookie_str, log_cb=None):
                     log_cb(f"B/{fn_name} HTTP={status} len={length}B "
                            f"url=...{page_url[-32:]}")
                 item = _extract_from_router_data(html)
+                if item and not _item_id_match(item, aweme_id):
+                    raise ValueError("分享页返回了其他作品，拒绝下载")
                 if item:
                     _playwm_to_play(item)
                     if log_cb:
@@ -1843,12 +1854,57 @@ class ParseWorker(QThread):
             is_short = any(h in url for h in ("v.douyin.com", "vm.tiktok.com"))
             self._log(f"识别链接：{url}")
 
-            # 步骤2：加载 Cookie
+            # 公开视频先走匿名分享页；不读取 Cookie 文件或浏览器登录态。
+            # 图集/实况仍由后面的多线路合并处理，避免只拿到封面。
+            host = urlsplit(url).hostname or ""
+            is_douyin = (host == "douyin.com" or host.endswith(".douyin.com")
+                         or host == "iesdouyin.com" or host.endswith(".iesdouyin.com"))
+            if is_douyin and not is_qishui_url(url):
+                try:
+                    public_url = resolve_short(url, "") if is_short else url
+                    public_id = get_aweme_id(public_url)
+                    if not public_id:
+                        raise ValueError("公开链接未提供作品 ID")
+                    self._log("优先免 Cookie 解析公开分享页…")
+                    try:
+                        public_item = line_b_share_page(
+                            public_id, public_url, "",
+                            log_cb=lambda msg: self._log(f"[匿名分享页] {msg}"),
+                        )
+                    except DouyinAccessBlocked:
+                        raise
+                    except Exception:
+                        self._log("分享页未提供数据，尝试匿名 Mobile 接口…")
+                        public_item = line_a_mobile(
+                            public_id, "",
+                            log_cb=lambda msg: self._log(f"[匿名 Mobile] {msg}"),
+                        )
+                    public_media = parse_media(public_item)
+                    is_gallery = (public_item.get("aweme_type") in (2, 68)
+                                  or bool(public_item.get("images"))
+                                  or "is_slides=1" in public_url
+                                  or "/share/slides/" in public_url)
+                    if not is_gallery and any(m.kind == "video" for m in public_media):
+                        self._log("免 Cookie 解析成功 ✓，可直接下载", "ok")
+                        self.ok.emit(public_item, public_media)
+                        return
+                    self._log("分享页为图集或缺少视频轨，继续完整解析", "info")
+                    url = public_url
+                    is_short = False
+                except DouyinAccessBlocked:
+                    raise
+                except Exception as exc:
+                    self._log(f"匿名分享页未成功：{exc}；尝试备用线路", "warn")
+
+            # 步骤2：仅在备用线路需要时读取用户已配置的 Cookie（可选）。
             cookie_str = ""; s_v_web_id = ""; cookie_dict = {}
             if self.cookie_path and os.path.isfile(self.cookie_path):
-                cookie_str, cookie_dict = load_cookies(self.cookie_path)
-                s_v_web_id = cookie_dict.get("s_v_web_id", "")
-                self._log(f"已加载 Cookie（{len(cookie_dict)} 个字段）")
+                try:
+                    cookie_str, cookie_dict = load_cookies(self.cookie_path)
+                    s_v_web_id = cookie_dict.get("s_v_web_id", "")
+                    self._log(f"备用线路加载可选 Cookie（{len(cookie_dict)} 个字段）")
+                except Exception:
+                    self._log("可选 Cookie 文件不可用，继续匿名解析", "warn")
 
             if is_qishui_url(url):
                 self._log("识别为汽水音乐")
@@ -2029,7 +2085,7 @@ class ParseWorker(QThread):
                 enrich = True
                 reason = "图文/多格未见视频轨，补试线路W Web detail"
 
-            if need_w:
+            if need_w and cookie_str:
                 self._log(f"线路W Web：{reason}", "info")
                 try:
                     cand_w = line_w_web_detail(
@@ -2082,7 +2138,7 @@ class ParseWorker(QThread):
                     "所有解析线路均失败：\n" +
                     "\n".join(f"  · {e}" for e in errors) +
                     "\n\n可能原因：\n"
-                    "  · Cookie 已过期（重新导出 cookies.txt）\n"
+                    "  · 平台暂时限制匿名访问或需要登录（可选配置 Cookie）\n"
                     "  · 作者开启了私密帐号，且当前 Cookie 对应账号无权查看\n"
                     "  · 视频已删除\n"
                     "  · 网络连接问题")
@@ -2585,7 +2641,7 @@ class PageDouyin(QWidget):
 
         ck_head = QHBoxLayout()
         ck_head.setSpacing(8)
-        lbl_ck = QLabel("Cookie 文件（必填，Netscape .txt 格式）")
+        lbl_ck = QLabel("Cookie 文件（可选，仅备用线路使用）")
         lbl_ck.setObjectName("SecTitle")
         ck_head.addWidget(lbl_ck, 0)
         self.ck_status = _ElideLabel("")
@@ -2962,13 +3018,13 @@ class PageDouyin(QWidget):
     # ── Cookie ────────────────────────────────────────────────────────────────
 
     def showEvent(self, event):
-        """本会话第一次显示本页时：自动在下载目录扫描并加载 Cookie。"""
+        """公开视频默认匿名解析，不自动扫描下载目录中的 Cookie。"""
         super().showEvent(event)
         if self._cookie_auto_tried:
             return
         self._cookie_auto_tried = True
-        # 等布局/日志框就绪后再扫，避免构造期写日志
-        QTimer.singleShot(0, self._auto_load_cookie)
+        # 仅刷新明确配置的路径，不搜索或导入其它登录文件。
+        self._on_cookie_change(self.ck_path.text())
 
     def _set_cookie_btn_loaded(self, loaded: bool):
         """加载成功 → 绿色「已加载」；否则恢复「选择文件」。仍可点击重新选择。"""
@@ -3225,6 +3281,7 @@ class PageDouyin(QWidget):
             or self._looks_like_liblib(probe)
             or _looks_like_xvideos(probe)
             or _looks_like_missav(probe)
+            or _looks_like_xcom(probe)
         ):
             handoff = text or raw_clip
             self._log(
@@ -3246,7 +3303,7 @@ class PageDouyin(QWidget):
             self._set_status("没有链接", "#f97316")
             return
         if not self.ck_path.text().strip():
-            self._log("未选择 Cookie 文件，解析可能失败（点「安装教程」查看获取方法）", "warn")
+            self._log("使用免 Cookie 模式解析公开视频", "info")
 
         self._auto_dl = True          # 解析成功即自动下载
         self._parse(text)

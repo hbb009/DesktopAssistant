@@ -5,7 +5,7 @@
 # 会与 PyTorch、onnxruntime 抢 DLL，表现为闪退或空 ImportError。
 #
 # 开发：python -m utils.cosyvoice_job <meta.json>
-# 打包：mainv918.exe --cosyvoice-job <meta.json>
+# 打包：mainv919.exe --cosyvoice-job <meta.json>
 # meta.json:
 #   {
 #     "action": "probe" | "synth",
@@ -29,12 +29,36 @@ import sys
 import traceback
 
 
+def _prepare_ort_cuda() -> None:
+    """先加载 torch 自带的 CUDA 12 / cuDNN 9，再让 onnxruntime-gpu 使用 CUDA EP。"""
+    try:
+        import torch
+        tlib = os.path.join(os.path.dirname(torch.__file__), "lib")
+        if tlib and os.path.isdir(tlib):
+            os.environ["PATH"] = tlib + os.pathsep + os.environ.get("PATH", "")
+            if hasattr(os, "add_dll_directory"):
+                try:
+                    os.add_dll_directory(tlib)
+                except OSError:
+                    pass
+    except Exception:
+        pass
+    try:
+        import onnxruntime as ort
+        if hasattr(ort, "preload_dlls"):
+            ort.preload_dlls()
+    except Exception:
+        pass
+
+
 def _prepare_env() -> None:
     os.environ.setdefault("OMP_NUM_THREADS", "1")
     os.environ.setdefault("KMP_DUPLICATE_LIB_OK", "TRUE")
+    os.environ.setdefault("TQDM_DISABLE", "1")
     os.environ["DESKASSIST_COSYVOICE_JOB"] = "1"
     os.environ.pop("QT_PLUGIN_PATH", None)
     os.environ.pop("QT_QPA_PLATFORM_PLUGIN_PATH", None)
+    _prepare_ort_cuda()
 
 
 def _write_json(path: str, data: dict) -> None:
@@ -73,6 +97,7 @@ def _patch_ort_cuda_fallback() -> None:
     CUDAExecutionProvider；ORT 内部 fallback 仍会再实例化 CUDA EP，
     所以必须自己 catch 后改走 CPU。音色主模型仍用 PyTorch CUDA。
     """
+    _prepare_ort_cuda()
     try:
         import onnxruntime as ort
     except Exception:
@@ -83,13 +108,19 @@ def _patch_ort_cuda_fallback() -> None:
 
     def _session(path, sess_options=None, providers=None, provider_options=None, **kwargs):
         try:
-            return orig(
+            sess = orig(
                 path,
                 sess_options=sess_options,
                 providers=providers,
                 provider_options=provider_options,
                 **kwargs,
             )
+            try:
+                used = sess.get_providers()
+                sys.stderr.write("[deskassist] ONNX providers=%s path=%s\n" % (used, path))
+            except Exception:
+                pass
+            return sess
         except Exception as e:
             names = []
             for p in providers or []:
@@ -299,7 +330,36 @@ def _split_tts_chunks(model, tts_text: str) -> list:
     return [text]
 
 
-def _synth_cross_lingual(model, tts_text: str, prompt_wav: str, extra: dict, *, cv3: bool):
+def _set_infer_seed(meta=None, seed=None):
+    """官方 webui 在每轮推理前 set_all_random_seed；这里固定种子，减少段间语速漂移。"""
+    if seed is None:
+        try:
+            raw = (meta or {}).get("seed")
+            seed = int(42 if raw is None or raw == "" else raw)
+        except (TypeError, ValueError):
+            seed = 42
+    try:
+        from cosyvoice.utils.common import set_all_random_seed
+        set_all_random_seed(int(seed))
+        return int(seed)
+    except Exception:
+        pass
+    try:
+        import random
+        import numpy as np
+        import torch
+        random.seed(int(seed))
+        np.random.seed(int(seed))
+        torch.manual_seed(int(seed))
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(int(seed))
+    except Exception:
+        pass
+    return int(seed)
+
+
+def _synth_cross_lingual(model, tts_text: str, prompt_wav: str, extra: dict, *, cv3: bool, sample_rate: int = 0, speed: float = 1.0, seed: int = 42):
+
     """没有参考音频逐字稿时走 cross_lingual：LLM 只看要说的字，音色走 speaker embedding。
 
     旧逻辑把演示稿「希望你以后能够做的比我还好呦。」塞进 prompt_text，
@@ -312,13 +372,15 @@ def _synth_cross_lingual(model, tts_text: str, prompt_wav: str, extra: dict, *, 
         call_extra["text_frontend"] = False
     for chunk in chunks:
         piece = _wrap_cv3(chunk) if cv3 else chunk
+        _set_infer_seed(seed=seed)
         gen = _call_with_known_kwargs(
             model.inference_cross_lingual,
             piece,
             prompt_wav,
             extra=call_extra,
         )
-        pieces.extend(list(gen))
+        items = list(gen)
+        pieces.extend(items)
     return pieces
 
 
@@ -341,13 +403,6 @@ def _do_synth(meta: dict) -> dict:
     prompt_wav = (meta.get("prompt_wav") or "").strip()
     tts_text = (meta.get("tts_text") or "").strip()
     out = (meta.get("out") or "").strip()
-    instruct = _wrap_instruct(meta.get("instruct") or "")
-    prompt_text_raw = (meta.get("prompt_text") or "").strip()
-    try:
-        speed = float(meta.get("speed") or 1.0)
-    except (TypeError, ValueError):
-        speed = 1.0
-    speed = max(0.5, min(2.0, speed))
 
     if not model_dir or not os.path.isdir(model_dir):
         raise FileNotFoundError(f"模型目录不存在：{model_dir}")
@@ -366,6 +421,17 @@ def _do_synth(meta: dict) -> dict:
     if not out:
         raise ValueError("未指定输出文件")
 
+    model, sample_rate, fp16 = _load_model(model_dir, home)
+    import torch
+
+    data = _synth_with_model(model, sample_rate, meta)
+    data["fp16"] = fp16
+    data["cuda"] = bool(torch.cuda.is_available())
+    return data
+
+
+def _load_model(model_dir: str, home: str):
+    """加载一次。常驻服务复用返回的模型，避免每句都冷启动。"""
     AutoModel = _import_automodel(home)
     import torch
 
@@ -377,8 +443,40 @@ def _do_synth(meta: dict) -> dict:
     except TypeError:
         model = AutoModel(model_dir, **extra_init)
     sample_rate = int(getattr(model, "sample_rate", 24000) or 24000)
-    cv3 = _is_cosyvoice3(model_dir)
+    return model, sample_rate, fp16
 
+
+def _synth_with_model(model, sample_rate: int, meta: dict) -> dict:
+    """用已经加载的模型合成一段。校验和推理与单次任务相同。"""
+    import time as _time
+    t0 = _time.perf_counter()
+    model_dir = (meta.get("model_dir") or "").strip()
+    prompt_wav = (meta.get("prompt_wav") or "").strip()
+    tts_text = (meta.get("tts_text") or "").strip()
+    out = (meta.get("out") or "").strip()
+    instruct = _wrap_instruct(meta.get("instruct") or "")
+    prompt_text_raw = (meta.get("prompt_text") or "").strip()
+    try:
+        speed = float(meta.get("speed") or 1.0)
+    except (TypeError, ValueError):
+        speed = 1.0
+    speed = max(0.5, min(2.0, speed))
+    seed = _set_infer_seed(meta)
+
+    if not prompt_wav or not os.path.isfile(prompt_wav):
+        raise FileNotFoundError("请先选择或录制参考音频")
+    dur = _wav_seconds(prompt_wav)
+    if dur and dur > 30.0:
+        raise RuntimeError(
+            f"参考音频太长（{dur:.1f} 秒）。CosyVoice 只支持 30 秒以内的原声，"
+            "请先裁剪到 30 秒以内再试。"
+        )
+    if not tts_text:
+        raise ValueError("请输入要合成的文字")
+    if not out:
+        raise ValueError("未指定输出文件")
+
+    cv3 = _is_cosyvoice3(model_dir)
     call_extra = {"stream": False, "speed": speed, "text_frontend": True}
     if instruct:
         gen = _call_with_known_kwargs(
@@ -404,7 +502,10 @@ def _do_synth(meta: dict) -> dict:
     else:
         mode = "cross_lingual"
         wav = _concat_speech(
-            _synth_cross_lingual(model, tts_text, prompt_wav, call_extra, cv3=cv3)
+            _synth_cross_lingual(
+                model, tts_text, prompt_wav, call_extra, cv3=cv3,
+                sample_rate=sample_rate, speed=speed, seed=seed,
+            )
         )
     parent = os.path.dirname(out)
     if parent:
@@ -412,15 +513,33 @@ def _do_synth(meta: dict) -> dict:
     _save_wav(out, wav, sample_rate)
     if not os.path.isfile(out) or os.path.getsize(out) < 64:
         raise RuntimeError("合成文件未写出或过小")
+    try:
+        from utils.even_wav import even_out_wav
+        even_out_wav(out, tts_text, speed=speed)
+    except Exception:
+        pass
+    import time as _time
+    synth_s = _time.perf_counter() - t0
+    wav_s = _wav_seconds(out)
+    rtf = (synth_s / wav_s) if wav_s > 0 else 0.0
+    try:
+        sys.stderr.write(
+            "[deskassist] synth chars=%d synth_s=%.2f wav_s=%.2f rtf=%.3f\n"
+            % (len(tts_text), synth_s, wav_s, rtf)
+        )
+    except Exception:
+        pass
     return {
         "ok": True,
         "action": "synth",
         "out": out,
         "sample_rate": sample_rate,
         "mode": mode,
-        "fp16": fp16,
-        "cuda": bool(torch.cuda.is_available()),
         "prompt_text": prompt_text_raw,
+        "chars": len(tts_text),
+        "synth_s": round(synth_s, 3),
+        "wav_s": round(wav_s, 3),
+        "rtf": round(rtf, 3),
     }
 
 
@@ -461,10 +580,88 @@ def run_meta(meta_path: str) -> int:
         return 1
 
 
+def _write_result(path: str, data: dict) -> None:
+    """先写临时文件再换名，避免阅读器读到半截结果。"""
+    if not path:
+        return
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def serve_main() -> int:
+    """常驻合成：模型只加载一次。stdin 每行一个 meta.json 路径，结果写到 meta['result']。
+
+    父进程关掉 stdin 就退出。不要往 stdout 打进度，阅读器只看结果文件。
+    """
+    _prepare_env()
+    model = None
+    sample_rate = 24000
+    fp16 = False
+    loaded = None
+    while True:
+        line = sys.stdin.readline()
+        if not line:
+            return 0
+        meta_path = line.strip().strip('"')
+        if not meta_path:
+            continue
+        result_path = ""
+        try:
+            with open(meta_path, encoding="utf-8-sig") as f:
+                meta = json.load(f)
+            if not isinstance(meta, dict):
+                raise ValueError("meta.json 不是对象")
+            result_path = (meta.get("result") or "").strip()
+            action = str(meta.get("action") or "synth").strip().lower()
+            if action == "quit":
+                _write_result(result_path, {"ok": True, "action": "quit"})
+                return 0
+            home = (meta.get("cosyvoice_home") or "").strip()
+            model_dir = (meta.get("model_dir") or "").strip()
+            if not model_dir or not os.path.isdir(model_dir):
+                raise FileNotFoundError(f"模型目录不存在：{model_dir}")
+            key = (os.path.normcase(model_dir), os.path.normcase(home))
+            if model is None or loaded != key:
+                model, sample_rate, fp16 = _load_model(model_dir, home)
+                loaded = key
+            if action == "load":
+                _write_result(result_path, {
+                    "ok": True,
+                    "action": "load",
+                    "sample_rate": sample_rate,
+                    "fp16": fp16,
+                })
+                continue
+            if action != "synth":
+                raise ValueError(f"未知 action: {action}")
+            data = _synth_with_model(model, sample_rate, meta)
+            _write_result(result_path, data)
+        except Exception:
+            err = traceback.format_exc()
+            try:
+                sys.stderr.write(err)
+            except Exception:
+                pass
+            if result_path:
+                try:
+                    _write_result(result_path, {"ok": False, "error": err[-2000:]})
+                except Exception:
+                    pass
+
+
 def main(argv=None) -> int:
     argv = list(argv if argv is not None else sys.argv[1:])
+    if argv and argv[0] == "--serve":
+        return serve_main()
     if not argv or not str(argv[0]).lower().endswith(".json"):
         print("usage: python -m utils.cosyvoice_job <meta.json>", file=sys.stderr)
+        print("       python -m utils.cosyvoice_job --serve", file=sys.stderr)
         return 2
     return run_meta(argv[0])
 

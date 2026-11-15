@@ -1,5 +1,5 @@
 # pages/page_other_video.py
-# 「其它视频」：即梦 / LibTV / XVideos / Pornhub / MissAV 共用一套解析→画质卡→下载流程。
+# 「其它视频」：即梦 / LibTV / XVideos / Pornhub / MissAV / x.com 共用一套解析→画质卡→下载流程。
 # XVideos 默认勾选最高画质（HLS 优先）；HLS 逐片下载后 ffmpeg 无损封装 mp4。
 # Pornhub 的 HLS 两种分片格式都遇到过（见 _fetch_hls）：.m4s 走 fMP4 直拼，
 # .ts 走 ffmpeg 封装。
@@ -89,6 +89,10 @@ from utils.missav import (
     looks_like_missav,
     parse_missav,
 )
+from utils.xcom import (
+    looks_like_xcom,
+    parse_xcom,
+)
 
 _log = get_logger(__name__)
 
@@ -112,6 +116,8 @@ def detect_other_platform(text: str) -> str:
         return "pornhub"
     if looks_like_missav(t):
         return "missav"
+    if looks_like_xcom(t):
+        return "xcom"
     if looks_like_jimeng(t) or extract_jimeng_url(t):
         return "jimeng"
     if looks_like_liblib(t) or extract_liblib_url(t):
@@ -165,15 +171,8 @@ class OtherParseWorker(QThread):
         self.log.emit(msg, level)
 
     def _cookie_str(self) -> str:
-        p = (self.cookie_path or "").strip()
-        if not p or not os.path.isfile(p):
-            return ""
-        try:
-            from pages.page_douyin import load_cookies
-            s, _d = load_cookies(p)
-            return s or ""
-        except Exception:
-            return ""
+        """其它视频不读取 Cookie。"""
+        return ""
 
     def run(self):
         try:
@@ -274,10 +273,33 @@ class OtherParseWorker(QThread):
                 )
                 self.ok.emit(info, items)
                 return
+            if plat == "xcom":
+                self._emit("识别为 x.com")
+                info, specs = parse_xcom(
+                    text, log_cb=lambda m, lv="info": self._emit(m, lv),
+                )
+                cover = info.get("cover") or ""
+                items = [
+                    MediaItem(
+                        "video", s["label"], s["url"], s.get("ext") or ".mp4",
+                        cover, i, default_checked=(i == 0),  # 最高画质默认勾选
+                    )
+                    for i, s in enumerate(specs)
+                ]
+                dur = int(info.get("duration") or 0)
+                dtxt = f" · {dur // 60}:{dur % 60:02d}" if dur else ""
+                self._emit(
+                    f"解析成功：{info.get('author')} · {str(info.get('title') or '')[:40]}"
+                    f"{dtxt} · {len(items)} 档画质",
+                    "ok",
+                )
+                self.ok.emit(info, items)
+                return
             raise ValueError(
-                "不是即梦 / LibTV / XVideos / Pornhub / MissAV 链接。\n"
+                "不是即梦 / LibTV / XVideos / Pornhub / MissAV / x.com 链接。\n"
                 "支持 jimeng.jianying.com、liblib.tv/detail/、xvideos.com/video…、"
-                "pornhub.com/view_video.php?viewkey=…、missav.live/…/番号\n"
+                "pornhub.com/view_video.php?viewkey=…、missav.live/…/番号、"
+                "x.com/用户/status/…\n"
                 "汽水音乐请到「音频下载」。"
             )
         except Exception as e:
@@ -411,6 +433,8 @@ class OtherDownloadWorker(_JimengDownloadWorker):
             _info, specs = parse_pornhub(page_url)
         elif plat == "missav" or looks_like_missav(page_url):
             _info, specs = parse_missav(page_url)
+        elif plat == "xcom" or looks_like_xcom(page_url):
+            _info, specs = parse_xcom(page_url)
         elif looks_like_xvideos(page_url):
             _info, specs = parse_xvideos(page_url)
         else:
@@ -426,7 +450,10 @@ class OtherDownloadWorker(_JimengDownloadWorker):
         pu = (job.get("page_url") or "").strip()
         if not pu or job.get("_xv_refreshed"):
             return False
-        return looks_like_xvideos(pu) or looks_like_pornhub(pu) or looks_like_missav(pu)
+        return (
+            looks_like_xvideos(pu) or looks_like_pornhub(pu)
+            or looks_like_missav(pu) or looks_like_xcom(pu)
+        )
 
     def _fetch_direct(self, job, url, path, key, headers, wd, stall_msg,
                       job_index: int = 0, job_total: int = 1) -> int:
@@ -448,6 +475,11 @@ class OtherDownloadWorker(_JimengDownloadWorker):
     def _hls_playlist(self, url, headers):
         """→ (分片绝对地址, 是否 fMP4)。fMP4 的分片表首项是 EXT-X-MAP 初始化段。"""
         r = req_lib.get(url, headers=headers, timeout=30)
+        if r.status_code == 400 and "/master.m3u8" in (url or ""):
+            # 旧解析结果仍指向 master.m3u8。phncdn 对这条返回 400。
+            from utils.pornhub import ph_media_playlist
+            url = ph_media_playlist(url)
+            r = req_lib.get(url, headers=headers, timeout=30)
         if r.status_code in (403, 410):
             raise _HlsExpired()
         r.raise_for_status()
@@ -641,7 +673,7 @@ _RECORD_PLACEHOLDER = (
 
 
 class PageOtherVideo(PageJimeng):
-    """其它视频子页：一套 UI，按链接区分即梦 / LibTV / XVideos / Pornhub / MissAV。
+    """其它视频子页：一套 UI，按链接区分即梦 / LibTV / XVideos / Pornhub / MissAV / x.com。
 
     已下记录和预下载一样分成这四段，段内再按类型和画质分开，只跳过命中的那一档。
     """
@@ -651,12 +683,12 @@ class PageOtherVideo(PageJimeng):
         self._current_platform = ""
         try:
             self.url_edit.setPlaceholderText(
-                "粘贴即梦 / LibTV / XVideos / Pornhub / MissAV 链接 → 回车自动解析下载"
+                "粘贴即梦 / LibTV / XVideos / Pornhub / MissAV / x.com 链接 → 回车自动解析下载"
             )
         except Exception:
             pass
         try:
-            self.lbl_batch_hint.setText("粘贴即梦、LibTV、XVideos、Pornhub 或 MissAV 链接后按回车开始解析")
+            self.lbl_batch_hint.setText("粘贴即梦、LibTV、XVideos、Pornhub、MissAV 或 x.com 链接后按回车开始解析")
         except Exception:
             pass
         lay = self.layout()
@@ -668,7 +700,7 @@ class PageOtherVideo(PageJimeng):
         card = super()._make_empty_card()
         from PyQt5.QtWidgets import QLabel
         for w in card.findChildren(QLabel):
-            w.setText("粘贴即梦 / LibTV / XVideos /\nPornhub / MissAV 链接 → 回车")
+            w.setText("粘贴即梦 / LibTV / XVideos /\nPornhub / MissAV / x.com 链接 → 回车")
             break
         return card
 
@@ -731,7 +763,7 @@ class PageOtherVideo(PageJimeng):
             return
 
         if not text:
-            self._log("剪贴板里没有即梦 / LibTV / XVideos / Pornhub / MissAV 链接，输入框也是空的", "warn")
+            self._log("剪贴板里没有即梦 / LibTV / XVideos / Pornhub / MissAV / x.com 链接，输入框也是空的", "warn")
             self._set_status("没有链接", "#f97316")
             return
 
@@ -786,7 +818,8 @@ class PageOtherVideo(PageJimeng):
         if not str(ext).startswith("."):
             ext = "." + str(ext)
         tag = {"jimeng": "即梦", "liblib": "LibTV", "qishui": "汽水",
-              "xvideos": "XVideos", "pornhub": "Pornhub", "missav": "MissAV"}.get(plat, plat)
+              "xvideos": "XVideos", "pornhub": "Pornhub", "missav": "MissAV",
+              "xcom": "x.com"}.get(plat, plat)
         return f"[桌面助手][{tag}]{author}_{title}_{qual}{ext}"
 
     def _download_selected(self):
@@ -1334,7 +1367,7 @@ def _open_other_video_records_dialog(page):
         bg="#1d4ed8", fg="#dbeafe", bd="#2563eb", hover_bg="#2563eb",
     )
     btn_add.setToolTip(
-        "扫描文件夹里的视频。只记即梦、LibTV、XVideos、Pornhub、MissAV。"
+        "扫描文件夹里的视频。只记即梦、LibTV、XVideos、Pornhub、MissAV、x.com。"
         "新文件按 [桌面助手][平台] 归类，旧的「_原片 / _成片」按文件名末尾归类"
     )
     btn_add.clicked.connect(_do_add_dir)
@@ -1353,7 +1386,7 @@ def _open_other_video_records_dialog(page):
         bg="#a16207", fg="#fef9c3", bd="#ca8a04", hover_bg="#ca8a04",
     )
     btn_org.setToolTip(
-        "按即梦 / LibTV / XVideos / Pornhub / MissAV 重新分组，每组再按类型和画质分开，"
+        "按即梦 / LibTV / XVideos / Pornhub / MissAV / x.com 重新分组，每组再按类型和画质分开，"
         "并把 _2、(2) 另存名挪到分隔线下面（不删除）"
     )
     btn_org.clicked.connect(_do_organize)

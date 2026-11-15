@@ -1303,6 +1303,8 @@ def load_netscape_cookies(path: str):
 
 
 def _make_session(cookie_path: str = "") -> "req_lib.Session":
+    """图集请求不带 Cookie。参数保留，避免旧调用要改签名。"""
+    del cookie_path
     if not HAS_REQUESTS:
         raise RuntimeError("未安装 requests，请 pip install requests")
     s = req_lib.Session()
@@ -1312,14 +1314,6 @@ def _make_session(cookie_path: str = "") -> "req_lib.Session":
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     })
-    for c in load_netscape_cookies(cookie_path):
-        try:
-            s.cookies.set(
-                c["name"], c["value"],
-                domain=c["domain"], path=c["path"],
-            )
-        except Exception:
-            pass
     return s
 
 
@@ -2899,11 +2893,8 @@ class GalleryParseWorker(QThread):
             more = f" 等{len(only)}页" if len(only) > 10 else ""
             self.log.emit(f"定点解析：{prev}{more}（跳过已有页）", "ok")
         try:
-            session = _make_session(self.cookie_path)
-            if self.cookie_path and os.path.isfile(self.cookie_path):
-                self.log.emit("已加载 Cookie 文件", "ok")
-            else:
-                self.log.emit("未使用 Cookie（公开图库一般可用；exhentai 必须登录）", "info")
+            session = _make_session("")
+            self.log.emit("本次不使用 Cookie", "info")
 
             def _lg(msg, level="info"):
                 self.log.emit(msg, level)
@@ -2960,11 +2951,8 @@ class PixivParseWorker(QThread):
             return
         self.log.emit(f"链接：{url}", "info")
         try:
-            session = _make_session(self.cookie_path)
-            if self.cookie_path and os.path.isfile(self.cookie_path):
-                self.log.emit("已加载 Cookie 文件", "ok")
-            else:
-                self.log.emit("未使用 Cookie（pixiv 通常需要登录）", "info")
+            session = _make_session("")
+            self.log.emit("本次不使用 Cookie", "info")
 
             info = parse_pixiv_page(
                 session, url,
@@ -3458,7 +3446,8 @@ class GalleryDownloadWorker(QThread):
 
         tag = "补全" if self.mode == "fill" else "下载"
         self.log.emit(f"{tag}保存到：{folder} · 共 {len(self.images)} 项 · 每张最多重试 {self.retries} 次", "info")
-        session = _make_session(self.cookie_path)
+        self.log.emit("本次不使用 Cookie", "info")
+        session = _make_session("")
         total = len(self.images)
         ok_n = 0
         skip_n = 0
@@ -3620,7 +3609,7 @@ class GalleryDownloadWorker(QThread):
                         try:
                             err_l = str(e).lower()
                             if any(k in err_l for k in ("ssl", "eof", "connection")):
-                                session = _make_session(self.cookie_path)
+                                session = _make_session("")
                         except Exception:
                             pass
 
@@ -3997,7 +3986,7 @@ def _gallery_set_record_skip(page, on: bool) -> None:
 
 
 def _should_skip_by_record(page, name: str, *, note_continue: bool = True) -> bool:
-    """命中 gallery_eh.txt / gallery_hitomi.txt 且开关开启 → 跳过下载。
+    """命中 downloaded.txt 里的 e-hentai / hitomi 段且开关开启 → 跳过下载。
 
     关开关或序列补全（_bypass_record）时不跳过。
     关开关但记录命中时，note_continue=True 会打一条「继续」日志。

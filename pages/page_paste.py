@@ -174,6 +174,7 @@ except Exception:
         "xvideos": "XVideos",
         "pornhub": "Pornhub",
         "missav": "MissAV",
+        "xcom": "x.com",
         "ehentai": "e-hentai",
         "pixiv": "Pixiv",
         "hitomi": "hitomi.la",

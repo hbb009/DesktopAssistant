@@ -1105,6 +1105,11 @@ def ensure_data_layout() -> str:
         voice_edit_dir()
     except Exception:
         pass
+    try:
+        from utils.downloaded_records import migrate_legacy_download_records
+        migrate_legacy_download_records()
+    except Exception:
+        pass
     return d
 
 
@@ -1157,7 +1162,7 @@ def _convert_pre_download_json_to_txt(src: str, dst_txt: str) -> bool:
                         by[k] = [str(x) for x in v]
         plats = (
             "douyin", "qishui", "bilibili", "youtube", "jimeng",
-            "liblib", "xvideos", "pornhub", "missav", "ehentai", "pixiv", "hitomi",
+            "liblib", "xvideos", "pornhub", "missav", "xcom", "ehentai", "pixiv", "hitomi",
         )
         for plat in plats:
             lines.append(f"# {plat}")
@@ -1283,7 +1288,7 @@ def records_file(*names: str) -> str:
 
 
 def gallery_dir() -> str:
-    """图集已下记录（gallery_eh.txt / gallery_hitomi.txt），放 records/。"""
+    """已下记录总表 downloaded.txt 所在目录（userdata/）。"""
     return records_dir()
 
 

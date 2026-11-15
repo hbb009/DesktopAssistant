@@ -1,5 +1,5 @@
 /* =========================================================
-   桌面助手 v9.12 — app.qss（扁平深色 · 对应 temp1 壳层结构）
+   桌面助手 v9.19 — app.qss（扁平深色 · 对应 temp1 壳层结构）
    设计基色：
      --bg:        #0b1124
      --panel:     #141b33
@@ -1090,6 +1090,18 @@ QPushButton[kind="primary"]:disabled {
   background: rgba(58,142,224,0.30);
   border-color: rgba(90,166,238,0.28);
   color: rgba(255,255,255,0.55);
+}
+
+/* ollama 顶栏：新对话 / 清屏 / 停止只借用「发送」的高、字号和内边距，底色仍是中按钮 */
+QPushButton#OllamaBtnNew,
+QPushButton#OllamaBtnClear,
+QPushButton#OllamaBtnStop {
+  padding: 0 8px;
+  min-height: 22px;
+  max-height: 22px;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 6px;
 }
 
 /* 配置页：按钮字号相对全站 +2（mini 12→14 · medium 13→15） */

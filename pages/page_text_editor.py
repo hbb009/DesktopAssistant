@@ -8,12 +8,12 @@ from datetime import datetime
 
 from PyQt5.QtCore import Qt, QEvent, QTimer, QSize, QPoint, QRectF, pyqtSignal
 from PyQt5.QtGui import (
-    QTextCursor, QFont, QPixmap, QPainter, QColor, QPen,
+    QTextCursor, QFont, QPixmap, QPainter, QColor, QPen, QKeySequence,
 )
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit,
     QSizePolicy, QApplication, QLineEdit, QScrollArea, QFrame,
-    QListWidget, QRadioButton, QButtonGroup, QCheckBox,
+    QListWidget, QRadioButton, QButtonGroup, QCheckBox, QShortcut,
 )
 
 from styles.style_all import (
@@ -27,10 +27,11 @@ from styles.style_all import (
     CARD_LEFT_GAP,
 )
 from pages.seq_dup_panel import SeqDupPanel
+from pages.editor_speak import EditorSpeak, make_speak_button, style_speak_button
 from utils.logger import get_logger
 
 log = get_logger(__name__)
-_KEEP_VER_FALLBACK = "v9.18"
+_KEEP_VER_FALLBACK = "v9.19"
 
 
 # ── 前缀符号历史卡片：参照「提示词」分类卡 —— 彩色圆角卡 + 影子拖拽排序 ──
@@ -76,6 +77,69 @@ _NO_SPACE = set("，。！？、；：）】》」』”’\"'（(【《「『�
 _LIST_START = re.compile(
     r"^(?:[-*•·]|\d{1,3}[.、．)]|[（(]\d{1,3}[）)]|[一二三四五六七八九十]{1,3}[、．.])"
 )
+
+# 单段源文上限。translate_job 一次最多生成 512 token，再长会被截断。
+_TR_CHUNK = 180
+
+
+def _chunk_body(text: str, limit: int = _TR_CHUNK) -> list:
+    """长段按句末切开，切不开就按上限硬切。标点留在前一段。"""
+    if len(text) <= limit:
+        return [text] if text else []
+    chunks = []
+    i = 0
+    n = len(text)
+    while i < n:
+        end = min(i + limit, n)
+        cut = end
+        if end < n:
+            for j in range(end - 1, i + limit // 3, -1):
+                ch = text[j]
+                if ch in "。！？!?\n；;":
+                    cut = j + 1
+                    break
+                if ch == "." and (j + 1 >= n or text[j + 1].isspace()):
+                    cut = j + 1
+                    break
+        if cut <= i:
+            cut = min(i + limit, n)
+        chunks.append(text[i:cut])
+        i = cut
+    return chunks
+
+
+def split_translate_pieces(text: str) -> list:
+    """拆成 ('ws', 空白) 与 ('body', 正文)。空白原样拼回，不送给模型。"""
+    pieces = []
+    for part in re.split(r"(\s+)", text or ""):
+        if not part:
+            continue
+        if part.isspace():
+            pieces.append(("ws", part))
+        else:
+            pieces.extend(("body", chunk) for chunk in _chunk_body(part))
+    return pieces
+
+
+def join_translated_pieces(pieces: list, outs: list) -> tuple:
+    """拼回全文。空译文保留该段原文。返回 (text, changed, failed)。"""
+    it = iter(outs or [])
+    built = []
+    changed = 0
+    failed = 0
+    for kind, text in pieces:
+        if kind == "ws":
+            built.append(text)
+            continue
+        got = str(next(it, "") or "").strip()
+        if not got:
+            built.append(text)
+            failed += 1
+            continue
+        built.append(got)
+        if got != text:
+            changed += 1
+    return "".join(built), changed, failed
 
 
 def _is_cjk_letter(ch: str) -> bool:
@@ -635,8 +699,24 @@ class PageTextEditor(QWidget):
         self._undo_timer.setSingleShot(True)
         self._undo_timer.setInterval(_UNDO_IDLE_MS)
         self._undo_timer.timeout.connect(self._commit_typed_undo)
+        self._tr_worker = None
+        self._tr_busy = False
+        self._tr_req = 0
 
         self._build_ui()
+        self._speak = EditorSpeak(self)
+        self._speak.changed.connect(self._paint_speak_btns)
+        self._speak.failed.connect(self._on_speak_failed)
+        self._speak_tip = "有选区读选区，否则从光标读到文末"
+        self._speak_tip_timer = QTimer(self)
+        self._speak_tip_timer.setSingleShot(True)
+        self._speak_tip_timer.setInterval(3000)
+        self._speak_tip_timer.timeout.connect(self._restore_speak_tips)
+        self._esc_speak = QShortcut(QKeySequence(Qt.Key_Escape), self)
+        self._esc_speak.setContext(Qt.WidgetWithChildrenShortcut)
+        self._esc_speak.activated.connect(self._stop_speak)
+        self._esc_speak.setEnabled(False)
+        self._paint_speak_btns()
         theme.changed.connect(self.refresh_theme)
         self._install_blank_click_filter()
 
@@ -677,7 +757,7 @@ class PageTextEditor(QWidget):
         body.setSpacing(8)
         page.addLayout(body, 1)
 
-        # ══ 左 70%：编辑区 + 快速保持 / 复制 / 清空 ══════════════════
+        # ══ 左 70%：编辑区 + 翻译 / 速存文本 / 复制 / 清空 ══════════════
         left = QWidget()
         left.setObjectName("TextEditorLeft")
         left.setAttribute(Qt.WA_StyledBackground, True)
@@ -694,6 +774,16 @@ class PageTextEditor(QWidget):
         row_title.setSpacing(8)
         row_title.addWidget(self._section_title("编辑区"), 0, Qt.AlignVCenter)
         row_title.addStretch(1)
+        speak_row = QHBoxLayout()
+        speak_row.setContentsMargins(0, 0, 0, 0)
+        speak_row.setSpacing(4)
+        self.btn_speak_m = make_speak_button("男")
+        self.btn_speak_f = make_speak_button("女")
+        self.btn_speak_m.clicked.connect(lambda: self._on_speak_btn("男"))
+        self.btn_speak_f.clicked.connect(lambda: self._on_speak_btn("女"))
+        speak_row.addWidget(self.btn_speak_m, 0, Qt.AlignVCenter)
+        speak_row.addWidget(self.btn_speak_f, 0, Qt.AlignVCenter)
+        row_title.addLayout(speak_row, 0)
         self.chk_word_wrap = QCheckBox("自动换行")
         self.chk_word_wrap.setChecked(True)
         self.chk_word_wrap.setStyleSheet("background:transparent;")
@@ -722,8 +812,20 @@ class PageTextEditor(QWidget):
 
         row_edit_btn = QHBoxLayout()
         row_edit_btn.setSpacing(8)
-        row_edit_btn.addStretch(1)
-        self.btn_quick_keep = apply_medium_button(QPushButton("快速保持"))
+        self.chk_tr_selection = QCheckBox("选中文本")
+        self.chk_tr_selection.setChecked(False)
+        self.chk_tr_selection.setStyleSheet("background:transparent;")
+        self.chk_tr_selection.setMinimumWidth(0)
+        self.chk_tr_selection.setCursor(Qt.PointingHandCursor)
+        self.btn_tr_en = apply_medium_button(QPushButton("译为英"))
+        self.btn_tr_en.setMinimumHeight(28)
+        self.btn_tr_en.setMinimumWidth(0)
+        self.btn_tr_en.clicked.connect(lambda: self._translate_editor("zh-en"))
+        self.btn_tr_zh = apply_medium_button(QPushButton("译为中"))
+        self.btn_tr_zh.setMinimumHeight(28)
+        self.btn_tr_zh.setMinimumWidth(0)
+        self.btn_tr_zh.clicked.connect(lambda: self._translate_editor("en-zh"))
+        self.btn_quick_keep = apply_medium_button(QPushButton("速存文本"))
         self.btn_quick_keep.setMinimumHeight(28)
         self.btn_quick_keep.setMinimumWidth(0)
         self.btn_quick_keep.clicked.connect(self._quick_keep)
@@ -737,6 +839,10 @@ class PageTextEditor(QWidget):
         self.btn_clear_editor.setMinimumHeight(28)
         self.btn_clear_editor.setMinimumWidth(0)
         self.btn_clear_editor.clicked.connect(self._on_clear_editor)
+        row_edit_btn.addWidget(self.chk_tr_selection, 0, Qt.AlignVCenter)
+        row_edit_btn.addWidget(self.btn_tr_en, 0)
+        row_edit_btn.addWidget(self.btn_tr_zh, 0)
+        row_edit_btn.addStretch(1)
         row_edit_btn.addWidget(self.btn_quick_keep, 0)
         row_edit_btn.addWidget(self.btn_copy, 0)
         row_edit_btn.addWidget(self.btn_clear_editor, 0)
@@ -961,6 +1067,7 @@ class PageTextEditor(QWidget):
     # ── 对外接口 ──────────────────────────────────────────────────────
     def load_text(self, text: str, append: bool = False):
         """供外部（语音录入等）把文字送入编辑器。append=False 覆盖当前内容。"""
+        self._stop_speak()
         text = (text or "").strip()
         if not text:
             return
@@ -1025,7 +1132,7 @@ class PageTextEditor(QWidget):
         self._undo_timer.start()
         self._refresh_undo_btns()
 
-    def _mutate_editor(self, new_text: str, log_msg: str = ""):
+    def _mutate_editor(self, new_text: str, log_msg: str = "", select=None):
         """工具按钮改正文：先落下正在打的字，再记一步后写入。"""
         self._undo_timer.stop()
         self._commit_typed_undo()
@@ -1038,6 +1145,15 @@ class PageTextEditor(QWidget):
         self._trim_undo()
         self._redo_stack.clear()
         self._apply_editor_text(new_text)
+        if select:
+            n = len(new_text)
+            s = max(0, min(int(select[0]), n))
+            e = max(s, min(int(select[1]), n))
+            c = self.editor.textCursor()
+            c.setPosition(s)
+            c.setPosition(e, QTextCursor.KeepAnchor)
+            self.editor.setTextCursor(c)
+            self.editor.ensureCursorVisible()
         self._last_snapshot = new_text
         self._refresh_undo_btns()
         self._mark_prefs_dirty()
@@ -1108,6 +1224,7 @@ class PageTextEditor(QWidget):
             prev.update()
         for w in self._prefix_cards():
             w.apply_theme()
+        self._paint_speak_btns()
 
     # ── 日志 ──────────────────────────────────────────────────────────
     def _log(self, text: str):
@@ -1119,6 +1236,7 @@ class PageTextEditor(QWidget):
         if not (self.editor.toPlainText() or "").strip():
             self._log("编辑区为空")
             return
+        self._stop_speak()
         self._mutate_editor("", "已清空编辑区")
 
     def _copy_text(self):
@@ -1147,7 +1265,7 @@ class PageTextEditor(QWidget):
         return public_save_base(prefs if isinstance(prefs, dict) else None)
 
     def _quick_keep(self):
-        """把编辑区原文存到公共目录根：桌面助手v9.18_20261022_14.35_01.txt。"""
+        """把编辑区原文存到公共目录根：桌面助手v9.19_20261022_14.35_01.txt。"""
         raw = self.editor.toPlainText()
         if not (raw or "").strip():
             self._log("编辑区为空，未保存")
@@ -1175,12 +1293,156 @@ class PageTextEditor(QWidget):
             except FileExistsError:
                 continue
             except OSError as e:
-                log.exception("快速保持写入失败 path=%s", path)
+                log.exception("速存文本写入失败 path=%s", path)
                 self._log(f"保存失败：{e}")
                 return
-            self._log(f"已快速保持：{name}")
+            self._log(f"已速存文本：{name}")
             return
         self._log("这一分钟已有 99 个文件，未保存")
+
+    def _selection_span(self):
+        """选区在纯文本里的 [start, end)。对不上就返回 None。"""
+        raw = self.editor.toPlainText()
+        cur = self.editor.textCursor()
+        if not cur.hasSelection():
+            return None
+        start, end = cur.selectionStart(), cur.selectionEnd()
+        picked = cur.selectedText().replace("\u2029", "\n")
+        if 0 <= start <= end <= len(raw) and raw[start:end] == picked:
+            return start, end, picked
+        if not picked:
+            return None
+        idx = raw.find(picked, max(0, start - 2))
+        if idx < 0:
+            idx = raw.find(picked)
+        if idx < 0:
+            return None
+        return idx, idx + len(picked), picked
+
+    def _set_tr_buttons(self, enabled: bool):
+        for btn in (getattr(self, "btn_tr_en", None), getattr(self, "btn_tr_zh", None)):
+            if btn is not None:
+                btn.setEnabled(enabled)
+
+    def _finish_translate(self):
+        self._tr_busy = False
+        self._tr_worker = None
+        self._set_tr_buttons(True)
+
+    def _translate_editor(self, direction: str):
+        """译为英 / 译为中。勾上「选中文本」只译选区，否则译全文。"""
+        if self._tr_busy:
+            self._log("正在翻译，请稍候")
+            return
+        direction = "zh-en" if direction == "zh-en" else "en-zh"
+        doing = "正在译为英文…" if direction == "zh-en" else "正在译为中文…"
+        done = "已译为英文" if direction == "zh-en" else "已译为中文"
+        raw = self.editor.toPlainText()
+        selection_only = bool(self.chk_tr_selection.isChecked())
+        if selection_only:
+            span = self._selection_span()
+            if span is None:
+                self._log("没有选中文本")
+                return
+            start, end, src = span
+            if not src.strip():
+                self._log("选中内容为空，未翻译")
+                return
+        else:
+            if not (raw or "").strip():
+                self._log("编辑区为空，未翻译")
+                return
+            start, end, src = 0, len(raw), raw
+        pieces = split_translate_pieces(src)
+        bodies = [text for kind, text in pieces if kind == "body"]
+        if not bodies:
+            self._log("选中内容为空，未翻译" if selection_only else "编辑区为空，未翻译")
+            return
+        try:
+            from utils.translate_opus import make_translate_worker, opus_direction_ready
+        except Exception as e:
+            log.exception("加载翻译接口失败")
+            self._log(f"翻译失败：{e}")
+            return
+        if not opus_direction_ready(direction):
+            self._log("还没有 Hy-MT2-1.8B，无法翻译")
+            return
+
+        self._tr_busy = True
+        self._tr_req += 1
+        req = self._tr_req
+        self._set_tr_buttons(False)
+        self._log(doing)
+        try:
+            Worker = make_translate_worker()
+            worker = Worker(bodies, direction, force_cpu=False, parent=self, glossary=False)
+        except Exception as e:
+            log.exception("创建翻译任务失败")
+            self._finish_translate()
+            self._log(f"翻译失败：{e}")
+            return
+        self._tr_worker = worker
+
+        def _ok(outs, _direction, rid=req, snap=(start, end, src, pieces, selection_only, done)):
+            if rid != self._tr_req:
+                return
+            st, ed, source, parts, sel_only, done_msg = snap
+            try:
+                cur = self.editor.toPlainText()
+                if cur[st:ed] != source:
+                    self._log("编辑区已改动，译文未写入")
+                    return
+                new_src, changed, failed = join_translated_pieces(parts, outs)
+                if changed == 0 and failed == 0:
+                    self._log("译文与原文相同")
+                    return
+                if changed == 0:
+                    self._log("翻译失败：没有得到译文")
+                    return
+                new_full = cur[:st] + new_src + cur[ed:]
+                msg = done_msg if not failed else f"{done_msg}，有 {failed} 段没译出来"
+                select = (st, st + len(new_src)) if sel_only else None
+                self._mutate_editor(new_full, msg, select=select)
+            except Exception as e:
+                log.exception("写入译文失败")
+                self._log(f"翻译失败：{e}")
+            finally:
+                self._finish_translate()
+
+        def _err(msg, _direction, rid=req):
+            if rid != self._tr_req:
+                return
+            text = str(msg or "翻译失败").strip() or "翻译失败"
+            self._log(f"翻译失败：{text}")
+            self._finish_translate()
+
+        worker.finished_ok.connect(_ok)
+        worker.finished_err.connect(_err)
+        try:
+            worker.start()
+        except Exception as e:
+            log.exception("启动翻译失败")
+            self._finish_translate()
+            self._log(f"翻译失败：{e}")
+
+    def _cancel_translate(self):
+        self._tr_req += 1
+        worker = self._tr_worker
+        self._tr_worker = None
+        self._tr_busy = False
+        self._set_tr_buttons(True)
+        if worker is None:
+            return
+        try:
+            worker.finished_ok.disconnect()
+            worker.finished_err.disconnect()
+        except Exception:
+            pass
+        try:
+            if worker.isRunning():
+                worker.requestInterruption()
+        except Exception:
+            pass
 
     def _collapse_to_one_paragraph(self):
         """删除编辑区全部换行符，整理成连续一段（针对 GPT 爱断行）。"""
@@ -1326,6 +1588,67 @@ class PageTextEditor(QWidget):
         )
         self._remember_symbol(symbol)
 
+    # ── 朗读（男 / 女，复用阅读器 CosyReader）────────────────────────
+    def _speak_source(self) -> str:
+        """有选区读选区，否则从光标读到文末。"""
+        span = self._selection_span()
+        if span is not None:
+            return span[2] or ""
+        raw = self.editor.toPlainText() if hasattr(self, "editor") else ""
+        cur = self.editor.textCursor()
+        pos = int(cur.position())
+        if pos < 0:
+            pos = 0
+        if pos >= len(raw):
+            return ""
+        return raw[pos:]
+
+    def _on_speak_btn(self, which: str):
+        speak = getattr(self, "_speak", None)
+        if speak is None:
+            return
+        speak.toggle(which, self._speak_source())
+
+    def _stop_speak(self, *_):
+        speak = getattr(self, "_speak", None)
+        if speak is not None:
+            speak.stop()
+
+    def _paint_speak_btns(self):
+        speak = getattr(self, "_speak", None)
+        on = bool(speak and speak.on)
+        paused = bool(speak and speak.paused)
+        voice = getattr(speak, "voice", "男") if speak is not None else "男"
+        for btn, which in ((getattr(self, "btn_speak_m", None), "男"),
+                           (getattr(self, "btn_speak_f", None), "女")):
+            if btn is None:
+                continue
+            style_speak_button(btn, on and voice == which, paused=paused)
+        esc = getattr(self, "_esc_speak", None)
+        if esc is not None:
+            esc.setEnabled(on)
+
+    def _on_speak_failed(self, message: str):
+        tip = (message or "").strip() or "无法朗读"
+        for btn in (getattr(self, "btn_speak_m", None), getattr(self, "btn_speak_f", None)):
+            if btn is not None:
+                btn.setToolTip(tip)
+        timer = getattr(self, "_speak_tip_timer", None)
+        if timer is not None:
+            timer.start()
+
+    def _restore_speak_tips(self):
+        tip = getattr(self, "_speak_tip", "有选区读选区，否则从光标读到文末")
+        for btn in (getattr(self, "btn_speak_m", None), getattr(self, "btn_speak_f", None)):
+            if btn is not None:
+                btn.setToolTip(tip)
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        # 只在本页真正离开界面时停（切走、关闭），避免改按钮样式等瞬时 Hide 把朗读掐掉。
+        if not self.isVisible():
+            self._stop_speak()
+
     # ── 前缀符号历史卡片 ─────────────────────────────────────────────
     def _apply_word_wrap(self, checked: bool):
         """开：按窗口宽度折行；关：一行到底，出现横向滚动条。"""
@@ -1374,6 +1697,14 @@ class PageTextEditor(QWidget):
                 pass
 
     def shutdown(self):
+        self._stop_speak()
+        speak = getattr(self, "_speak", None)
+        if speak is not None:
+            try:
+                speak.close()
+            except Exception:
+                pass
+        self._cancel_translate()
         self.stop_background_checks()
 
     def export_settings(self) -> dict:
@@ -1403,6 +1734,7 @@ class PageTextEditor(QWidget):
             text = data.get("editor_text")
             text = text if isinstance(text, str) else str(text or "")
             if self.editor.toPlainText() != text:
+                self._stop_speak()
                 self._suspend_history = True
                 try:
                     self.editor.setPlainText(text)

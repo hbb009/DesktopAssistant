@@ -28,10 +28,11 @@ EXT_GROUPS: Tuple = (
     ("MD / MARKDOWN / MDOWN", (".md", ".markdown", ".mdown")),
     ("DOC / DOCX", (".doc", ".docx")),
     ("PDF", (".pdf",)),
+    ("TXT", (".txt",)),
 )
 DEFAULT_EXTS: Tuple = tuple(ext for _label, exts in EXT_GROUPS for ext in exts)
 PROG_ID = "DesktopAssistant.MarkdownReader"
-_APP_NAME = "文件阅读器"
+_APP_NAME = "阅读器"
 # 「设置 › 默认应用」按这个名字找到本程序。显示名仍是「文件阅读器」。
 _REG_APP = "DesktopAssistant.FileReader"
 _CAP_KEY = r"Software\DesktopAssistant\FileReader\Capabilities"
@@ -50,7 +51,7 @@ def open_command() -> str:
     if not os.path.isfile(py):
         raise FileNotFoundError("找不到 pythonw.exe")
     if not os.path.isfile(script):
-        raise FileNotFoundError("找不到文件阅读器")
+        raise FileNotFoundError("找不到阅读器")
     return f'{python_launch_prefix(py)} "{script}" "%1"'
 
 
@@ -108,7 +109,7 @@ def _ensure_registered_app() -> None:
     import winreg
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, _CAP_KEY) as key:
         winreg.SetValueEx(key, "ApplicationName", 0, winreg.REG_SZ, _APP_NAME)
-        winreg.SetValueEx(key, "ApplicationDescription", 0, winreg.REG_SZ, "桌面助手文件阅读器")
+        winreg.SetValueEx(key, "ApplicationDescription", 0, winreg.REG_SZ, "桌面助手阅读器")
         icon = app_icon_spec()
         if icon:
             winreg.SetValueEx(key, "ApplicationIcon", 0, winreg.REG_SZ, icon)
@@ -152,12 +153,12 @@ def summarize_notes(notes: Sequence[str]) -> str:
     if opened:
         other.append(
             "、".join(opened)
-            + " 受系统保护，已打开「默认应用」。请在列表里选成「文件阅读器」。"
+            + " 受系统保护，已打开「默认应用」。请在列表里选成「阅读器」。"
         )
     if blocked:
         other.append(
             "、".join(blocked)
-            + " 受系统保护。请到「设置 › 应用 › 默认应用」里选成「文件阅读器」。"
+            + " 受系统保护。请到「设置 › 应用 › 默认应用」里选成「阅读器」。"
         )
     return " ".join(other)
 

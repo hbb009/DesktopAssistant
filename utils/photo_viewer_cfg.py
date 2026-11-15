@@ -166,7 +166,7 @@ def open_command() -> str:
     if not os.path.isfile(py):
         raise FileNotFoundError("找不到 pythonw.exe")
     if not os.path.isfile(script):
-        raise FileNotFoundError("找不到看图程序")
+        raise FileNotFoundError("找不到看图器")
     return f'{python_launch_prefix(py)} "{script}" "%1"'
 
 
@@ -505,11 +505,11 @@ def is_ours(ext: str) -> bool:
 def _ensure_progid() -> None:
     root = rf"Software\Classes\{PROG_ID}"
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, root) as key:
-        winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "看图")
+        winreg.SetValueEx(key, "", 0, winreg.REG_SZ, "看图器")
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, root + r"\Application") as key:
-        winreg.SetValueEx(key, "ApplicationName", 0, winreg.REG_SZ, "看图")
+        winreg.SetValueEx(key, "ApplicationName", 0, winreg.REG_SZ, "看图器")
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, root + r"\shell\open") as key:
-        winreg.SetValueEx(key, "FriendlyAppName", 0, winreg.REG_SZ, "看图")
+        winreg.SetValueEx(key, "FriendlyAppName", 0, winreg.REG_SZ, "看图器")
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, root + r"\shell\open\command") as key:
         winreg.SetValueEx(key, "", 0, winreg.REG_SZ, open_command())
     write_progid_icon(PROG_ID)

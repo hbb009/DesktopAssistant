@@ -1160,12 +1160,9 @@ def _field_accent(key: str) -> str:
     return _CUSTOM_ACCENTS[h % len(_CUSTOM_ACCENTS)]
 
 
-_OPUS_MT_FOLDERS = (
-    ("opus-mt-zh-en", "opus-mt-zh-en"),
-    ("opus-mt-en-zh", "opus-mt-en-zh"),
-)
-_OPUS_MT_BUNDLE_ID = "opus-mt"
-_OPUS_MT_BUNDLE_LABEL = "opus-MT 中英"
+_HY_MT_FOLDER = "Hy-MT2-1.8B"
+_OPUS_MT_BUNDLE_ID = "hy-mt2"
+_OPUS_MT_BUNDLE_LABEL = "Hy-MT2"
 
 
 def _opus_mt_ready(path: str) -> bool:
@@ -1174,7 +1171,8 @@ def _opus_mt_ready(path: str) -> bool:
     if not os.path.isfile(os.path.join(path, "config.json")):
         return False
     for name in ("pytorch_model.bin", "model.safetensors"):
-        if os.path.isfile(os.path.join(path, name)):
+        fp = os.path.join(path, name)
+        if os.path.isfile(fp) and os.path.getsize(fp) >= 3_000_000_000:
             return True
     try:
         for fn in os.listdir(path):
@@ -1182,7 +1180,7 @@ def _opus_mt_ready(path: str) -> bool:
             if (
                 os.path.isfile(fp)
                 and fn.endswith((".bin", ".safetensors"))
-                and os.path.getsize(fp) > 1_000_000
+                and os.path.getsize(fp) >= 3_000_000_000
             ):
                 return True
     except OSError:
@@ -1195,7 +1193,7 @@ _OPUS_MT_CACHE_ITEMS: List[Tuple[str, str]] | None = None
 
 
 def _opus_mt_bundle_ready(root: str = "") -> bool:
-    """双向权重都在（或至少一侧）即视为 opus-MT 中英可用。"""
+    """Hy-MT2-1.8B 权重在即可用。一个模型同时做中→英和英→中。"""
     if not root:
         try:
             from utils.app_paths import model_dir
@@ -1204,13 +1202,11 @@ def _opus_mt_bundle_ready(root: str = "") -> bool:
             root = os.path.join(
                 os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "model"
             )
-    return any(
-        _opus_mt_ready(os.path.join(root, folder)) for folder, _ in _OPUS_MT_FOLDERS
-    )
+    return _opus_mt_ready(os.path.join(root, _HY_MT_FOLDER))
 
 
 def _list_opus_mt_models(*, force: bool = False) -> List[Tuple[str, str]]:
-    """逻辑模型列表：只返回一项 opus-MT 中英（覆盖双向）。5 秒缓存。"""
+    """逻辑模型列表：只返回一项 Hy-MT2。5 秒缓存。"""
     import time
     global _OPUS_MT_CACHE_T, _OPUS_MT_CACHE_ITEMS
     now = time.monotonic()
@@ -5140,14 +5136,12 @@ class _PromptSheet(QWidget):
         if not opus_direction_ready(direction):
             self._tr_status = "missing"
             self._tr_busy_lang = lang
-            model_name = "opus-mt-zh-en" if direction == "zh-en" else "opus-mt-en-zh"
-            arrow = "中→英" if direction == "zh-en" else "英→中"
             message_box_warn(
                 self,
                 "中英翻译",
-                f"还没有 opus-MT {arrow} 模型。\n\n"
-                f"请到「系统总览 → 模型」按教程下载 {model_name}，"
-                f"或运行：\npython tools/download_models.py --only {model_name}",
+                "还没有 Hy-MT2-1.8B。\n\n"
+                "请到「系统总览 → 模型」按教程下载，"
+                "或运行：\npython tools/download_models.py --only hy-mt2 --mirror modelscope",
             )
             self._update_tr_status_label()
             return
@@ -5195,7 +5189,7 @@ class _PromptSheet(QWidget):
                 ck = (want_lang, k, s)
                 if (not text) or _degenerate_translation(s, text):
                     log.warning(
-                        "opus-MT degenerate lang=%s field=%s src=%r out=%r — do not cache",
+                        "Hy-MT2 degenerate lang=%s field=%s src=%r out=%r — do not cache",
                         want_lang,
                         k,
                         (s or "")[:80],
@@ -5208,7 +5202,7 @@ class _PromptSheet(QWidget):
                     text = self._gloss_zh_en_if_needed("en", text)
                 if self._tr_out_still_source_lang(want_lang, s, text):
                     log.warning(
-                        "opus-MT leftover-source lang=%s field=%s out=%r — do not cache",
+                        "Hy-MT2 leftover-source lang=%s field=%s out=%r — do not cache",
                         want_lang,
                         k,
                         text[:80],
@@ -5513,7 +5507,7 @@ class _PromptSheet(QWidget):
         if st.startswith("error:"):
             return "〔翻译失败，暂显示原文〕"
         if st == "missing":
-            return "〔缺少 opus-MT 模型〕"
+            return "〔缺少 Hy-MT2〕"
         if st == "off":
             return "〔翻译关闭〕"
         if st == "ready":
@@ -5578,7 +5572,7 @@ class _PromptSheet(QWidget):
             elif st == "translating" and (busy == lang or not busy):
                 extra = "（翻译中…）"
             elif st == "missing":
-                extra = "（缺少 opus-MT 模型）"
+                extra = "（缺少 Hy-MT2）"
             elif st.startswith("error:"):
                 extra = "（翻译失败）"
             elif st == "ready" and on:
@@ -5761,9 +5755,9 @@ class _PromptSheet(QWidget):
         """紧挨复制钮前的语种翻译开关。lang=en→翻译英文；zh→翻译中文。"""
         lang = "en" if lang == "en" else "zh"
         tip = (
-            "翻译英文：打开后加载 opus-MT，仅更新英文完整提示词栏（中→英）；仅当前会话，不写入配置。"
+            "翻译英文：打开后加载 Hy-MT2，仅更新英文完整提示词栏（中→英）；仅当前会话，不写入配置。"
             if lang == "en"
-            else "翻译中文：打开后加载 opus-MT，仅更新中文完整提示词栏（英→中）；仅当前会话，不写入配置。"
+            else "翻译中文：打开后加载 Hy-MT2，仅更新中文完整提示词栏（英→中）；仅当前会话，不写入配置。"
         )
         chk = QCheckBox("")  # 仅开关，文案放 tooltip
         chk.setObjectName(
@@ -5892,7 +5886,7 @@ class _PromptSheet(QWidget):
         combo.setMaximumWidth(150)
         combo.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
         combo.setToolTip(
-            "翻译模型：opus-MT 中英（本地双向）。需先打开「翻译英文」或「翻译中文」才会加载并翻译。"
+            "翻译模型：腾讯混元 Hy-MT2-1.8B（中英双向）。需先打开「翻译英文」或「翻译中文」才会加载并翻译。"
         )
         self.cmb_translate_model = combo
         combo.currentIndexChanged.connect(self._on_translate_model_changed)
@@ -5922,7 +5916,7 @@ class _PromptSheet(QWidget):
         models = _list_opus_mt_models()
         want = self._host_translate_model()
         # 旧偏好可能是 opus-mt-zh-en / opus-mt-en-zh，统一迁到逻辑 id
-        if want in ("opus-mt-zh-en", "opus-mt-en-zh", "opus-mt-zh_en", "opus-mt-en_zh"):
+        if want in ("opus-mt", "opus-mt-zh-en", "opus-mt-en-zh", "opus-mt-zh_en", "opus-mt-en_zh"):
             want = _OPUS_MT_BUNDLE_ID
             self._set_host_translate_model(want)
         combo.blockSignals(True)
@@ -8203,7 +8197,7 @@ class PagePromptEditor(QWidget):
                     self._h3_expanded[hk] = True
         # full_lang 已废弃（双栏常显）；忽略旧配置
         mid = str(data.get("translate_model") or "").strip()
-        if mid in ("opus-mt-zh-en", "opus-mt-en-zh", "opus-mt-zh_en", "opus-mt-en_zh"):
+        if mid in ("opus-mt", "opus-mt-zh-en", "opus-mt-en-zh", "opus-mt-zh_en", "opus-mt-en_zh"):
             mid = _OPUS_MT_BUNDLE_ID
         if not mid and _opus_mt_bundle_ready():
             mid = _OPUS_MT_BUNDLE_ID

@@ -1036,7 +1036,7 @@ def _safe_filename_part(text: str) -> str:
 
 
 _FAST_TXT_APP = "桌面助手"
-_FAST_TXT_VER = "v9.18"
+_FAST_TXT_VER = "v9.19"
 
 
 def _hanzi_count(text: str) -> int:
@@ -1156,7 +1156,7 @@ def _read_fast_clip_text() -> str:
 
 
 def _fast_txt_stem(content: str) -> str:
-    """未选中文件时的名字：桌面助手 v9.18 前10个汉字。"""
+    """未选中文件时的名字：桌面助手 v9.19 前10个汉字。"""
     parts = (
         _FAST_TXT_APP,
         _FAST_TXT_VER,
@@ -1375,7 +1375,7 @@ class PageFastSave(QWidget):
         self.chk_manual.setVisible(False)
 
         # ── 原速存文本 ──
-        lbl_hint = QLabel("选中文件则创建同名文本；未选中时文件名为「桌面助手 v9.18 内容前10个汉字」")
+        lbl_hint = QLabel("选中文件则创建同名文本；未选中时文件名为「桌面助手 v9.19 内容前10个汉字」")
         lbl_hint.setWordWrap(True)
         lbl_hint.setStyleSheet("background: transparent;")
         self._typo(lbl_hint, "muted")

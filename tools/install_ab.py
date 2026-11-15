@@ -22,8 +22,7 @@ FULL_WEIGHTS = (
     "whisper-tiny",
     "whisper-small",
     "whisper-large",
-    "opus-mt-zh-en",
-    "opus-mt-en-zh",
+    "hy-mt2",
     "paddleocr",
     "cosyvoice-code",
     "cosyvoice",
@@ -127,14 +126,14 @@ def main() -> int:
         return 2
 
     if profile == "basic":
-        hr("A 低配安装 - 桌面助手 v9.18")
+        hr("A 低配安装 - 桌面助手 v9.19")
         print("只装程序组件，不装本地模型。")
         print("会装：requirements.txt、ffmpeg、Deno")
         print("不装：torch、paddle、语音克隆依赖，也不下载 model/ 里的权重")
         print("装完可以用下载、速存、粘贴、文本、看图、阅读这些基本功能。")
         print("截图 OCR、语音转写、语音克隆、本地翻译需要再运行 B安装.bat。")
     else:
-        hr("B 高配安装 - 桌面助手 v9.18")
+        hr("B 高配安装 - 桌面助手 v9.19")
         print("先装程序组件，再装模型运行库，并下载能自动获取的权重。")
         print("会下载：截图 OCR、三档语音转写、中英翻译、语音克隆（大约数 GB 到十几 GB）。")
         print("不会自动下载、需要自己放进 model/ 的：AuK、Qwen2.5-Omni-3B、BiRefNet、Upscayl。")

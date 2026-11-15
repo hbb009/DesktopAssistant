@@ -1,7 +1,7 @@
 """其它视频已下记录。
 
 和 gallery_eh / gallery_hitomi 一样：一行一条，命中就跳过。
-分类和预下载一样，只留五个平台段：# 即梦 / # LibTV / # XVideos / # Pornhub / # MissAV。
+分类和预下载一样，只留六个平台段：# 即梦 / # LibTV / # XVideos / # Pornhub / # MissAV / # x.com。
 每段里面再按类型和画质分开，只跳过已经下过的那一档。
 
   即梦     视频（原片 / 1080p / 720p / 480p / 360p …）
@@ -9,8 +9,9 @@
   XVideos  HLS、直链（MP4 高 / MP4 低）
   Pornhub  HLS
   MissAV   HLS
+  x.com    直链（1080p / 720p / …）
 
-文件：records/other_video.txt
+文件：userdata/downloaded.txt 里的即梦 / LibTV / XVideos / Pornhub / MissAV / x.com 段。
 普通记录在上，----- 下面是带 _2 / (2) 的另存名（不参与跳过）。
 """
 
@@ -25,8 +26,8 @@ log = get_logger(__name__)
 
 RECORD_KEY = "other_video"
 
-# 和预下载里这五段的标题一致。本页之后只认这五个。
-PLAT_ORDER = ("即梦", "LibTV", "XVideos", "Pornhub", "MissAV")
+# 和预下载里这几段的标题一致。本页之后只认这些。
+PLAT_ORDER = ("即梦", "LibTV", "XVideos", "Pornhub", "MissAV", "x.com")
 _PLAT_ORDER = PLAT_ORDER
 _KIND_ORDER = ("视频", "成片", "HLS", "直链", "未分类")
 _QUAL_ORDER = (
@@ -41,12 +42,16 @@ _PLAT_TAG = {
     "xvideos": "XVideos",
     "pornhub": "Pornhub",
     "missav": "MissAV",
+    "xcom": "x.com",
 }
 _PLAT_ALIAS = {name.lower(): name for name in PLAT_ORDER}
 _PLAT_ALIAS.update({
     "jimeng": "即梦",
     "liblib": "LibTV",
     "libtv": "LibTV",
+    "x.com": "x.com",
+    "xcom": "x.com",
+    "twitter": "x.com",
 })
 
 # 从文件名末尾认画质。长的放前面（「MP4 高」先于单字）。
@@ -78,7 +83,7 @@ def is_record_sep(line: str) -> bool:
 
 
 def _normalize_plat(text: str) -> str:
-    """# 即梦 / 【LibTV】 / jimeng → 五个平台名之一。对不上返回空。"""
+    """# 即梦 / 【LibTV】 / jimeng / x.com → 平台名。对不上返回空。"""
     s = (text or "").strip()
     if s.startswith("#"):
         s = s.lstrip("#").strip()
@@ -92,7 +97,7 @@ def _normalize_plat(text: str) -> str:
 def classify_label(platform_key: str, label: str) -> tuple:
     """解析得到的平台键 + 画质卡标题 → (平台, 类型, 画质)。
 
-    不是即梦 / LibTV / XVideos / Pornhub / MissAV 时返回空平台，调用方不要写入记录。
+    不是即梦 / LibTV / XVideos / Pornhub / MissAV / x.com 时返回空平台，调用方不要写入记录。
     """
     key = (platform_key or "").strip().lower()
     plat = _PLAT_TAG.get(key, "")
@@ -113,6 +118,10 @@ def classify_label(platform_key: str, label: str) -> tuple:
         if "直链" in raw or quality.upper().startswith("MP4"):
             return plat, "直链", quality
         return plat, "HLS", quality
+    if key == "xcom":
+        if "hls" in low:
+            return plat, "HLS", quality
+        return plat, "直链", quality
     return plat, "视频", quality
 
 
@@ -130,6 +139,10 @@ def _quality_from_body(body: str) -> str:
 def _kind_for_tag(tag: str, quality: str) -> str:
     if tag == "LibTV":
         return "成片"
+    if tag == "x.com":
+        if "HLS" in (quality or "").upper():
+            return "HLS"
+        return "直链"
     if tag in ("XVideos", "Pornhub", "MissAV"):
         if (quality or "").upper().startswith("MP4"):
             return "直链"
@@ -394,8 +407,16 @@ def _read_text(path: str):
         return None
 
 
+def _is_store(path: str) -> bool:
+    from utils.downloaded_records import is_downloaded_file
+    return is_downloaded_file(path)
+
+
 def load_entries(path: str = None) -> list:
     path = path or _records_path()
+    if _is_store(path):
+        from utils.downloaded_records import OTHER_SECTIONS, read_sections_text
+        return parse_entries(read_sections_text(OTHER_SECTIONS))
     if not path or not os.path.isfile(path):
         return []
     text = _read_text(path)
@@ -406,11 +427,15 @@ def load_entries(path: str = None) -> list:
 
 def save_entries(entries, path: str = None) -> bool:
     path = path or _records_path()
+    payload = format_entries(entries)
+    if _is_store(path):
+        from utils.downloaded_records import OTHER_SECTIONS, write_sections_text
+        return write_sections_text(OTHER_SECTIONS, payload)
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-            f.write(format_entries(entries))
+            f.write(payload)
         os.replace(tmp, path)
         return True
     except Exception:

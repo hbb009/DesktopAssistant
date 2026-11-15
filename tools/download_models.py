@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-"""v9.18 外置模型下载 → model/
+"""v9.19 外置模型下载 → model/
 
   python tools/download_models.py
   python tools/download_models.py --only paddleocr
   python tools/download_models.py --only whisper-small
   python tools/download_models.py --only cosyvoice --mirror modelscope
-  python tools/download_models.py --only opus-mt-zh-en --only opus-mt-en-zh
+  python tools/download_models.py --only hy-mt2
 """
 from __future__ import annotations
 import argparse, subprocess, sys
@@ -27,12 +27,9 @@ CATALOG = {
                   "hf": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512", "ms": "FunAudioLLM/Fun-CosyVoice3-0.5B-2512", "kind": "snapshot"},
     "cosyvoice-code": {"title": "CosyVoice 源码", "local": "CosyVoice", "kind": "git",
                        "url": "https://github.com/FunAudioLLM/CosyVoice.git"},
-    "opus-mt-zh-en": {"title": "opus-mt-zh-en（中→英，PyTorch约0.3GB）", "local": "opus-mt-zh-en",
-                     "hf": "Helsinki-NLP/opus-mt-zh-en", "ms": "Helsinki-NLP/opus-mt-zh-en", "kind": "snapshot",
-                     "allow": ["*.json", "*.txt", "*.model", "*.spm", "pytorch_model.bin", "tokenizer*"]},
-    "opus-mt-en-zh": {"title": "opus-mt-en-zh（英→中，PyTorch约0.3GB）", "local": "opus-mt-en-zh",
-                     "hf": "Helsinki-NLP/opus-mt-en-zh", "ms": "Helsinki-NLP/opus-mt-en-zh", "kind": "snapshot",
-                     "allow": ["*.json", "*.txt", "*.model", "*.spm", "pytorch_model.bin", "tokenizer*"]},
+    "hy-mt2": {"title": "Hy-MT2-1.8B（腾讯混元翻译，约 4GB）", "local": "Hy-MT2-1.8B",
+              "hf": "tencent/Hy-MT2-1.8B", "ms": "Tencent-Hunyuan/Hy-MT2-1.8B", "kind": "snapshot",
+              "allow": ["*.json", "*.jinja", "*.txt", "*.model", "*.safetensors", "tokenizer*"]},
 }
 
 def _ready(name: str) -> bool:
@@ -41,6 +38,10 @@ def _ready(name: str) -> bool:
         return False
     if name == "CosyVoice":
         return (d / "cosyvoice").is_dir() or (d / "README.md").is_file()
+    if name == "Hy-MT2-1.8B":
+        # tokenizer.json 约 9MB，不能当成权重。完整 model.safetensors 为 4077072784 字节。
+        w = d / "model.safetensors"
+        return w.is_file() and w.stat().st_size >= 3_000_000_000
     for f in d.rglob("*"):
         if f.is_file() and f.stat().st_size > 1_000_000 and ".git" not in f.parts:
             return True

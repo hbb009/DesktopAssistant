@@ -472,7 +472,7 @@ class PageOverview(QWidget):
 
         # 整页通栏左右两列（顶对齐）：
         # 左：功能与说明 → 热键占用 → 公共保存 → 白名单 → 环境信息
-        # 右：屏幕取色 → ACDSeeMini → 文件阅读器 → 缩放/Cookie/预下载/数据管理 → 模型 → 组件 → 资源监控
+        # 右：屏幕取色 → 看图器 → 文件阅读器 → 缩放/预下载/数据管理 → 模型 → 组件 → 资源监控
         left_wrap = QWidget()
         left_wrap.setObjectName("OverviewLeftCol")
         left_wrap.setMinimumWidth(0)
@@ -936,7 +936,7 @@ class PageOverview(QWidget):
                 f"background:transparent; color:{secondary}; "
                 f"font-size:{OVERVIEW_FONT_PX}px;"
             )
-        # 设置卡（界面缩放 / Cookie设置 / 预下载 / 数据管理；公共保存在左栏）主题重刷
+        # 设置卡（界面缩放 / 预下载 / 数据管理；公共保存在左栏）主题重刷
         if getattr(self, "settings_section", None) is not None:
             self.settings_section.restyle_theme()
         about = getattr(self, "about_section", None)

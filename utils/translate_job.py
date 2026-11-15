@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 # utils/translate_job.py
 # ---------------------------------------------------------------------------
-# 无 Qt 的 opus-MT 翻译子进程入口（勿 import PyQt5）。
+# 无 Qt 的 Hy-MT2 翻译子进程入口（勿 import PyQt5）。
+# 需要 transformers>=5.6。主程序仍停在 4.57，由 runtime/hy-mt2 里的 Python 启动本进程。
 #
 # 单次：
 #   python -m utils.translate_job <meta.json>
@@ -42,14 +43,17 @@ def _base_dir() -> str:
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _model_dir(direction: str) -> str:
-    folder = "opus-mt-zh-en" if direction == "zh-en" else "opus-mt-en-zh"
-    beside = os.path.join(_base_dir(), "model", folder)
+_HY_FOLDER = "Hy-MT2-1.8B"
+
+
+def _model_dir(direction: str = "") -> str:
+    del direction
+    beside = os.path.join(_base_dir(), "model", _HY_FOLDER)
     if os.path.isdir(beside):
         return beside
     try:
         from utils.app_paths import resource_path
-        bundled = resource_path("model", folder)
+        bundled = resource_path("model", _HY_FOLDER)
         if os.path.isdir(bundled):
             return bundled
     except Exception:
@@ -62,8 +66,10 @@ def _looks_ready(path: str) -> bool:
         return False
     if not os.path.isfile(os.path.join(path, "config.json")):
         return False
+    # 完整 model.safetensors 为 4077072784 字节。半截文件不能当成就位。
     for name in ("pytorch_model.bin", "model.safetensors"):
-        if os.path.isfile(os.path.join(path, name)):
+        fp = os.path.join(path, name)
+        if os.path.isfile(fp) and os.path.getsize(fp) >= 3_000_000_000:
             return True
     try:
         for fn in os.listdir(path):
@@ -71,7 +77,7 @@ def _looks_ready(path: str) -> bool:
             if (
                 os.path.isfile(fp)
                 and fn.endswith((".bin", ".safetensors"))
-                and os.path.getsize(fp) > 1_000_000
+                and os.path.getsize(fp) >= 3_000_000_000
             ):
                 return True
     except OSError:
@@ -79,36 +85,33 @@ def _looks_ready(path: str) -> bool:
     return False
 
 
-def _ensure_sacremoses() -> None:
-    try:
-        import sacremoses  # noqa: F401
-    except ImportError:
-        import subprocess
-        subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "-q", "sacremoses"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-
-
 def _load_pair(direction: str, force_cpu: bool):
-    key = f"{direction}|{'cpu' if force_cpu else 'auto'}"
+    del direction
+    key = "cpu" if force_cpu else "auto"
     hit = _MODEL_CACHE.get(key)
     if hit is not None:
         return hit
 
-    _ensure_sacremoses()
     import torch
-    from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    path = _model_dir(direction)
+    path = _model_dir()
     if not _looks_ready(path):
         raise FileNotFoundError(f"缺少翻译模型目录：{path}")
 
-    tok = AutoTokenizer.from_pretrained(path, local_files_only=True)
-    model = AutoModelForSeq2SeqLM.from_pretrained(path, local_files_only=True)
+    tok = AutoTokenizer.from_pretrained(path, local_files_only=True, trust_remote_code=True)
+    use_cuda = (not force_cpu) and torch.cuda.is_available()
+    dtype = torch.bfloat16 if use_cuda else torch.float32
+    try:
+        model = AutoModelForCausalLM.from_pretrained(
+            path, local_files_only=True, trust_remote_code=True, dtype=dtype,
+        )
+    except TypeError:
+        model = AutoModelForCausalLM.from_pretrained(
+            path, local_files_only=True, trust_remote_code=True, torch_dtype=dtype,
+        )
     device = "cpu"
-    if not force_cpu and torch.cuda.is_available():
+    if use_cuda:
         try:
             model.to("cuda")
             device = "cuda"
@@ -120,6 +123,33 @@ def _load_pair(direction: str, force_cpu: bool):
     model.eval()
     _MODEL_CACHE[key] = (tok, model, device)
     return _MODEL_CACHE[key]
+
+
+def _user_prompt(text: str, direction: str) -> str:
+    target = "英语" if direction == "zh-en" else "中文"
+    return (
+        "将以下文本翻译为%s，注意只需要输出翻译后的结果，不要额外解释：\n\n%s"
+        % (target, text)
+    )
+
+
+def _clean_hy_text(text: str) -> str:
+    t = (text or "").strip()
+    for mark in (
+        "<｜hy_place▁holder▁no▁2｜>",
+        "<｜hy_place▁holder▁no▁3｜>",
+        "<｜hy_place▁holder▁no▁8｜>",
+        "<｜hy_Assistant｜>",
+        "<｜hy_User｜>",
+        "<｜hy_begin▁of▁sentence｜>",
+    ):
+        t = t.replace(mark, "")
+    t = t.strip().strip("`").strip()
+    if t.startswith("译文："):
+        t = t[3:].strip()
+    elif t.startswith("译文:"):
+        t = t[3:].strip()
+    return t
 
 
 def _mostly_latin(text: str) -> bool:
@@ -251,7 +281,7 @@ def _should_skip(text: str, direction: str) -> bool:
 
 
 def _translate_texts(
-    texts: List[str], direction: str, force_cpu: bool
+    texts: List[str], direction: str, force_cpu: bool, glossary: bool = True,
 ) -> Tuple[List[str], str]:
     import torch
 
@@ -265,39 +295,37 @@ def _translate_texts(
         return result, "cpu"
 
     tok, model, device = _load_pair(direction, force_cpu)
-    # 逐条推理：短句/英文混批时 beam+padding 易崩成 I'm sorry 循环
     for i in todo_idx:
         one = cleaned[i]
-        enc = tok(
-            [one],
+        messages = [{"role": "user", "content": _user_prompt(one, direction)}]
+        enc = tok.apply_chat_template(
+            messages,
+            add_generation_prompt=True,
             return_tensors="pt",
-            padding=False,
-            truncation=True,
-            max_length=512,
+            return_dict=True,
         )
         enc = {k: v.to(device) for k, v in enc.items()}
+        max_new = min(512, max(64, len(one) * 3))
         with torch.no_grad():
-            # 服饰等长句 96 易截断→退化；按源长放宽
-            max_new = 96
-            if len(one) > 80:
-                max_new = 160
-            if len(one) > 160:
-                max_new = 220
             gen = model.generate(
                 **enc,
                 max_new_tokens=max_new,
-                num_beams=4,
-                no_repeat_ngram_size=3,
-                repetition_penalty=1.25,
-                early_stopping=True,
+                do_sample=True,
+                temperature=0.7,
+                top_p=0.6,
+                top_k=20,
+                repetition_penalty=1.05,
             )
-        out = tok.decode(gen[0], skip_special_tokens=True).strip()
+        new_ids = gen[0][enc["input_ids"].shape[-1]:]
+        out = _clean_hy_text(tok.decode(new_ids, skip_special_tokens=True))
         if not out or _degenerate_translation(one, out):
             # 失败时返回空串（勿回传原文），避免上层把中文缓存成「英文译文」
             result[i] = ""
         else:
             if direction == "zh-en":
-                out = _post_zh_en_glossary(out)
+                # 提示词页才套服饰词表。文本编辑等普通正文不改 chip/panel 这类词。
+                if glossary:
+                    out = _post_zh_en_glossary(out)
                 # 译文仍大量汉字 → 视为失败
                 if _han_ratio(out) >= 0.18:
                     result[i] = ""
@@ -316,7 +344,10 @@ def _handle_meta(meta: dict) -> dict:
     if not isinstance(texts, list):
         raise ValueError("texts 必须是字符串列表")
     force_cpu = bool(meta.get("force_cpu", False))
-    out_texts, device = _translate_texts([str(x) for x in texts], direction, force_cpu)
+    glossary = bool(meta.get("glossary", True))
+    out_texts, device = _translate_texts(
+        [str(x) for x in texts], direction, force_cpu, glossary=glossary,
+    )
     return {"ok": True, "texts": out_texts, "device": device, "direction": direction}
 
 

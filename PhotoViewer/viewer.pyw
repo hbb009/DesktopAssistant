@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
 """极简看图 - 左右方向键/A D 切换, F11/双击 全屏, Esc 退出全屏或关闭, 滚轮缩放
 数字区 * 按图片比例调整窗口，画面铺满，不留黑边
-数字区 / ：按一下 100%，再按一下适当比例（大图缩小，小图不放大）。0 直接适当比例"""
+数字区 / ：按一下 100%，再按一下适当比例（大图缩小，小图不放大）。0 直接适当比例
+Del：确认后把当前图片放进回收站"""
 import ctypes
 import json
 import os
@@ -11,13 +12,13 @@ import threading
 import tkinter as tk
 import tkinter.font as tkfont
 from ctypes import wintypes
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 
 EXTS = {'.jpg','.jpeg','.png','.gif','.bmp','.webp','.tif','.tiff','.ico','.jfif','.ppm','.pgm'}
 BG = '#111111'
 TITLE_BG = '#000000'
 TITLE_FG = '#ffffff'
-TITLE = '桌面助手 v9.18·图片查看器'
+TITLE = '桌面助手 v9.19·看图器'
 TITLE_H = 32
 MIN_W, MIN_H = 200, 160
 try:
@@ -46,6 +47,38 @@ def load_cfg():
 def image_filetypes():
     pat = ' '.join('*' + e for e in sorted(EXTS))
     return [('图片', pat), ('所有文件', '*.*')]
+
+_FO_DELETE = 3
+_FOF_NOCONFIRMATION = 0x0010
+_FOF_ALLOWUNDO = 0x0040
+_FOF_NOERRORUI = 0x0400
+
+class _SHFILEOPSTRUCTW(ctypes.Structure):
+    _fields_ = [
+        ('hwnd', ctypes.c_void_p),
+        ('wFunc', ctypes.c_uint),
+        ('pFrom', ctypes.c_void_p),
+        ('pTo', ctypes.c_void_p),
+        ('fFlags', ctypes.c_ushort),
+        ('fAnyOperationsAborted', ctypes.c_int),
+        ('hNameMappings', ctypes.c_void_p),
+        ('lpszProgressTitle', ctypes.c_void_p),
+    ]
+
+def recycle_file(path):
+    """把单个文件放进回收站。失败就抛错，不直接删掉。"""
+    path = os.path.abspath(path or '')
+    if not path or not os.path.isfile(path):
+        raise FileNotFoundError(path)
+    buf = ctypes.create_unicode_buffer(path + '\0')
+    op = _SHFILEOPSTRUCTW()
+    op.wFunc = _FO_DELETE
+    op.pFrom = ctypes.addressof(buf)
+    op.fFlags = _FOF_ALLOWUNDO | _FOF_NOCONFIRMATION | _FOF_NOERRORUI
+    op.fAnyOperationsAborted = 0
+    rc = int(ctypes.windll.shell32.SHFileOperationW(ctypes.byref(op)) or 0)
+    if rc != 0 or op.fAnyOperationsAborted or os.path.isfile(path):
+        raise OSError('回收站失败 rc=%s' % rc)
 
 def nkey(s):
     return [int(t) if t.isdigit() else t.lower() for t in re.split(r'(\d+)', s)]
@@ -451,6 +484,7 @@ class Viewer:
         self._max_hot = False
         self._toast_job = None
         self._cur_name = ''
+        self._delete_busy = False
         root.title(TITLE)
         root.configure(bg=BG)
         root.withdraw()
@@ -482,6 +516,8 @@ class Viewer:
         for k in ('<Left>','<a>','<A>','<Prior>','<BackSpace>'): root.bind(k, lambda e: self.step(-1))
         root.bind('<Home>', self.first)
         root.bind('<End>', self.last)
+        root.bind('<Delete>', self.delete_current)
+        root.bind('<KP_Delete>', self.delete_current)
         root.bind('<Escape>', self.esc)
         self.cv.bind('<Double-Button-1>', self.fs)
         root.bind('<MouseWheel>', self.wheel)
@@ -950,6 +986,67 @@ class Viewer:
     def ask(self):
         p = filedialog.askopenfilename(title='打开图片', filetypes=image_filetypes())
         if p: self.load_path(p)
+
+    def _release_image(self, path):
+        """关掉 Pillow 占用，否则 Windows 删不掉正在看的文件。"""
+        with self.lock:
+            im = self.cache.pop(path, None)
+        self._alpha.pop(path, None)
+        if im is not None:
+            try:
+                im.close()
+            except Exception:
+                pass
+
+    def delete_current(self, e=None):
+        """Del：先问一句，同意后把当前图片放进回收站。"""
+        if self._delete_busy or not self.files:
+            return 'break'
+        path = self.files[self.idx]
+        name = os.path.basename(path)
+        self._delete_busy = True
+        try:
+            ok = messagebox.askyesno(
+                '删除图片',
+                '确定删除「%s」吗？\n将放进回收站。' % name,
+                parent=self.root,
+                default=messagebox.NO,
+                icon=messagebox.WARNING,
+            )
+            if not ok or not self.files or self.idx >= len(self.files):
+                return 'break'
+            path = self.files[self.idx]
+            self._release_image(path)
+            try:
+                recycle_file(path)
+            except Exception:
+                self.show()
+                self._set_status('删除失败')
+                return 'break'
+            del self.files[self.idx]
+            self.tkimg = None
+            self._img_id = None
+            self._pan_for = None
+            if not self.files:
+                self.idx = 0
+                self.cv.delete('all')
+                w = max(self.cv.winfo_width(), 1)
+                h = max(self.cv.winfo_height(), 1)
+                self.cv.create_text(
+                    w // 2, h // 2, text='当前文件夹已经没有图片',
+                    fill='#888888', font=('Microsoft YaHei UI', 12),
+                )
+                self._set_title('没有图片')
+                self._set_status('没有图片')
+                return 'break'
+            if self.idx >= len(self.files):
+                self.idx = len(self.files) - 1
+            self.scale_mode, self.zoom = self._page_view()
+            self._present()
+            self.preload()
+        finally:
+            self._delete_busy = False
+        return 'break'
 
     def _refresh_cfg(self):
         self.exts, self.pierce, self.lock_scale, self.auto_window, auto_fit = load_cfg()
