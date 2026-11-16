@@ -17,9 +17,9 @@
 import warnings, urllib3
 warnings.filterwarnings("ignore", category=urllib3.exceptions.InsecureRequestWarning)
 
-import os, re, json, time, threading, uuid, gzip as gzip_mod, subprocess
+import os, re, json, time, threading, uuid, gzip as gzip_mod, subprocess, hashlib
 import http.cookiejar, ssl, datetime
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlencode, unquote
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from PyQt5.QtCore import Qt, QThread, pyqtSignal, QTimer
@@ -1609,6 +1609,138 @@ def _playwm_to_play(item):
     return item
 
 
+_SEC_SALT = "A96D855A08C0A9707F8BEF0D9A527E4E"
+_SEC_AID = "6383"
+
+
+def _set_cookie_value(headers, name):
+    """从 Set-Cookie 里取出一个 cookie 的值。没有则返回空串。"""
+    vals = []
+    if hasattr(headers, "get_all"):
+        vals = headers.get_all("Set-Cookie") or []
+    else:
+        one = headers.get("Set-Cookie")
+        if one:
+            vals = [one]
+    prefix = name + "="
+    for item in vals:
+        for part in str(item).split(","):
+            part = part.strip()
+            if part.startswith(prefix):
+                return unquote(part[len(prefix):].split(";", 1)[0].strip())
+    return ""
+
+
+def _secsdk_open(url, headers, data=None, timeout=15):
+    """签名线路专用：返回 (body, headers, status)。空 body 不在这里抛。"""
+    import urllib.error
+    import urllib.request
+    headers = dict(headers or {})
+    headers.setdefault("Accept-Encoding", "gzip, deflate")
+    req = urllib.request.Request(url, data=data, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout, context=CTX) as resp:
+            body = _decode_http_body(
+                resp.read(), resp.headers.get("Content-Encoding") or "")
+            return body, resp.headers, resp.status
+    except urllib.error.HTTPError as e:
+        body = _decode_http_body(
+            e.read() or b"", e.headers.get("Content-Encoding") or "")
+        return body, e.headers, e.code
+
+
+def line_s_web_detail(aweme_id, log_cb=None):
+    """
+    线路S：网页详情。2026-11 起分享页 _ROUTER_DATA 不再带 item_list，
+    Mobile detail / iteminfo 又经常 200 + 空 body。
+    先注册 ttwid，用首页响应头 x-tt-trace-host 当 uifid，
+    再按 md5(uifid_timestamp_salt_query) 签 x-secsdk-web-signature。
+    只带 aweme_id 和 aid。加上 msToken 或一串设备参数会 403，或把正文滤掉。
+    """
+    ua = UA
+    base_hdr = {
+        "User-Agent": ua,
+        "Accept-Language": "zh-CN,zh;q=0.9",
+        "Referer": "https://www.douyin.com/",
+    }
+    csrf = uuid.uuid4().hex
+    last_err = None
+    for attempt in range(2):
+        try:
+            reg_body, reg_hdrs, reg_status = _secsdk_open(
+                "https://www.douyin.com/ttwid/register",
+                {**base_hdr, "Content-Type": "application/json",
+                 "Accept": "application/json"},
+                json.dumps({"aid": int(_SEC_AID),
+                            "service": "www.douyin.com"}).encode(),
+            )
+            ttwid = _set_cookie_value(reg_hdrs, "ttwid")
+            if log_cb:
+                log_cb(f"S register HTTP={reg_status} ttwid={'yes' if ttwid else 'no'}")
+            if not ttwid:
+                raise ValueError("网页详情未拿到 ttwid")
+            cookie = (
+                f"passport_csrf_token={csrf}; "
+                f"passport_csrf_token_default={csrf}; ttwid={ttwid}"
+            )
+            _home_body, home_hdrs, home_status = _secsdk_open(
+                "https://www.douyin.com/",
+                {**base_hdr, "Accept": "text/html", "Cookie": cookie},
+            )
+            uifid = (home_hdrs.get("x-tt-trace-host")
+                     or reg_hdrs.get("x-tt-trace-host") or "")
+            if log_cb:
+                log_cb(f"S home HTTP={home_status} uifid_len={len(uifid)}")
+            if not uifid:
+                raise ValueError("网页详情未拿到 uifid")
+            timestamp = str(int(time.time()))
+            query = {
+                "aweme_id": str(aweme_id),
+                "aid": _SEC_AID,
+                "uifid": uifid,
+                "timestamp": timestamp,
+            }
+            encoded = urlencode(query)
+            signature = hashlib.md5(
+                f"{uifid}_{timestamp}_{_SEC_SALT}_{encoded}".encode()
+            ).hexdigest()
+            query["x-secsdk-web-signature"] = signature
+            api = ("https://www.douyin.com/aweme/v1/web/aweme/detail/?"
+                   + urlencode(query))
+            body, _hdrs, status = _secsdk_open(api, {
+                **base_hdr,
+                "Accept": "application/json, text/plain, */*",
+                "Referer": f"https://www.douyin.com/video/{aweme_id}",
+                "Cookie": cookie,
+            })
+            if log_cb:
+                log_cb(f"S detail HTTP={status} len={len(body)}B")
+            data = _parse_json(body)
+            _raise_if_filtered(data, soft_as_value_error=True)
+            item = data.get("aweme_detail")
+            if not isinstance(item, dict):
+                raise ValueError("网页详情没有 aweme_detail")
+            if not _item_id_match(item, aweme_id):
+                raise ValueError("网页详情返回了其他作品，拒绝下载")
+            if log_cb:
+                log_cb(
+                    f"S 命中 type={item.get('aweme_type')} "
+                    f"media={item.get('media_type')} "
+                    f"images={len(item.get('images') or [])}"
+                )
+            return item
+        except DouyinAccessBlocked:
+            raise
+        except Exception as e:
+            last_err = e
+            if attempt == 0 and any(
+                x in str(e) for x in ("空响应", "403", "uifid", "ttwid")
+            ):
+                continue
+            raise
+    raise ValueError(f"线路S 网页详情失败: {last_err}")
+
+
 def line_b_share_page(aweme_id, real_url, cookie_str, log_cb=None):
     """
     线路B：视频分享页 _ROUTER_DATA（普通视频的确定性兜底）。
@@ -1792,12 +1924,25 @@ def parse_media(item: dict) -> list:
                 url_alts=play_u[1:],
             ))
         elif url_list:
+            # url_list 经常先给 webp。优先无水印 jpeg，扩展名跟所选地址走。
+            chosen = next(
+                (u for u in url_list
+                 if "jpeg" in u.lower() and "water" not in u.lower()),
+                None,
+            )
+            if not chosen:
+                chosen = next(
+                    (u for u in url_list if "jpeg" in u.lower()),
+                    url_list[0],
+                )
+            low = chosen.lower()
+            ext = ".webp" if ".webp" in low else ".png" if ".png" in low else ".jpg"
             results.append(MediaItem(
                 "image",
                 f"图片 {i+1}",
-                url_list[0], ".jpg",
+                chosen, ext,
                 thumb, i, True,
-                url_alts=url_list[1:],
+                url_alts=[u for u in url_list if u != chosen],
             ))
 
     # 音频（默认不选）
@@ -1854,11 +1999,12 @@ class ParseWorker(QThread):
             is_short = any(h in url for h in ("v.douyin.com", "vm.tiktok.com"))
             self._log(f"识别链接：{url}")
 
-            # 公开视频先走匿名分享页；不读取 Cookie 文件或浏览器登录态。
-            # 图集/实况仍由后面的多线路合并处理，避免只拿到封面。
+            # 公开作品先走分享页。分享页不再内嵌数据时改走网页详情签名。
+            # 多格且没有视频轨时，仍交给后面的线路合并，避免只拿到封面。
             host = urlsplit(url).hostname or ""
             is_douyin = (host == "douyin.com" or host.endswith(".douyin.com")
                          or host == "iesdouyin.com" or host.endswith(".iesdouyin.com"))
+            early_item = None
             if is_douyin and not is_qishui_url(url):
                 try:
                     public_url = resolve_short(url, "") if is_short else url
@@ -1866,6 +2012,7 @@ class ParseWorker(QThread):
                     if not public_id:
                         raise ValueError("公开链接未提供作品 ID")
                     self._log("优先免 Cookie 解析公开分享页…")
+                    public_item = None
                     try:
                         public_item = line_b_share_page(
                             public_id, public_url, "",
@@ -1874,21 +2021,38 @@ class ParseWorker(QThread):
                     except DouyinAccessBlocked:
                         raise
                     except Exception:
-                        self._log("分享页未提供数据，尝试匿名 Mobile 接口…")
-                        public_item = line_a_mobile(
-                            public_id, "",
-                            log_cb=lambda msg: self._log(f"[匿名 Mobile] {msg}"),
-                        )
+                        self._log("分享页未提供数据，尝试网页详情…")
+                        try:
+                            public_item = line_s_web_detail(
+                                public_id,
+                                log_cb=lambda msg: self._log(f"[网页详情] {msg}"),
+                            )
+                        except DouyinAccessBlocked:
+                            raise
+                        except Exception as exc_s:
+                            self._log(
+                                f"网页详情未成功：{exc_s}；尝试匿名 Mobile 接口…",
+                                "warn",
+                            )
+                            public_item = line_a_mobile(
+                                public_id, "",
+                                log_cb=lambda msg: self._log(f"[匿名 Mobile] {msg}"),
+                            )
                     public_media = parse_media(public_item)
-                    is_gallery = (public_item.get("aweme_type") in (2, 68)
-                                  or bool(public_item.get("images"))
-                                  or "is_slides=1" in public_url
-                                  or "/share/slides/" in public_url)
-                    if not is_gallery and any(m.kind == "video" for m in public_media):
+                    n_img = len(public_item.get("images") or [])
+                    is_multi = (
+                        n_img > 1
+                        or "is_slides=1" in (public_url or "")
+                        or "/share/slides/" in (public_url or "")
+                    )
+                    has_video = any(m.kind == "video" for m in public_media)
+                    has_image = any(m.kind == "image" for m in public_media)
+                    if (has_video or has_image) and (has_video or not is_multi):
                         self._log("免 Cookie 解析成功 ✓，可直接下载", "ok")
                         self.ok.emit(public_item, public_media)
                         return
-                    self._log("分享页为图集或缺少视频轨，继续完整解析", "info")
+                    self._log("已拿到内容但不完整，继续完整解析", "info")
+                    early_item = public_item
                     url = public_url
                     is_short = False
                 except DouyinAccessBlocked:
@@ -2132,6 +2296,10 @@ class ParseWorker(QThread):
                     raise
                 except Exception as e:
                     self._log(f"线路C 失败: {e}", "err")
+
+            if not item and early_item:
+                item = early_item
+                self._log("其余线路没有补到更完整的数据，使用已经拿到的内容", "warn")
 
             if not item:
                 raise RuntimeError(
