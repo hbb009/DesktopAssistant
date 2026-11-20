@@ -171,7 +171,6 @@ class OtherParseWorker(QThread):
         self.log.emit(msg, level)
 
     def _cookie_str(self) -> str:
-        """其它视频不读取 Cookie。"""
         return ""
 
     def run(self):
@@ -791,12 +790,7 @@ class PageOtherVideo(PageJimeng):
         self._log("开始解析…")
         self._clear_cards()
         self._emit_nav_progress(True, mode="busy")
-        ck = ""
-        try:
-            ck = (self.ck_path.text() or "").strip()
-        except Exception:
-            ck = ""
-        self._parse_worker = OtherParseWorker(url_text, ck)
+        self._parse_worker = OtherParseWorker(url_text, "")
         self._parse_worker.ok.connect(self._on_parse_ok)
         self._parse_worker.err.connect(self._on_parse_err)
         self._parse_worker.log.connect(self._log)

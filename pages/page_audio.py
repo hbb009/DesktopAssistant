@@ -187,10 +187,6 @@ class PageQishui(PageDouyin):
             break
         return card
 
-    def _effective_cookie_path(self) -> str:
-        """汽水解析不读取 Cookie，也不借用抖音页的 Cookie。"""
-        return ""
-
     def _start_flow(self, use_clipboard=True):
         text = ""
         raw_clip = self._clipboard_raw() if use_clipboard else ""
@@ -219,7 +215,6 @@ class PageQishui(PageDouyin):
                 self._set_status("不是汽水音乐链接", "#f97316")
             return
         self.url_edit.setText(url)
-        self._log("本次不使用 Cookie", "info")
         self._auto_dl = True
         self._parse(url)
 
@@ -242,7 +237,7 @@ class PageQishui(PageDouyin):
         self._set_status("解析中…", "#f97316")
         self._log("开始解析…")
         self._emit_nav_progress(True, mode="busy")
-        self._parse_worker = ParseWorker(url_text, self._effective_cookie_path())
+        self._parse_worker = ParseWorker(url_text, "")
         self._parse_worker.ok.connect(self._on_parse_ok)
         self._parse_worker.err.connect(self._on_parse_err)
         self._parse_worker.log.connect(self._log)
@@ -968,7 +963,7 @@ class PageAudio(QWidget):
                 return {"qishui": page.export_settings()}
             except Exception:
                 log.exception("导出汽水设置失败")
-        return {"qishui": {"save_path": "", "cookie_path": "", "check_records": True}}
+        return {"qishui": {"save_path": "", "check_records": True}}
 
     def apply_settings(self, d: dict):
         if not isinstance(d, dict):

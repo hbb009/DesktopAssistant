@@ -487,8 +487,6 @@ class PageJimeng(QWidget):
         self._quality_options = []
         self._selected_quality_idx = 0
         self._quality_cards = []
-        self._cookie_auto_tried = False   # 本会话是否已尝试自动加载 Cookie
-        self._cookie_loaded_via = None    # 'auto' | 'manual' | None
         self._nav_busy = False
         self._last_download_ok = False
         self._last_batch_note = ""
@@ -518,50 +516,6 @@ class PageJimeng(QWidget):
         gv_body.setContentsMargins(0, 0, 0, 0)
         gv_body.setSpacing(7)
         gv.addWidget(body_main, 1)
-
-        # ── 第1块：Cookie 配置（由「关于」弹窗统一管理，页面整行隐藏）──
-        self._conf_wrapper = QWidget()
-        wrap_l = QVBoxLayout(self._conf_wrapper)
-        wrap_l.setContentsMargins(0, 0, 0, 0)
-        wrap_l.setSpacing(0)
-
-        conf_row = QHBoxLayout()
-        conf_row.setSpacing(8)
-
-        ck_col = QVBoxLayout()
-        ck_col.setSpacing(5)
-        ck_head = QHBoxLayout()
-        ck_head.setSpacing(8)
-        lbl_ck = QLabel("Cookie 文件（可选，Netscape .txt）")
-        lbl_ck.setObjectName("SecTitle")
-        ck_head.addWidget(lbl_ck, 0)
-        self.ck_status = _ElideLabel("")
-        self.ck_status.setObjectName("StatusLbl")
-        self.ck_status.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.ck_status.setStyleSheet(f"color:{tk('text_faint')}; font-size:12px;")
-        ck_head.addWidget(self.ck_status, 1)
-        ck_col.addLayout(ck_head)
-        ck_row = QHBoxLayout()
-        ck_row.setSpacing(6)
-        self.btn_ck = QPushButton("选择文件")
-        self.btn_ck.setObjectName("BtnSmall")
-        self.btn_ck.setMinimumWidth(72)
-        self.btn_ck.clicked.connect(self._pick_cookie)
-        ck_row.addWidget(self.btn_ck)
-        self.ck_path = QLineEdit()
-        self.ck_path.setPlaceholderText("自动扫描下载目录…")
-        self.ck_path.setReadOnly(True)
-        self._ck_path_icon_action = apply_folder_path_edit(self.ck_path)
-        self.ck_path.textChanged.connect(self._on_cookie_change)
-        ck_row.addWidget(self.ck_path, 1)
-        ck_col.addLayout(ck_row)
-        conf_row.addLayout(ck_col, 60)
-
-        conf_row.addStretch(40)
-
-        wrap_l.addLayout(conf_row)
-        gv_body.addWidget(self._conf_wrapper)
-        self._conf_wrapper.setVisible(False)
 
         # ── Row1：链接输入 + 取消 ────────────────────────────────────────
         row1 = QHBoxLayout()
@@ -700,8 +654,6 @@ class PageJimeng(QWidget):
     def refresh_theme(self, *_):
         if hasattr(self, "dir_hint"):
             self.dir_hint.setStyleSheet(f"color:{tk('text_faint')}; font-size:12px;")
-        if hasattr(self, "ck_path"):
-            restyle_folder_path_edit(self.ck_path, getattr(self, "_ck_path_icon_action", None))
         if hasattr(self, "save_edit"):
             restyle_folder_path_edit(self.save_edit, getattr(self, "_save_edit_icon_action", None))
         if hasattr(self, "url_edit"):
@@ -713,9 +665,6 @@ class PageJimeng(QWidget):
             restyle_card_title(lbl)
         for frame in getattr(self, "_func_cards", []):
             restyle_card_frame(frame)
-        # Cookie 按钮绿色态要跟主题重刷
-        path = (self.ck_path.text() or "").strip() if hasattr(self, "ck_path") else ""
-        self._set_cookie_btn_loaded(bool(path and os.path.isfile(path)))
 
     def _sec_label_widget(self, parent_layout, text):
         lbl = QLabel(text)
@@ -807,112 +756,14 @@ class PageJimeng(QWidget):
         except Exception:
             pass
 
-    # ── Cookie / 目录 / 帮助 ─────────────────────────────────────────────────
-
-    def showEvent(self, event):
-        """本会话第一次显示本页时：尝试自动加载 Cookie（若已配置路径）。"""
-        super().showEvent(event)
-        if self._cookie_auto_tried:
-            return
-        self._cookie_auto_tried = True
-        QTimer.singleShot(0, self._auto_load_cookie)
-
-    def _set_cookie_btn_loaded(self, loaded: bool):
-        """加载成功 → 绿色「已加载」；否则恢复「选择文件」。仍可点击重选。"""
-        btn = getattr(self, "btn_ck", None)
-        if btn is None:
-            return
-        if loaded:
-            btn.setText("已加载")
-            btn.setStyleSheet(
-                f"QPushButton{{background:{tk('ok')}; color:#ffffff;"
-                f"border:1px solid {tk('ok')}; border-radius:6px;"
-                f"padding:4px 12px; font-weight:600;}}"
-                f"QPushButton:hover{{background:{tk('ok')}; color:#ffffff;}}"
-            )
-        else:
-            btn.setText("选择文件")
-            btn.setStyleSheet("")
-            st = btn.style()
-            if st is not None:
-                st.unpolish(btn)
-                st.polish(btn)
-            btn.update()
-
-    def _auto_load_cookie(self):
-        """若 ck_path 已有有效文件则刷新状态；否则保持空（即梦 Cookie 可选）。"""
-        cur = (self.ck_path.text() or "").strip() if hasattr(self, "ck_path") else ""
-        if cur and os.path.isfile(cur):
-            self._on_cookie_change(cur)
-            return
-        self._set_cookie_btn_loaded(False)
-
-    def _pick_cookie(self):
-        start = (self.ck_path.text() or "").strip()
-        if start and os.path.isfile(start):
-            start = os.path.dirname(start)
-        elif hasattr(self, "save_edit") and self.save_edit.text().strip():
-            start = self.save_edit.text().strip()
-        else:
-            start = os.path.expanduser("~/Downloads")
-        p, _ = QFileDialog.getOpenFileName(
-            self, "选择 cookies.txt", start,
-            "Cookie 文件 (*.txt);;所有文件 (*.*)",
-        )
-        if p:
-            self._cookie_loaded_via = "manual"
-            self.ck_path.setText(p.replace("\\", "/"))
-            self._log(f"✓ 已手动加载 Cookie：{p}", "ok")
-
-    def _on_cookie_change(self, path):
-        path = (path or "").strip()
-        if not path or not os.path.isfile(path):
-            self.ck_status.setFullText("")
-            self.ck_status.setStyleSheet(f"color:{tk('text_faint')}; font-size:12px;")
-            self._set_cookie_btn_loaded(False)
-            return
-        try:
-            raw = open(path, encoding="utf-8", errors="ignore").read()
-        except Exception as e:
-            self.ck_status.setFullText(f"❌ 读取失败: {e}")
-            self.ck_status.setStyleSheet(f"color:{tk('err')}; font-size:12px;")
-            self._set_cookie_btn_loaded(False)
-            return
-        low = raw.lower()
-        lines_ck = [ln for ln in raw.splitlines() if ln.strip() and not ln.startswith("#")]
-        count = len(lines_ck)
-        has_jimeng = (
-            "jimeng" in low
-            or "jianying.com" in low
-            or "bytedance" in low
-            or "capcut" in low
-        )
-        via_auto = getattr(self, "_cookie_loaded_via", None) == "auto"
-        if count <= 0:
-            self.ck_status.setFullText("⚠ Cookie 文件为空")
-            self.ck_status.setStyleSheet(f"color:{tk('warn')}; font-size:12px;")
-            self._set_cookie_btn_loaded(False)
-            return
-        if has_jimeng:
-            msg = (
-                f"✅ 已自动加载（{count} 行）· 无需再点「选择文件」"
-                if via_auto else f"✅ Cookie 已加载（{count} 行）"
-            )
-            self.ck_status.setStyleSheet(f"color:{tk('ok')}; font-size:12px;")
-            self._set_cookie_btn_loaded(True)
-        else:
-            msg = f"⚠ 未见即梦相关域名（{count} 行，仍可使用）"
-            self.ck_status.setStyleSheet(f"color:{tk('warn')}; font-size:12px;")
-            self._set_cookie_btn_loaded(True)
-        self.ck_status.setFullText(msg)
+    # ── 帮助 ─────────────────────────────────────────────────────────────────
 
     def _show_help(self):
         """与 B站页同结构的帮助入口；即梦短提示，避免未接线时崩溃。"""
         text = (
             "【即梦 · 使用说明】\n"
             "1. 粘贴即梦作品链接 → 回车自动解析下载\n"
-            "2. 勾选画质 → 选中下载\n"
-            "3. Cookie（可选）由「关于」统一管理；本页配置行默认隐藏"
+            "2. 勾选画质 → 选中下载"
         )
         try:
             from styles.style_all import message_box_info
@@ -1302,7 +1153,6 @@ class PageJimeng(QWidget):
     def export_settings(self) -> dict:
         return {
             "save_path": (self.save_edit.text() or "").strip(),
-            "cookie_path": (self.ck_path.text() or "").strip() if hasattr(self, "ck_path") else "",
         }
 
     def apply_settings(self, d: dict):
@@ -1315,13 +1165,6 @@ class PageJimeng(QWidget):
                 self.save_edit.setText(path.replace("\\", "/"))
             finally:
                 self.save_edit.blockSignals(False)
-        ck = (d.get("cookie_path") or "").strip()
-        if ck and os.path.isfile(ck) and hasattr(self, "ck_path"):
-            self.ck_path.blockSignals(True)
-            try:
-                self.ck_path.setText(ck.replace("\\", "/"))
-            finally:
-                self.ck_path.blockSignals(False)
 
     def shutdown(self):
         from utils.qthread_util import stop_qthreads

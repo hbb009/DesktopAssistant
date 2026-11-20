@@ -5007,12 +5007,6 @@ class MainWindow(QWidget):
                 pixiv = getattr(gal, "page_pixiv", None)
                 if pixiv and hasattr(pixiv, "export_settings"):
                     exported = pixiv.export_settings()
-                    # 防止 UI 里空 cookie_path 覆盖掉已保存的值
-                    if not exported.get("cookie_path", "").strip():
-                        cur = (self._user_prefs or {}).get("gallery_pixiv", {})
-                        saved = (cur.get("cookie_path") or "").strip() if isinstance(cur, dict) else ""
-                        if saved:
-                            exported["cookie_path"] = saved
                     prefs["gallery_pixiv"].update(exported)
         except Exception:
             log.exception("导出 Pixiv 图集设置失败")
@@ -5226,7 +5220,7 @@ class MainWindow(QWidget):
             self._save_user_prefs()
 
     def _wire_video_platform(self, page):
-        for name in ("save_edit", "ck_path"):
+        for name in ("save_edit",):
             control = getattr(page, name, None)
             if control is not None:
                 control.textChanged.connect(self._schedule_save_user_prefs)
@@ -5325,7 +5319,7 @@ class MainWindow(QWidget):
             except Exception:
                 pass
 
-        # 图集下载：间隔 / 路径 / Cookie（控件名随版本变动，逐个判空接线，避免一处失效拖垮整组）
+        # 图集下载：间隔 / 路径（控件名随版本变动，逐个判空接线，避免一处失效拖垮整组）
         if self._page_enabled("gallery") and "gallery" not in wired and getattr(self, "page_gallery", None) is not None:
             gal = self.page_gallery
             wired.add("gallery")
@@ -5333,7 +5327,6 @@ class MainWindow(QWidget):
                 for attr, sig_names in (
                     ("spin_delay", ("valueChanged",)),
                     ("save_edit", ("textChanged",)),
-                    ("ck_path", ("textChanged",)),
                 ):
                     w = getattr(gal, attr, None)
                     if w is None:
@@ -5360,11 +5353,11 @@ class MainWindow(QWidget):
             except Exception:
                 log.exception("接线图集偏好自动保存失败")
 
-            # 图集下载 · Pixiv 分页：保存路径 / Cookie（共享间隔框在容器页已接，不重复）
+            # 图集下载 · Pixiv 分页：保存路径（共享间隔框在容器页已接，不重复）
             try:
                 pixiv = getattr(self.page_gallery, "page_pixiv", None)
                 if pixiv is not None:
-                    for attr in ("save_edit", "ck_path"):
+                    for attr in ("save_edit",):
                         w = getattr(pixiv, attr, None)
                         if w is not None:
                             try:
@@ -5389,7 +5382,7 @@ class MainWindow(QWidget):
             try:
                 sub = getattr(self.page_audio, "page_qishui", None)
                 if sub is not None:
-                    for attr in ("save_edit", "ck_path"):
+                    for attr in ("save_edit",):
                         w = getattr(sub, attr, None)
                         if w is not None:
                             try:
@@ -6833,7 +6826,7 @@ class MainWindow(QWidget):
                 except Exception:
                     pass
 
-    def _show_settings_about(self, cookie_alert=False):
+    def _show_settings_about(self):
         """兼容旧调用：打开系统总览（原配置内容已并入该页）。"""
         self._goto_overview_page()
 
@@ -7385,7 +7378,7 @@ class MainWindow(QWidget):
             polish_combo_widgets(self)
         except Exception:
             pass
-        # 7) 关于页内联控件（Cookie 胶囊、白名单芯片等）
+        # 7) 关于页内联控件（白名单芯片等）
         try:
             if hasattr(self, "page_about") and hasattr(self.page_about, "restyle_theme"):
                 self.page_about.restyle_theme()

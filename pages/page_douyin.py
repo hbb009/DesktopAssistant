@@ -1,6 +1,6 @@
 # pages/page_douyin.py
 # 抖音无水印下载器 —— 嵌入桌面助手 PyQt5 版
-# 布局：合并卡片「解析与下载」(Cookie+保存位置 / 链接 / 一键按钮+进度+状态)
+# 布局：合并卡片「解析与下载」(链接 / 一键按钮+进度+状态)
 #       → 媒体卡片区(全选/全不选/选中下载) → 运行日志
 # v9.9：一键「粘贴并解析」= 读剪贴板 → 解析 → 自动下载到保存位置
 #       移除「解析」「开始下载」「打开目录」三个按钮；「？」→「安装」
@@ -18,7 +18,7 @@ import warnings, urllib3
 warnings.filterwarnings("ignore", category=urllib3.exceptions.InsecureRequestWarning)
 
 import os, re, json, time, threading, uuid, gzip as gzip_mod, subprocess, hashlib
-import http.cookiejar, ssl, datetime
+import ssl, datetime
 from urllib.parse import urlsplit, urlencode, unquote
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -75,10 +75,8 @@ _log = get_logger(__name__)
 class _ElideLabel(QLabel):
     """按可用宽度自动省略的标签（右端加省略号，保留开头）。
 
-    用于 Cookie 状态提示：状态文字过长时旧写法会把它所在的列（Cookie 列，占 60%）
-    最小宽度顶爆，整列越过与「保存位置」列之间的分界、连同下方路径行一起溢出。
-    这里让标签 sizeHint 宽度不再强撑父布局（横向 Ignored），拿到多少宽度就显示多少、
-    放不下就省略，从而彻底不越界；完整文字保留在 tooltip 里。"""
+    横向 sizeHint 不再强撑父布局，拿到多少宽度就显示多少，放不下就省略。
+    完整文字保留在 tooltip 里。"""
 
     def __init__(self, text: str = "", parent=None):
         super().__init__(text, parent)
@@ -270,10 +268,10 @@ def _head(url, headers, timeout=10):
 
 def _parse_json(body: bytes):
     if not body or not body.strip():
-        raise ValueError("API 返回了空响应（可能是 Referer/Cookie 问题或 IP 限制）")
+        raise ValueError("API 返回了空响应（可能是 Referer 问题或 IP 限制）")
     text = body.decode("utf-8", errors="replace").strip()
     if text.startswith("<"):
-        raise ValueError("API 返回 HTML（被重定向到登录页，Cookie 可能过期）")
+        raise ValueError("API 返回 HTML（被重定向到登录页）")
     try:
         return json.loads(text)
     except json.JSONDecodeError:
@@ -591,90 +589,6 @@ def _still_images_are_complete(item, page_url) -> bool:
     return True
 
 
-def load_cookies(path: str):
-    cj = http.cookiejar.MozillaCookieJar()
-    cj.load(path, ignore_discard=True, ignore_expires=True)
-    d = {c.name: c.value for c in cj if "douyin.com" in (c.domain or "")}
-    return "; ".join(f"{k}={v}" for k, v in d.items()), d
-
-
-def _default_download_dirs() -> list:
-    """常见「下载」目录（英文 Downloads / 中文「下载」+ 保存位置默认路径）。"""
-    dirs, seen = [], set()
-
-    def _add(p):
-        if not p:
-            return
-        p = os.path.normpath(os.path.expanduser(p))
-        key = os.path.normcase(p)
-        if key in seen:
-            return
-        if os.path.isdir(p):
-            seen.add(key)
-            dirs.append(p)
-
-    home = os.path.expanduser("~")
-    for name in ("Downloads", "下载"):
-        _add(os.path.join(home, name))
-    # Windows：USERPROFILE\Downloads（与 ~ 有时不一致）
-    up = os.environ.get("USERPROFILE") or os.environ.get("HOME") or ""
-    if up:
-        for name in ("Downloads", "下载"):
-            _add(os.path.join(up, name))
-    return dirs
-
-
-def find_best_cookie_file(search_dirs) -> str:
-    """
-    在给定目录（仅顶层 *.txt）中找最合适的抖音 Netscape Cookie 文件。
-    评分：含登录态(sid_tt/sessionid) > 含 s_v_web_id > 字段多 > 修改时间新。
-    找不到返回 ""。
-    """
-    candidates = []
-    for d in search_dirs or []:
-        if not d or not os.path.isdir(d):
-            continue
-        try:
-            names = os.listdir(d)
-        except Exception:
-            continue
-        for name in names:
-            if not name.lower().endswith(".txt"):
-                continue
-            # 跳过明显不是 cookie 的常见文本
-            low = name.lower()
-            if low in ("readme.txt", "license.txt", "changelog.txt"):
-                continue
-            path = os.path.join(d, name)
-            if not os.path.isfile(path):
-                continue
-            try:
-                if os.path.getsize(path) > 2 * 1024 * 1024:  # >2MB 基本不是 cookie
-                    continue
-            except Exception:
-                continue
-            try:
-                _, ck = load_cookies(path)
-            except Exception:
-                continue
-            if not ck:
-                continue
-            score = len(ck)
-            if "sid_tt" in ck or "sessionid" in ck:
-                score += 1000
-            if "s_v_web_id" in ck:
-                score += 500
-            try:
-                mtime = os.path.getmtime(path)
-            except Exception:
-                mtime = 0
-            candidates.append((score, mtime, path))
-    if not candidates:
-        return ""
-    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
-    return candidates[0][2]
-
-
 # ── API 请求头 ────────────────────────────────────────────────────────────────
 
 def _web_headers(aweme_id, cookie_str, page_type):
@@ -796,10 +710,7 @@ def _format_privacy_block(filters) -> str:
         return (
             f"无法下载：{who}开启了「私密帐号」。\n"
             f"抖音提示：{notice or '关注请求通过后才可查看'}\n\n"
-            "处理办法：\n"
-            "  1. 用已关注并通过验证的抖音账号登录浏览器\n"
-            "  2. 重新导出 cookies.txt 后加载到本程序\n"
-            "  3. 仅能下载你有权查看的作品（公开帐号不受影响）"
+            "公开帐号的作品可以下载。私密帐号里的内容无法下载。"
         )
     if reason in ("status_deleted", "item_deleted", "deleted") or "删除" in notice:
         return f"无法下载：作品可能已删除。\n抖音提示：{notice or reason}"
@@ -1143,13 +1054,13 @@ def _parse_note_from_html(html: str, debug_errors: list = None) -> dict:
 
 
 def line_w_web_detail(aweme_id, cookie_str, log_cb=None):
-    """线路W：PC Web `/aweme/v1/web/aweme/detail/`（需登录 Cookie）。
+    """线路W：PC Web detail。公开解析不走这条线。
 
     实测：多格视频图集（is_slides / aweme_type=2|68）在 reflow 分享页只有封面图，
     Mobile detail 常被 images_base 软过滤；本接口可返回 images[i].video 完整播放地址。
     """
     if not (cookie_str or "").strip():
-        raise ValueError("线路W 需要浏览器 Cookie（登录态）")
+        raise ValueError("线路W 不用于公开解析")
     ms = _ms_token()
     # 参数组合经实测可用（勿加错误 webid；Cookie 里的 ttwid/sessionid 足够）
     api = (
@@ -2007,10 +1918,10 @@ class ParseWorker(QThread):
     err = pyqtSignal(str)
     log = pyqtSignal(str, str)   # msg, level(ok/warn/err/info/blue)
 
-    def __init__(self, url_text, cookie_path):
+    def __init__(self, url_text, cookie_path=""):
         super().__init__()
-        self.url_text    = url_text
-        self.cookie_path = cookie_path
+        self.url_text = url_text
+        del cookie_path
 
     def _log(self, msg, level="info"):
         self.log.emit(msg, level)
@@ -2023,8 +1934,7 @@ class ParseWorker(QThread):
             self._log(f"识别链接：{url}")
 
             # 公开作品先走分享页。分享页不再内嵌数据时改走网页详情签名。
-            # 静图多图到这里就齐了。实况/多格视频常只有封面：有登录 Cookie 才补视频轨，
-            # 没有 Cookie 时 A/B/C 只会空响应或 403，不再重跑。
+            # 静图多图到这里就齐了。实况/多格没有视频轨时，保留已经拿到的图片。
             host = urlsplit(url).hostname or ""
             is_douyin = (host == "douyin.com" or host.endswith(".douyin.com")
                          or host == "iesdouyin.com" or host.endswith(".iesdouyin.com"))
@@ -2035,7 +1945,7 @@ class ParseWorker(QThread):
                     public_id = get_aweme_id(public_url)
                     if not public_id:
                         raise ValueError("公开链接未提供作品 ID")
-                    self._log("优先免 Cookie 解析公开分享页…")
+                    self._log("优先解析公开分享页…")
                     public_item = None
                     try:
                         public_item = line_b_share_page(
@@ -2075,35 +1985,22 @@ class ParseWorker(QThread):
                     if (has_video or has_image) and (
                         has_video or not is_multi or still_done
                     ):
-                        self._log("免 Cookie 解析成功 ✓，可直接下载", "ok")
+                        self._log("解析成功 ✓，可直接下载", "ok")
                         self.ok.emit(public_item, public_media)
                         return
                     early_item = public_item
                     url = public_url
                     is_short = False
-                    # 缺的是格内视频。线路 W 才补得到，而且必须有登录 Cookie。
-                    if not (self.cookie_path and os.path.isfile(self.cookie_path)):
-                        self._log(
-                            "多格未见视频轨，且没有登录 Cookie，使用已经拿到的图片",
-                            "warn",
-                        )
-                        self.ok.emit(early_item, public_media)
-                        return
-                    self._log("已拿到图片但多格未见视频轨，改用登录 Cookie 补全…", "info")
+                    self._log("多格未见视频轨，使用已经拿到的图片", "warn")
+                    self.ok.emit(early_item, public_media)
+                    return
                 except DouyinAccessBlocked:
                     raise
                 except Exception as exc:
                     self._log(f"匿名分享页未成功：{exc}；尝试备用线路", "warn")
 
-            # 步骤2：仅在备用线路需要时读取用户已配置的 Cookie（可选）。
-            cookie_str = ""; s_v_web_id = ""; cookie_dict = {}
-            if self.cookie_path and os.path.isfile(self.cookie_path):
-                try:
-                    cookie_str, cookie_dict = load_cookies(self.cookie_path)
-                    s_v_web_id = cookie_dict.get("s_v_web_id", "")
-                    self._log(f"备用线路加载可选 Cookie（{len(cookie_dict)} 个字段）")
-                except Exception:
-                    self._log("可选 Cookie 文件不可用，继续匿名解析", "warn")
+            cookie_str = ""
+            s_v_web_id = ""
 
             if is_qishui_url(url):
                 self._log("识别为汽水音乐")
@@ -2154,20 +2051,14 @@ class ParseWorker(QThread):
 
             if is_slides:
                 # 多格图集/视频集：
-                #   W = PC Web detail（登录 Cookie 下最完整，含 images[i].video）
                 #   B = reflow 分享页（只有封面图）
                 #   A = Mobile detail（常 images_base 软过滤）
                 #   C = note 页 SSR
-                self._log(
-                    "识别为图集/实况（is_slides），线路W/A/B/C 并发解析…",
-                )
+                self._log("识别为图集/实况（is_slides），线路A/B/C 并发解析…")
                 c_done = True
-                item_w = item_a = item_b = item_c = None
-                with ThreadPoolExecutor(max_workers=4) as pool:
-                    fw = pool.submit(
-                        line_w_web_detail, aweme_id, cookie_str,
-                        make_log_cb("线路W Web"),
-                    )
+                item_w = None
+                item_a = item_b = item_c = None
+                with ThreadPoolExecutor(max_workers=3) as pool:
                     fa = pool.submit(
                         line_a_mobile, aweme_id, cookie_str,
                         make_log_cb("线路A Mobile"),
@@ -2195,7 +2086,7 @@ class ParseWorker(QThread):
                             self._log(f"{label} 失败: {e}", "warn")
                             return None, None
 
-                    item_w, blk_w = _take(fw, "线路W Web")
+                    blk_w = None
                     item_a, blk_a = _take(fa, "线路A Mobile")
                     item_b, blk_b = _take(fb, "线路B 分享页")
                     item_c, blk_c = _take(fc, "线路C note页")
@@ -2219,18 +2110,12 @@ class ParseWorker(QThread):
                     n_fr = len(_collect_live_frames(item))
                     self._log(
                         f"slides 合并：共 {n_img} 格 · 含视频轨 {n_vid} · "
-                        f"帧表 {n_fr}（W={item_w is not None} "
-                        f"A={item_a is not None} B={item_b is not None} "
-                        f"C={item_c is not None}）",
+                        f"帧表 {n_fr}（A={item_a is not None} "
+                        f"B={item_b is not None} C={item_c is not None}）",
                         "ok" if n_vid or n_fr else "warn",
                     )
                     if n_img and not n_vid and not n_fr:
-                        self._log(
-                            "提示：各线路均未拿到格内视频地址。"
-                            "请确认 Cookie 为已登录的 www.douyin.com 导出，"
-                            "并尽量新导出后再解析。",
-                            "warn",
-                        )
+                        self._log("提示：各线路均未拿到格内视频地址，已保留图片。", "warn")
             else:
                 try:
                     self._log("尝试 线路A Mobile…")
@@ -2345,8 +2230,8 @@ class ParseWorker(QThread):
                     "所有解析线路均失败：\n" +
                     "\n".join(f"  · {e}" for e in errors) +
                     "\n\n可能原因：\n"
-                    "  · 平台暂时限制匿名访问或需要登录（可选配置 Cookie）\n"
-                    "  · 作者开启了私密帐号，且当前 Cookie 对应账号无权查看\n"
+                    "  · 平台暂时限制访问，或作品需要登录\n"
+                    "  · 作者开启了私密帐号\n"
                     "  · 视频已删除\n"
                     "  · 网络连接问题")
 
@@ -2368,8 +2253,7 @@ class ParseWorker(QThread):
                 f"，其中 {live_n} 张实况）→ {files_n} 个文件", "ok")
             if aweme_type in (2, 68) and vid_n == 0 and live_n == 0:
                 self._log(
-                    "未取到格内视频，只有静图。多格视频集请确保 Cookie 为"
-                    "已登录 www.douyin.com 导出，并看日志是否有「线路W」成功。",
+                    "未取到格内视频，只有静图。",
                     "warn",
                 )
             self.ok.emit(item, media)
@@ -2786,7 +2670,6 @@ class PageDouyin(QWidget):
         self._parse_worker = None
         self._dl_worker    = None
         self._auto_dl      = False   # 解析成功后是否自动开始下载
-        self._cookie_auto_tried = False  # 本会话是否已尝试过自动加载 Cookie
         self._nav_busy = False  # 解析或下载中（侧栏进度线可见）
         self._tail_url_text = ""
         self._tail_expected_paths = []
@@ -2806,9 +2689,8 @@ class PageDouyin(QWidget):
         root.setSpacing(6)
 
         # ══ 顶部：单卡片「解析与下载」════════════════════════════════════════
-        #    第1行：Cookie（左） + 保存位置（右）
-        #    第2行：视频链接
-        #    第3行：链接 + 取消 + 进度 + 状态
+        #    第1行：视频链接
+        #    第2行：链接 + 取消 + 进度 + 状态
         # 功能区分区 #1：解析与下载（无圆角外框，融入 Tab 内容区）
         gb_main = make_card("CardDouyinParse", borderless=True)
         gv = QVBoxLayout(gb_main)
@@ -2832,54 +2714,6 @@ class PageDouyin(QWidget):
         gv_body.setContentsMargins(0, 0, 0, 0)
         gv_body.setSpacing(7)
         gv.addWidget(body_main, 1)
-
-        # 保存目录与 Cookie 由「关于」弹窗统一管理，页面整行隐藏
-        self._conf_wrapper = QWidget()
-        wrap_l = QVBoxLayout(self._conf_wrapper)
-        wrap_l.setContentsMargins(0, 0, 0, 0)
-        wrap_l.setSpacing(0)
-
-        conf_row = QHBoxLayout()
-        conf_row.setSpacing(8)
-
-        # ── Cookie 列（「安装」「选择文件」在行首；状态提示上移到标题行右端）──
-        ck_col = QVBoxLayout()
-        ck_col.setSpacing(5)
-
-        ck_head = QHBoxLayout()
-        ck_head.setSpacing(8)
-        lbl_ck = QLabel("Cookie 文件（可选，仅备用线路使用）")
-        lbl_ck.setObjectName("SecTitle")
-        ck_head.addWidget(lbl_ck, 0)
-        self.ck_status = _ElideLabel("")
-        self.ck_status.setObjectName("StatusLbl")
-        self.ck_status.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        ck_head.addWidget(self.ck_status, 1)
-        ck_col.addLayout(ck_head)
-
-        ck_row = QHBoxLayout()
-        ck_row.setSpacing(6)
-        self.btn_ck = QPushButton("选择文件")
-        self.btn_ck.setObjectName("BtnSmall")
-        self.btn_ck.setMinimumWidth(72)
-        self.btn_ck.clicked.connect(self._pick_cookie)
-        ck_row.addWidget(self.btn_ck)
-        self.ck_path = QLineEdit()
-        self.ck_path.setPlaceholderText("自动扫描下载目录…")
-        self.ck_path.setReadOnly(True)
-        self._ck_path_icon_action = apply_folder_path_edit(self.ck_path)
-        self.ck_path.textChanged.connect(self._on_cookie_change)
-        ck_row.addWidget(self.ck_path, 1)
-        ck_col.addLayout(ck_row)
-        self._cookie_loaded_via = None
-        conf_row.addLayout(ck_col, 60)
-
-        # 保存位置已移至批量下载区域的 link_row 中
-        conf_row.addStretch(40)
-
-        wrap_l.addLayout(conf_row)
-        gv_body.addWidget(self._conf_wrapper)
-        self._conf_wrapper.setVisible(False)
 
         # ── 左 70% + 右 30% 双栏布局 ─────────────────────────────────
         # 第1行：抖音链接 + 取消
@@ -3078,9 +2912,6 @@ class PageDouyin(QWidget):
         # theme.changed 在 __init__ 开头就已连接，控件可能还没建完 → 先探测
         if hasattr(self, "dir_hint"):
             self.dir_hint.setStyleSheet(f"color:{tk('text_faint')}; font-size:12px;")
-        if hasattr(self, "ck_path"):
-            restyle_folder_path_edit(self.ck_path, getattr(self, "_ck_path_icon_action", None))
-            self._on_cookie_change(self.ck_path.text())   # Cookie 状态色 / 按钮样式跟随主题
         if hasattr(self, "save_edit"):
             restyle_folder_path_edit(self.save_edit, getattr(self, "_save_edit_icon_action", None))
         if hasattr(self, "url_edit"):
@@ -3215,154 +3046,6 @@ class PageDouyin(QWidget):
             self._dl_progress_line.set_progress(pct, color)
         except Exception:
             pass
-
-        # 保存目录与 Cookie 由「关于」弹窗统一管理，页面 UI 隐藏
-        self.btn_ck.setVisible(False)
-        self.ck_path.setVisible(False)
-        self.ck_status.setVisible(False)
-        self._conf_wrapper.setVisible(False)
-
-    # ── Cookie ────────────────────────────────────────────────────────────────
-
-    def showEvent(self, event):
-        """公开视频默认匿名解析，不自动扫描下载目录中的 Cookie。"""
-        super().showEvent(event)
-        if self._cookie_auto_tried:
-            return
-        self._cookie_auto_tried = True
-        # 仅刷新明确配置的路径，不搜索或导入其它登录文件。
-        self._on_cookie_change(self.ck_path.text())
-
-    def _set_cookie_btn_loaded(self, loaded: bool):
-        """加载成功 → 绿色「已加载」；否则恢复「选择文件」。仍可点击重新选择。"""
-        btn = getattr(self, "btn_ck", None)
-        if btn is None:
-            return
-        if loaded:
-            btn.setText("已加载")
-            btn.setStyleSheet(
-                f"QPushButton{{background:{tk('ok')}; color:#ffffff;"
-                f"border:1px solid {tk('ok')}; border-radius:6px;"
-                f"padding:4px 12px; font-weight:600;}}"
-                f"QPushButton:hover{{background:{tk('ok')}; color:#ffffff; opacity:0.9;}}"
-            )
-        else:
-            btn.setText("选择文件")
-            btn.setStyleSheet("")  # 交回 BtnSmall / 主题样式
-            # 强制刷新 objectName 样式
-            btn.style().unpolish(btn)
-            btn.style().polish(btn)
-            btn.update()
-
-    def _auto_load_cookie(self):
-        """扫描下载目录，选中最合适的抖音 Cookie 文件并填入路径。"""
-        cur = (self.ck_path.text() or "").strip()
-        if cur and os.path.isfile(cur):
-            # 已有有效路径（例如用户刚选手动），只刷新按钮态
-            self._on_cookie_change(cur)
-            return
-
-        dirs = []
-        # 优先：当前「保存位置」（默认就是 ~/Downloads）
-        if hasattr(self, "save_edit"):
-            save_dir = (self.save_edit.text() or "").strip()
-            if save_dir:
-                dirs.append(save_dir)
-        # 再扫常见下载目录
-        for d in _default_download_dirs():
-            dirs.append(d)
-
-        path = find_best_cookie_file(dirs)
-        if path:
-            self._cookie_loaded_via = "auto"
-            # setReadOnly 不阻止程序 setText → 会触发 _on_cookie_change
-            self.ck_path.setText(path.replace("\\", "/"))
-            name = os.path.basename(path)
-            self._log(
-                f"✓ 已自动从下载目录加载 Cookie「{name}」，"
-                f"无需再点「选择文件」（路径：{path}）",
-                "ok",
-            )
-            self._set_status("Cookie 已自动加载 ✓", "#22c55e")
-        else:
-            self._cookie_loaded_via = None
-            self._set_cookie_btn_loaded(False)
-            self._log(
-                "下载目录未找到可用 Cookie（Netscape .txt，含 douyin.com），"
-                "请点「选择文件」手动指定",
-                "warn",
-            )
-
-    def _pick_cookie(self):
-        # 对话框默认打开当前路径或下载目录，少翻几层
-        start = (self.ck_path.text() or "").strip()
-        if start and os.path.isfile(start):
-            start = os.path.dirname(start)
-        elif hasattr(self, "save_edit") and self.save_edit.text().strip():
-            start = self.save_edit.text().strip()
-        else:
-            dd = _default_download_dirs()
-            start = dd[0] if dd else ""
-        p, _ = QFileDialog.getOpenFileName(
-            self, "选择 cookies.txt", start,
-            "Cookie 文件 (*.txt);;所有文件 (*.*)",
-        )
-        if p:
-            self._cookie_loaded_via = "manual"
-            # setReadOnly 不阻止程序调用 setText，只阻止用户键盘输入
-            self.ck_path.setText(p)
-            self._log(f"✓ 已手动加载 Cookie：{p}", "ok")
-
-    def _on_cookie_change(self, path):
-        if not path or not os.path.isfile(path):
-            self.ck_status.setFullText("")
-            self._set_cookie_btn_loaded(False)
-            return
-        try:
-            _, d = load_cookies(path)
-            has_sid  = "sid_tt" in d or "sessionid" in d
-            has_svid = "s_v_web_id" in d
-            count    = len(d)
-            via_auto = getattr(self, "_cookie_loaded_via", None) == "auto"
-            if has_sid and has_svid:
-                if via_auto:
-                    msg = (f"✅ 已自动加载（{count} 字段，含登录态）"
-                           f"· 无需再点「选择文件」")
-                else:
-                    msg = f"✅ Cookie 有效（{count} 个字段，含登录态）"
-                self.ck_status.setStyleSheet(f"color:{tk('ok')};")
-                self._set_cookie_btn_loaded(True)
-            elif count > 0:
-                need = []
-                if not has_sid:
-                    need.append("sid_tt/sessionid")
-                if not has_svid:
-                    need.append("s_v_web_id")
-                prefix = "已自动加载但" if via_auto else ""
-                msg = f"⚠ {prefix}缺少字段: {', '.join(need) or '关键登录字段'}"
-                self.ck_status.setStyleSheet(f"color:{tk('warn')};")
-                # 文件已读到仍算加载成功，按钮变绿；缺字段在状态里提示
-                self._set_cookie_btn_loaded(True)
-            else:
-                msg = "⚠ 文件中无 douyin.com Cookie"
-                self.ck_status.setStyleSheet(f"color:{tk('warn')};")
-                self._set_cookie_btn_loaded(False)
-            self.ck_status.setFullText(msg)
-        except Exception as e:
-            self.ck_status.setFullText(f"❌ 读取失败: {e}")
-            self.ck_status.setStyleSheet(f"color:{tk('err')};")
-            self._set_cookie_btn_loaded(False)
-
-    def _cookie_help(self):
-        from styles.style_all import message_box_info
-        message_box_info(
-            self,
-            "获取 cookies.txt",
-            "1. Chrome 安装扩展 Get cookies.txt LOCALLY\n"
-            "2. 登录 www.douyin.com\n"
-            "3. 点扩展图标 → Export → 保存到「下载」文件夹\n"
-            "4. 程序会自动扫描加载，按钮变绿即可",
-        )
 
     # ── 解析 ──────────────────────────────────────────────────────────────────
 
@@ -3509,9 +3192,6 @@ class PageDouyin(QWidget):
             self._log("剪贴板里没有抖音链接，输入框也是空的", "warn")
             self._set_status("没有链接", "#f97316")
             return
-        if not self.ck_path.text().strip():
-            self._log("使用免 Cookie 模式解析公开视频", "info")
-
         self._auto_dl = True          # 解析成功即自动下载
         self._parse(text)
 
@@ -3536,7 +3216,7 @@ class PageDouyin(QWidget):
         # 侧栏：解析一开始就出灰色整线
         self._emit_nav_progress(True, mode="busy")
 
-        self._parse_worker = ParseWorker(url_text, self.ck_path.text().strip())
+        self._parse_worker = ParseWorker(url_text, "")
         self._parse_worker.ok.connect(self._on_parse_ok)
         self._parse_worker.err.connect(self._on_parse_err)
         self._parse_worker.log.connect(self._log)
@@ -3876,7 +3556,6 @@ class PageDouyin(QWidget):
         """导出抖音页设置，供 user_prefs 落盘。"""
         return {
             "save_path": (self.save_edit.text() or "").strip(),
-            "cookie_path": (self.ck_path.text() or "").strip(),
         }
 
     def apply_settings(self, d: dict):
@@ -3890,13 +3569,6 @@ class PageDouyin(QWidget):
                 self.save_edit.setText(path.replace("\\", "/"))
             finally:
                 self.save_edit.blockSignals(False)
-        ck = (d.get("cookie_path") or "").strip()
-        if ck and os.path.isfile(ck):
-            self.ck_path.blockSignals(True)
-            try:
-                self.ck_path.setText(ck.replace("\\", "/"))
-            finally:
-                self.ck_path.blockSignals(False)
 
     def shutdown(self):
         """主窗口关窗时调用：打断解析/下载线程。"""

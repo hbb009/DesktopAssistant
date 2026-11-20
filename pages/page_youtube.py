@@ -49,132 +49,6 @@ from utils.download_watchdog import (
 from utils.ytdlp_runtime import HAS_YTDLP, HAS_YTDLP_EJS, YTDLP_VER, load_ytdlp
 
 
-# 自动扫描 Cookie 时优先匹配的文件名（用户导出扩展默认名）
-_YT_COOKIE_PREFERRED_NAMES = (
-    "www.youtube.com_cookies.txt",
-    "youtube.com_cookies.txt",
-    "youtube_cookies.txt",
-    "cookies.txt",
-)
-
-
-def _default_download_dirs() -> list:
-    """常见下载目录：保存位置 / 用户 Downloads / 下载。"""
-    dirs, seen = [], set()
-
-    def _add(p):
-        p = os.path.normpath(os.path.expanduser(p or ""))
-        if not p:
-            return
-        key = os.path.normcase(p)
-        if key in seen:
-            return
-        if os.path.isdir(p):
-            seen.add(key)
-            dirs.append(p)
-
-    home = os.path.expanduser("~")
-    for name in ("Downloads", "下载"):
-        _add(os.path.join(home, name))
-    up = os.environ.get("USERPROFILE") or os.environ.get("HOME") or ""
-    if up:
-        for name in ("Downloads", "下载"):
-            _add(os.path.join(up, name))
-    return dirs
-
-
-def _file_has_youtube_cookies(path: str) -> bool:
-    """粗判 Netscape cookie 文件是否含 youtube 域。"""
-    try:
-        if not path or not os.path.isfile(path):
-            return False
-        if os.path.getsize(path) > 2 * 1024 * 1024:
-            return False
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            # 只读前 64KB 足够判断域名
-            head = f.read(65536).lower()
-        return ("youtube.com" in head) or (".youtube." in head)
-    except Exception:
-        return False
-
-
-def _score_youtube_cookie_file(path: str) -> int:
-    """评分：优先完整登录态 + 字段多。找不到有效内容返回 -1。"""
-    if not _file_has_youtube_cookies(path):
-        return -1
-    try:
-        text = open(path, encoding="utf-8", errors="ignore").read()
-    except Exception:
-        return -1
-    # 简单按行数 / 关键字段计分
-    lines = [ln for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
-    score = len(lines)
-    strong_keys = (
-        "LOGIN_INFO", "SAPISID", "__Secure-1PSID", "__Secure-3PSID",
-        "SID", "HSID", "SSID", "APISID",
-    )
-    for k in strong_keys:
-        if k in text:
-            score += 200
-    # 文件名命中优先名再加分
-    base = os.path.basename(path).lower()
-    for i, pref in enumerate(_YT_COOKIE_PREFERRED_NAMES):
-        if base == pref.lower():
-            score += 500 - i * 50
-            break
-    if "youtube" in base:
-        score += 100
-    return score
-
-
-def find_youtube_cookie_file(search_dirs) -> str:
-    """在目录顶层找最合适的 YouTube Netscape Cookie。
-
-    优先：www.youtube.com_cookies.txt 等常见导出名；
-    其次：任意含 youtube.com 的 .txt。
-    找不到返回 ""。
-    """
-    # 1) 优先精确文件名
-    for d in search_dirs or []:
-        if not d or not os.path.isdir(d):
-            continue
-        for name in _YT_COOKIE_PREFERRED_NAMES:
-            p = os.path.join(d, name)
-            if os.path.isfile(p) and _file_has_youtube_cookies(p):
-                return os.path.normpath(p)
-
-    # 2) 扫全部 .txt 评分
-    candidates = []
-    for d in search_dirs or []:
-        if not d or not os.path.isdir(d):
-            continue
-        try:
-            names = os.listdir(d)
-        except Exception:
-            continue
-        for name in names:
-            if not name.lower().endswith(".txt"):
-                continue
-            low = name.lower()
-            if low in ("readme.txt", "license.txt", "changelog.txt"):
-                continue
-            path = os.path.join(d, name)
-            if not os.path.isfile(path):
-                continue
-            sc = _score_youtube_cookie_file(path)
-            if sc < 0:
-                continue
-            try:
-                mtime = os.path.getmtime(path)
-            except Exception:
-                mtime = 0
-            candidates.append((sc, mtime, path))
-    if not candidates:
-        return ""
-    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
-    return os.path.normpath(candidates[0][2])
-
-
 # YouTube 链接：完整 URL / 短链 / 分享文案中的 URL
 _YT_URL_RE = re.compile(
     r"(https?://(?:www\.)?(?:youtube\.com|youtu\.be|music\.youtube\.com|m\.youtube\.com)"
@@ -225,9 +99,8 @@ _FALLBACK_AUDIO = ("仅音频 (m4a/mp3)", "ba/bestaudio/b/best", True)
 #  下载流程（两阶段，必须按此设计，禁止「解析一套、下载另一套」）
 #  ---------------------------------------------------------------------------
 #  1) 解析 extract_with_strategies(url, cookie)
-#     · 多策略依次尝试（移动端无 Cookie / 网页+Cookie / 默认…）
-#     · 任一策略拿到「可下载 formats」即成功
-#     · 返回 info + extract_profile（策略名 / 是否 Cookie / player_client）
+#     · 多策略依次尝试，拿到可下载 formats 即成功
+#     · 返回 info + extract_profile（策略名 / player_client）
 #  2) 画质 build_quality_options(info)
 #     · 用解析结果里的真实 format_id 生成选项（默认第一项=最佳）
 #  3) 下载 download（复用 extract_profile + 选中 format_id）
@@ -240,42 +113,22 @@ _FALLBACK_AUDIO = ("仅音频 (m4a/mp3)", "ba/bestaudio/b/best", True)
 # android_vr / tv / web_safari(HLS) 更可能真下到文件。
 EXTRACT_STRATEGIES = [
     {
-        "name": "默认客户端 + Cookie",
-        "use_cookie": True,
-        "extractor_args": None,
-    },
-    {
-        "name": "tv + Cookie",
-        "use_cookie": True,
-        "extractor_args": {"youtube": {"player_client": ["tv"]}},
-    },
-    {
-        "name": "web_safari + Cookie",
-        "use_cookie": True,
-        "extractor_args": {"youtube": {"player_client": ["web_safari"]}},
-    },
-    {
-        "name": "web+mweb + Cookie",
-        "use_cookie": True,
-        "extractor_args": {"youtube": {"player_client": ["web", "mweb"]}},
-    },
-    {
-        "name": "默认客户端（无 Cookie）",
+        "name": "默认客户端",
         "use_cookie": False,
         "extractor_args": None,
     },
     {
-        "name": "android_vr（无 Cookie）",
+        "name": "android_vr",
         "use_cookie": False,
         "extractor_args": {"youtube": {"player_client": ["android_vr"]}},
     },
     {
-        "name": "tv+web_embedded（无 Cookie）",
+        "name": "tv+web_embedded",
         "use_cookie": False,
         "extractor_args": {"youtube": {"player_client": ["tv", "web_embedded"]}},
     },
     {
-        "name": "仅 Android（无 Cookie）",
+        "name": "仅 Android",
         "use_cookie": False,
         "extractor_args": {"youtube": {"player_client": ["android"]}},
     },
@@ -283,11 +136,9 @@ EXTRACT_STRATEGIES = [
 
 # 下载 403 时优先换这些客户端（不锁解析时的 136+140）
 _403_FALLBACK_ORDER = (
-    "android_vr（无 Cookie）",
-    "默认客户端（无 Cookie）",
-    "tv+web_embedded（无 Cookie）",
-    "tv + Cookie",
-    "web_safari + Cookie",
+    "android_vr",
+    "默认客户端",
+    "tv+web_embedded",
 )
 _403_FALLBACK_FMT = "bv*+ba/b/bestvideo*+bestaudio/best/18/best"
 
@@ -750,10 +601,9 @@ def _base_ydl_opts(
     use_cookie: bool = True,
     extractor_args=None,
 ) -> dict:
-    """YouTube 通用选项：EJS + JS 运行时；Cookie / player_client 由策略决定。
+    """YouTube 通用选项：EJS + JS 运行时，由策略选择 player_client。
 
-    注意：use_cookie=False 时绝不能带 cookiefile——Android 客户端遇 Cookie
-    会被跳过，反而只剩网页端 → 更容易 bot / 0 formats。
+    不向 yt-dlp 附带登录文件。Android 客户端遇到登录文件会被跳过。
     """
     opts = {
         "quiet": True,
@@ -777,7 +627,7 @@ def _base_ydl_opts(
         }
     if not download:
         opts["skip_download"] = True
-    # 不把 Cookie 交给 yt-dlp。Android 客户端遇到 Cookie 还会被跳过。
+    # 参数保留，避免改调用签名。不向 yt-dlp 附带登录文件。
     del cookie_path, use_cookie
     if extractor_args:
         opts["extractor_args"] = extractor_args
@@ -1034,22 +884,16 @@ def _friendly_ytdlp_error(msg: str) -> str:
 
     if "format is not available" in low or "only images are available" in low or "未拿到" in msg:
         tips.append(
-            "拿不到可下载的视频流。程序会自动切换「移动端 / 网页+Cookie」多策略；"
-            "若仍失败，多半是人机验证或 Cookie 无效。"
+            "拿不到可下载的视频流。程序会换客户端再试；若仍失败，多半是人机验证或视频不可用。"
         )
     if "sign in to confirm" in low or "not a bot" in low:
-        tips.append(
-            "触发了 YouTube 人机验证。请：\n"
-            "  1) 浏览器登录 youtube.com\n"
-            "  2) 用扩展「Get cookies.txt LOCALLY」导出完整 cookies.txt\n"
-            "  3) 本页重新选择 Cookie（需含登录态，不能只有 VISITOR 之类）"
-        )
+        tips.append("触发了 YouTube 人机验证。公开视频可换网络后再试；需要登录才能看的视频无法下载。")
     if "private video" in low:
         tips.append("私密视频无法下载。")
     if "video unavailable" in low:
         tips.append("视频不可用（可能已删除、版权或地区限制）。")
     if "confirm your age" in low or ("age" in low and "sign in" in low):
-        tips.append("年龄限制内容需要完整登录态 Cookie。")
+        tips.append("年龄限制内容需要登录，公开解析无法下载。")
     if "403" in low and "forbidden" in low:
         tips.append(
             "googlevideo 拒绝了媒体地址（HTTP 403）。网页端/默认客户端列出的 "
@@ -1123,7 +967,6 @@ class YtParseWorker(QThread):
             return
         self.log.emit(f"提取链接：{url}", "info")
         self.cookie_path = ""
-        self.log.emit("本次不使用 Cookie", "info")
         js_name, js_path = find_js_runtime()
         if js_name:
             self.log.emit(f"JS 运行时：{js_name}（签名挑战需要）", "info")
@@ -1222,13 +1065,13 @@ class YtParseWorker(QThread):
             )
             if adaptive and max_q < 720:
                 self.log.emit(
-                    "提示：当前仅拿到较低分辨率自适应流；可换网络/更新 Cookie 后重试",
+                    "提示：当前仅拿到较低分辨率自适应流；可换网络后重试",
                     "warn",
                 )
             elif not adaptive and max_q and max_q < 720:
                 self.log.emit(
                     "提示：仅 progressive 低清流（常见于移动端接口）；"
-                    "高清需网页端自适应流，请确认 Cookie 完整并重试",
+                    "高清需要网页端自适应流",
                     "warn",
                 )
             if live_n:
@@ -1701,16 +1544,16 @@ class YtDownloadWorker(QThread):
             self.log.emit("未检测到 Deno/Node.js，下载很可能失败", "warn")
         self.log.emit(f"保存到：{save_dir}", "info")
 
-        # 复用解析时的客户端，但不附带 Cookie。
+        # 复用解析时的客户端。
         profile = self.extract_profile or {}
         use_cookie = False
         ck = ""
         ea = profile.get("extractor_args")
         if profile.get("name"):
-            self.log.emit(f"复用解析策略：{profile['name']}（不使用 Cookie）", "info")
+            self.log.emit(f"复用解析策略：{profile['name']}", "info")
         else:
             ea = None
-            self.log.emit("无解析策略缓存，回退：默认客户端（不使用 Cookie）", "warn")
+            self.log.emit("无解析策略缓存，回退：默认客户端", "warn")
 
         title = self.video_meta.get("title") or "youtube_video"
         vid = self.video_meta.get("id") or ""
@@ -2196,7 +2039,6 @@ class PageYoutube(QWidget):
         self._quality_options = []
         self._selected_quality_idx = 0
         self._quality_cards = []
-        self._cookie_auto_tried = False   # 本会话是否已尝试自动加载 Cookie
         self._cookie_loaded_via = None    # 'auto' | 'manual' | None
         self._nav_busy = False  # 解析或下载中（侧栏进度线可见）
         self._tail_url_text = ""
@@ -2227,49 +2069,6 @@ class PageYoutube(QWidget):
         gv_body.setContentsMargins(0, 0, 0, 0)
         gv_body.setSpacing(7)
         gv.addWidget(body_main, 1)
-
-        self._conf_wrapper = QWidget()
-        wrap_l = QVBoxLayout(self._conf_wrapper)
-        wrap_l.setContentsMargins(0, 0, 0, 0)
-        wrap_l.setSpacing(0)
-
-        conf_row = QHBoxLayout()
-        conf_row.setSpacing(8)
-
-        ck_col = QVBoxLayout()
-        ck_col.setSpacing(5)
-        ck_head = QHBoxLayout()
-        ck_head.setSpacing(8)
-        lbl_ck = QLabel("Cookie 文件（可选，Netscape .txt）")
-        lbl_ck.setObjectName("SecTitle")
-        ck_head.addWidget(lbl_ck, 0)
-        self.ck_status = _ElideLabel("")
-        self.ck_status.setObjectName("StatusLbl")
-        self.ck_status.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.ck_status.setStyleSheet(f"color:{tk('text_faint')}; font-size:12px;")
-        ck_head.addWidget(self.ck_status, 1)
-        ck_col.addLayout(ck_head)
-        ck_row = QHBoxLayout()
-        ck_row.setSpacing(6)
-        self.btn_ck = QPushButton("选择文件")
-        self.btn_ck.setObjectName("BtnSmall")
-        self.btn_ck.setMinimumWidth(72)
-        self.btn_ck.clicked.connect(self._pick_cookie)
-        ck_row.addWidget(self.btn_ck)
-        self.ck_path = QLineEdit()
-        self.ck_path.setPlaceholderText("自动扫描下载目录…")
-        self.ck_path.setReadOnly(True)
-        self._ck_path_icon_action = apply_folder_path_edit(self.ck_path)
-        self.ck_path.textChanged.connect(self._on_cookie_change)
-        ck_row.addWidget(self.ck_path, 1)
-        ck_col.addLayout(ck_row)
-        conf_row.addLayout(ck_col, 60)
-
-        conf_row.addStretch(40)
-
-        wrap_l.addLayout(conf_row)
-        gv_body.addWidget(self._conf_wrapper)
-        self._conf_wrapper.setVisible(False)
 
         # ── Row1：链接输入 + 取消 ────────────────────────────────────────
         row1 = QHBoxLayout()
@@ -2410,8 +2209,6 @@ class PageYoutube(QWidget):
     def refresh_theme(self, *_):
         if hasattr(self, "dir_hint"):
             self.dir_hint.setStyleSheet(f"color:{tk('text_faint')}; font-size:12px;")
-        if hasattr(self, "ck_path"):
-            restyle_folder_path_edit(self.ck_path, getattr(self, "_ck_path_icon_action", None))
         if hasattr(self, "save_edit"):
             restyle_folder_path_edit(self.save_edit, getattr(self, "_save_edit_icon_action", None))
         if hasattr(self, "url_edit"):
@@ -2423,9 +2220,6 @@ class PageYoutube(QWidget):
             restyle_card_title(lbl)
         for frame in getattr(self, "_func_cards", []):
             restyle_card_frame(frame)
-        # Cookie 按钮绿色态要跟主题重刷
-        path = (self.ck_path.text() or "").strip() if hasattr(self, "ck_path") else ""
-        self._set_cookie_btn_loaded(bool(path and os.path.isfile(path)))
 
     # ── 日志 / 进度 ───────────────────────────────────────────────────────────
 
@@ -2567,151 +2361,11 @@ class PageYoutube(QWidget):
         except Exception:
             pass
 
-    # ── Cookie / 目录 ─────────────────────────────────────────────────────────
-
-    def showEvent(self, event):
-        """本会话第一次显示本页时：自动在下载目录扫描并加载 YouTube Cookie。"""
-        super().showEvent(event)
-        if self._cookie_auto_tried:
-            return
-        self._cookie_auto_tried = True
-        QTimer.singleShot(0, self._auto_load_cookie)
-
-    def _set_cookie_btn_loaded(self, loaded: bool):
-        """加载成功 → 绿色「已加载」；否则恢复「选择文件」。仍可点击重选。"""
-        btn = getattr(self, "btn_ck", None)
-        if btn is None:
-            return
-        if loaded:
-            btn.setText("已加载")
-            btn.setStyleSheet(
-                f"QPushButton{{background:{tk('ok')}; color:#ffffff;"
-                f"border:1px solid {tk('ok')}; border-radius:6px;"
-                f"padding:4px 12px; font-weight:600;}}"
-                f"QPushButton:hover{{background:{tk('ok')}; color:#ffffff;}}"
-            )
-        else:
-            btn.setText("选择文件")
-            btn.setStyleSheet("")
-            st = btn.style()
-            if st is not None:
-                st.unpolish(btn)
-                st.polish(btn)
-            btn.update()
-
-    def _auto_load_cookie(self):
-        """扫描下载目录，优先加载 www.youtube.com_cookies.txt。"""
-        cur = (self.ck_path.text() or "").strip()
-        if cur and os.path.isfile(cur):
-            # 已有有效路径（例如用户刚选手动），只刷新按钮态
-            self._on_cookie_change(cur)
-            return
-
-        dirs = []
-        if hasattr(self, "save_edit"):
-            save_dir = (self.save_edit.text() or "").strip()
-            if save_dir:
-                dirs.append(save_dir)
-        for d in _default_download_dirs():
-            dirs.append(d)
-
-        path = find_youtube_cookie_file(dirs)
-        if path:
-            self._cookie_loaded_via = "auto"
-            self.ck_path.setText(path.replace("\\", "/"))  # 触发 _on_cookie_change
-            name = os.path.basename(path)
-            self._log(
-                f"✓ 已自动从下载目录加载 Cookie「{name}」，"
-                f"无需再点「选择文件」（路径：{path}）",
-                "ok",
-            )
-            self._set_status("Cookie 已自动加载 ✓", "#22c55e")
-        else:
-            self._cookie_loaded_via = None
-            self._set_cookie_btn_loaded(False)
-            self._log(
-                "下载目录未找到 YouTube Cookie"
-                "（优先 www.youtube.com_cookies.txt，Netscape .txt），"
-                "请点「选择文件」手动指定；公开视频也可不填",
-                "warn",
-            )
+    # ── 目录 ─────────────────────────────────────────────────────────────────
 
     def _warn_no_ytdlp(self):
         self._log("未检测到 yt-dlp，YouTube 下载不可用。请执行：pip install -U yt-dlp", "err")
         self._set_status("缺少 yt-dlp", "#ef4444")
-
-    def _pick_cookie(self):
-        start = (self.ck_path.text() or "").strip()
-        if start and os.path.isfile(start):
-            start = os.path.dirname(start)
-        elif self.save_edit.text().strip():
-            start = self.save_edit.text().strip()
-        else:
-            dd = _default_download_dirs()
-            start = dd[0] if dd else os.path.expanduser("~/Downloads")
-        p, _ = QFileDialog.getOpenFileName(
-            self, "选择 cookies.txt", start,
-            "Cookie 文件 (*.txt);;所有文件 (*.*)",
-        )
-        if p:
-            self._cookie_loaded_via = "manual"
-            self.ck_path.setText(p.replace("\\", "/"))
-            self._log(f"✓ 已手动加载 Cookie：{p}", "ok")
-
-    def _on_cookie_change(self, path):
-        path = (path or "").strip()
-        if not path or not os.path.isfile(path):
-            self.ck_status.setFullText("")
-            self.ck_status.setStyleSheet(f"color:{tk('text_faint')}; font-size:12px;")
-            self._set_cookie_btn_loaded(False)
-            return
-
-        via_auto = getattr(self, "_cookie_loaded_via", None) == "auto"
-        try:
-            text = open(path, encoding="utf-8", errors="ignore").read()
-        except Exception as e:
-            self.ck_status.setFullText(f"❌ 读取失败: {e}")
-            self.ck_status.setStyleSheet(f"color:{tk('err')}; font-size:12px;")
-            self._set_cookie_btn_loaded(False)
-            return
-
-        low = text.lower()
-        has_yt = ("youtube.com" in low) or (".youtube." in low)
-        lines = [ln for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
-        count = len(lines)
-        strong = any(
-            k in text
-            for k in (
-                "LOGIN_INFO", "SAPISID", "__Secure-1PSID", "__Secure-3PSID",
-                "SID", "HSID", "SSID",
-            )
-        )
-
-        if not has_yt:
-            self.ck_status.setFullText("⚠ 文件中未见 youtube.com")
-            self.ck_status.setStyleSheet(f"color:{tk('warn')}; font-size:12px;")
-            self._set_cookie_btn_loaded(False)
-            return
-
-        if strong:
-            if via_auto:
-                msg = f"✅ 已自动加载（{count} 行，含登录态）· 无需再点「选择文件」"
-            else:
-                msg = f"✅ Cookie 有效（{count} 行，含登录态）"
-            self.ck_status.setStyleSheet(f"color:{tk('ok')}; font-size:12px;")
-            self._set_cookie_btn_loaded(True)
-        elif count > 0:
-            prefix = "已自动加载但" if via_auto else ""
-            msg = f"⚠ {prefix}可能缺少登录字段（LOGIN_INFO/SAPISID 等）"
-            self.ck_status.setStyleSheet(f"color:{tk('warn')}; font-size:12px;")
-            # 文件有效仍算已加载（绿按钮），缺字段在状态里提示
-            self._set_cookie_btn_loaded(True)
-        else:
-            msg = "⚠ Cookie 文件为空"
-            self.ck_status.setStyleSheet(f"color:{tk('warn')}; font-size:12px;")
-            self._set_cookie_btn_loaded(False)
-        # setFullText：窄窗省略显示，完整文案由 setFullText 持有
-        self.ck_status.setFullText(msg)
 
     def _choose_dir(self):
         d = QFileDialog.getExistingDirectory(
@@ -2762,9 +2416,7 @@ class PageYoutube(QWidget):
             "【使用方法】\n"
             "1. 粘贴 YouTube 链接 → 回车自动解析下载\n"
             "2. 选画质 → 自动下载到保存位置\n\n"
-            "【Cookie 说明】\n"
-            "需要登录/人机验证时：Chrome 装扩展 Get cookies.txt LOCALLY\n"
-            "→ 登录 youtube.com → Export 保存到下载目录，程序会自动加载"
+            "需要登录或通过人机验证才能看的视频，公开解析可能失败。"
         )
         try:
             from styles.style_all import message_box_info
@@ -3114,7 +2766,7 @@ class PageYoutube(QWidget):
         # 侧栏：解析一开始就出灰色整线
         self._emit_nav_progress(True, mode="busy")
 
-        self._parse_worker = YtParseWorker(url_text, self.ck_path.text().strip())
+        self._parse_worker = YtParseWorker(url_text, "")
         self._parse_worker.ok.connect(self._on_parse_ok)
         self._parse_worker.err.connect(self._on_parse_err)
         self._parse_worker.log.connect(self._log)
@@ -3256,7 +2908,7 @@ class PageYoutube(QWidget):
             url=url,
             save_dir=save_dir,
             jobs=jobs,
-            cookie_path=self.ck_path.text().strip(),
+            cookie_path="",
             extract_profile=self._info.get("extract_profile") or {},
             formats_full=self._info.get("formats") or [],
             video_meta={
@@ -3383,7 +3035,6 @@ class PageYoutube(QWidget):
         """导出YouTube页设置，供 user_prefs 落盘。"""
         return {
             "save_path": (self.save_edit.text() or "").strip(),
-            "cookie_path": (self.ck_path.text() or "").strip(),
         }
 
     def apply_settings(self, d: dict):
@@ -3397,13 +3048,6 @@ class PageYoutube(QWidget):
                 self.save_edit.setText(path.replace("\\", "/"))
             finally:
                 self.save_edit.blockSignals(False)
-        ck = (d.get("cookie_path") or "").strip()
-        if ck and os.path.isfile(ck):
-            self.ck_path.blockSignals(True)
-            try:
-                self.ck_path.setText(ck.replace("\\", "/"))
-            finally:
-                self.ck_path.blockSignals(False)
 
     def shutdown(self):
         """主窗口关窗时调用：打断解析/下载线程。"""

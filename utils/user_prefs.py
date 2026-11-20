@@ -382,17 +382,15 @@ def default_prefs() -> Dict[str, Any]:
         # hitomi 嵌套段：公共根目录下的 hitomi.la（与 e-hentai.org / pixiv 同级）
         "gallery": {
             "save_path": "",
-            "cookie_path": "",
             "delay_ms": 1200,
             "auto_download": True,
             # 页底「已下记录」左侧开关：开=读 downloaded.txt 的 e-hentai 段防重下
             "check_records": True,
-            "hitomi": {"save_path": "", "cookie_path": "", "check_records": True},
+            "hitomi": {"save_path": "", "check_records": True},
         },
-        # 图集下载 · Pixiv 分页（独立于 e-hentai 的 Cookie / 保存路径等）
+        # 图集下载 · Pixiv 分页（独立于 e-hentai 的保存路径等）
         "gallery_pixiv": {
             "save_path": "",
-            "cookie_path": "",
             "delay_ms": 1200,
             "auto_download": True,
         },
@@ -409,20 +407,20 @@ def default_prefs() -> Dict[str, Any]:
             "silent_copy": True,
             "whitelist": default_clipboard_whitelist(),
         },
-        # 视频下载页（抖音/B站/YouTube/其它视频）：各子页保存路径 + Cookie路径
+        # 视频下载页（抖音/B站/YouTube/其它视频）：各子页保存路径
         # 其它视频（即梦 / LibTV / XVideos / Pornhub / MissAV / x.com）共用 other，统一落到公共保存根下 Video
         # check_records：页底已下记录开关。开=按即梦/LibTV/XVideos/Pornhub/MissAV/x.com 的类型和画质跳过 downloaded.txt 里已有的那一档
         "video": {
-            "douyin": {"save_path": "", "cookie_path": ""},
-            "bilibili": {"save_path": "", "cookie_path": ""},
-            "youtube": {"save_path": "", "cookie_path": ""},
-            "other": {"save_path": "", "cookie_path": "", "check_records": True},
+            "douyin": {"save_path": ""},
+            "bilibili": {"save_path": ""},
+            "youtube": {"save_path": ""},
+            "other": {"save_path": "", "check_records": True},
         },
         # 音频下载 · 汽水音乐（公共保存根下 Audio）
         # save_subdir_names：公共保存各子目录的文件夹名，空则用出厂名
         # check_records：页底防重开关。开=按视频/音频跳过 downloaded.txt 汽水段里已有的那一项
         "audio": {
-            "qishui": {"save_path": "", "cookie_path": "", "check_records": True},
+            "qishui": {"save_path": "", "check_records": True},
         },
         # 积分计算：常用汇率等
         "points_calc": {
@@ -574,6 +572,17 @@ def _migrate_fast_save_prefs(data: Dict[str, Any]) -> None:
         fast.pop(key, None)
 
 
+def _strip_cookie_paths(node) -> None:
+    """丢掉旧版 user.txt 里残留的 cookie_path，避免再次写回。"""
+    if isinstance(node, dict):
+        node.pop("cookie_path", None)
+        for value in node.values():
+            _strip_cookie_paths(value)
+    elif isinstance(node, list):
+        for value in node:
+            _strip_cookie_paths(value)
+
+
 def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
     """用 overlay 覆盖 base（嵌套 dict 递归合并，其它类型整段替换）。"""
     out = deepcopy(base)
@@ -716,6 +725,7 @@ def load_user_prefs() -> Tuple[Dict[str, Any], bool]:
         _migrate_fast_save_prefs(data)
         unlock_api_keys(data)
         merged = _deep_merge(default_prefs(), data)
+        _strip_cookie_paths(merged)
         try:
             from utils.app_paths import rebase_public_save_prefs
             if rebase_public_save_prefs(merged):
@@ -775,6 +785,7 @@ def save_user_prefs(prefs: Dict[str, Any]) -> bool:
     path = user_file_path()
     try:
         payload = _deep_merge(default_prefs(), prefs or {})
+        _strip_cookie_paths(payload)
         payload["version"] = _PREFS_VERSION
         _stamp_whitelist_rev(payload)
         # 确保核心段齐全

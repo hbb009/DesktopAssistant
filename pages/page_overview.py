@@ -1010,10 +1010,10 @@ class PageOverview(QWidget):
         if about is not None and hasattr(about, "_refresh_hotkey_card"):
             QTimer.singleShot(0, about._refresh_hotkey_card)
 
-    def on_enter(self, cookie_alert: bool = False):
+    def on_enter(self):
         about = getattr(self, "about_section", None)
         if about is not None and hasattr(about, "on_enter"):
-            about.on_enter(cookie_alert=cookie_alert)
+            about.on_enter()
 
     def export_whitelist(self):
         about = getattr(self, "about_section", None)

@@ -3,7 +3,7 @@
 # 布局对齐抖音：解析与下载卡 → 媒体内容卡 → 运行日志
 # 引擎：yt-dlp（可选依赖；未安装时给出安装提示，不阻塞其它页面）
 # 说明：抖音页走自研 HTTP 解析；B站与 YouTube 一样走 yt-dlp 官方提取器
-#       （BiliBili / Bangumi 等）。Cookie（SESSDATA）可提升大会员/高画质可用性。
+#       （BiliBili / Bangumi 等）。只下载公开稿件。
 
 import os
 import re
@@ -49,135 +49,6 @@ from utils.download_watchdog import (
 )
 
 from utils.ytdlp_runtime import HAS_YTDLP, HAS_YTDLP_EJS, YTDLP_VER, load_ytdlp
-
-
-# 自动扫描 Cookie 时优先匹配的文件名（用户导出扩展默认名）
-_BILI_COOKIE_PREFERRED_NAMES = (
-    "www.bilibili.com_cookies.txt",
-    "bilibili.com_cookies.txt",
-    "bilibili_cookies.txt",
-    "cookies.txt",
-)
-
-
-def _default_download_dirs() -> list:
-    """常见下载目录：保存位置 / 用户 Downloads / 下载。"""
-    dirs, seen = [], set()
-
-    def _add(p):
-        p = os.path.normpath(os.path.expanduser(p or ""))
-        if not p:
-            return
-        key = os.path.normcase(p)
-        if key in seen:
-            return
-        if os.path.isdir(p):
-            seen.add(key)
-            dirs.append(p)
-
-    home = os.path.expanduser("~")
-    for name in ("Downloads", "下载"):
-        _add(os.path.join(home, name))
-    up = os.environ.get("USERPROFILE") or os.environ.get("HOME") or ""
-    if up:
-        for name in ("Downloads", "下载"):
-            _add(os.path.join(up, name))
-    return dirs
-
-
-def _file_has_bilibili_cookies(path: str) -> bool:
-    """粗判 Netscape cookie 文件是否含 bilibili 域。"""
-    try:
-        if not path or not os.path.isfile(path):
-            return False
-        if os.path.getsize(path) > 2 * 1024 * 1024:
-            return False
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            head = f.read(65536).lower()
-        return (
-            "bilibili.com" in head
-            or "biliapi" in head
-            or ".bili." in head
-            or "b23.tv" in head
-        )
-    except Exception:
-        return False
-
-
-def _score_bilibili_cookie_file(path: str) -> int:
-    """评分：优先完整登录态（SESSDATA）+ 字段多。找不到有效内容返回 -1。"""
-    if not _file_has_bilibili_cookies(path):
-        return -1
-    try:
-        text = open(path, encoding="utf-8", errors="ignore").read()
-    except Exception:
-        return -1
-    lines = [ln for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
-    score = len(lines)
-    # B站关键 Cookie：SESSDATA=登录态，bili_jct=CSRF，DedeUserID=用户
-    strong_keys = (
-        "SESSDATA", "bili_jct", "DedeUserID", "DedeUserID__ckMd5",
-        "sid", "buvid3", "buvid4",
-    )
-    for k in strong_keys:
-        if k in text:
-            score += 200
-    base = os.path.basename(path).lower()
-    for i, pref in enumerate(_BILI_COOKIE_PREFERRED_NAMES):
-        if base == pref.lower():
-            score += 500 - i * 50
-            break
-    if "bilibili" in base or "bili" in base:
-        score += 100
-    return score
-
-
-def find_bilibili_cookie_file(search_dirs) -> str:
-    """在目录顶层找最合适的 B站 Netscape Cookie。
-
-    优先：www.bilibili.com_cookies.txt 等常见导出名；
-    其次：任意含 bilibili.com 的 .txt。
-    找不到返回 ""。
-    """
-    # 1) 优先精确文件名
-    for d in search_dirs or []:
-        if not d or not os.path.isdir(d):
-            continue
-        for name in _BILI_COOKIE_PREFERRED_NAMES:
-            p = os.path.join(d, name)
-            if os.path.isfile(p) and _file_has_bilibili_cookies(p):
-                return os.path.normpath(p)
-
-    # 2) 扫全部 .txt 评分
-    candidates = []
-    for d in search_dirs or []:
-        if not d or not os.path.isdir(d):
-            continue
-        try:
-            names = os.listdir(d)
-        except Exception:
-            continue
-        for name in names:
-            if not name.lower().endswith(".txt"):
-                continue
-            low = name.lower()
-            if low in ("readme.txt", "license.txt", "changelog.txt"):
-                continue
-            path = os.path.join(d, name)
-            if not os.path.isfile(path):
-                continue
-            sc = _score_bilibili_cookie_file(path)
-            if sc < 0:
-                continue
-            try:
-                mtime = os.path.getmtime(path)
-            except Exception:
-                mtime = 0
-            candidates.append((sc, mtime, path))
-    if not candidates:
-        return ""
-    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
-    return os.path.normpath(candidates[0][2])
 
 
 # B站链接：BV/av 完整 URL / b23 短链 / 番剧 / 分享文案中的 URL
@@ -237,25 +108,18 @@ _FALLBACK_AUDIO = ("仅音频 (m4a/mp3)", "ba/bestaudio/b/best", True)
 #  下载流程（两阶段，必须按此设计，禁止「解析一套、下载另一套」）
 #  ---------------------------------------------------------------------------
 #  1) 解析 extract_with_strategies(url, cookie)
-#     · 多策略依次尝试（移动端无 Cookie / 网页+Cookie / 默认…）
-#     · 任一策略拿到「可下载 formats」即成功
-#     · 返回 info + extract_profile（策略名 / 是否 Cookie / player_client）
+#     · 多策略依次尝试，拿到可下载 formats 即成功
+#     · 返回 info + extract_profile（策略名 / player_client）
 #  2) 画质 build_quality_options(info)
 #     · 用解析结果里的真实 format_id 生成选项（默认第一项=最佳）
 #  3) 下载 download（复用 extract_profile + 选中 format_id）
 #     · 禁止下载时再换一套客户端，否则会出现「解析看似成功/下载又 bot」
 # ═══════════════════════════════════════════════════════════════════════════
 
-# B站策略：有 Cookie 优先（大会员/高画质/部分地区）；无 Cookie 兜底公开稿件。
-# 不需要 YouTube 那套 player_client 切换。
+# B站策略：公开稿件。不切换 YouTube 那套 player_client。
 EXTRACT_STRATEGIES = [
     {
-        "name": "默认 + Cookie",
-        "use_cookie": True,
-        "extractor_args": None,
-    },
-    {
-        "name": "默认（无 Cookie）",
+        "name": "默认",
         "use_cookie": False,
         "extractor_args": None,
     },
@@ -720,7 +584,7 @@ def _base_ydl_opts(
     use_cookie: bool = True,
     extractor_args=None,
 ) -> dict:
-    """B站通用选项：Referer 防盗链；Cookie 提升大会员/高画质。
+    """B站通用选项：Referer 防盗链。公开稿件不附带登录文件。
 
     noplaylist=True：多 P 视频默认只下 URL 指定分 P（?p=2），避免整合集。
     B站不依赖 Deno/EJS 解签名；ffmpeg 用于 DASH 音视频合并。
@@ -743,7 +607,7 @@ def _base_ydl_opts(
     }
     if not download:
         opts["skip_download"] = True
-    # 不把 Cookie 交给 yt-dlp。参数保留，调用方仍可传入。
+    # 参数保留，避免改调用签名。不向 yt-dlp 附带登录文件。
     del cookie_path, use_cookie
     if extractor_args:
         opts["extractor_args"] = extractor_args
@@ -940,22 +804,16 @@ def _friendly_ytdlp_error(msg: str) -> str:
 
     if "format is not available" in low or "only images are available" in low or "未拿到" in msg:
         tips.append(
-            "拿不到可下载的视频流。可尝试：导入含 SESSDATA 的 Cookie；"
-            "大会员专享/地区限制内容必须登录 Cookie。"
+            "拿不到可下载的视频流。大会员专享或地区限制的稿件，公开解析可能失败。"
         )
     if "login" in low or "cookie" in low or "403" in low or "412" in low:
-        tips.append(
-            "可能需要登录态 Cookie。请：\n"
-            "  1) 浏览器登录 https://www.bilibili.com\n"
-            "  2) 用扩展「Get cookies.txt LOCALLY」导出 .txt\n"
-            "  3) 本页加载 Cookie（建议含 SESSDATA）"
-        )
+        tips.append("这个稿件可能需要登录，公开解析无法下载。")
     if "premium" in low or "会员" in msg or "大会员" in msg:
-        tips.append("该清晰度可能需要大会员；请用大会员账号导出 Cookie。")
+        tips.append("该清晰度可能需要大会员，公开解析无法下载。")
     if "private" in low or "权限" in msg:
         tips.append("私密/无权限视频无法下载。")
     if "geo" in low or "地区" in msg:
-        tips.append("可能有地区限制，换网络或带对应区 Cookie 再试。")
+        tips.append("可能有地区限制，换网络后再试。")
     if not ffmpeg_ok:
         tips.append(
             "未检测到 ffmpeg。B站高清多为「画面+声音」分轨，合并需要 ffmpeg：\n"
@@ -1018,7 +876,6 @@ class YtParseWorker(QThread):
             return
         self.log.emit(f"提取链接：{url}", "info")
         self.cookie_path = ""
-        self.log.emit("本次不使用 Cookie", "info")
         if not _which_exe("ffmpeg"):
             self.log.emit(
                 "未检测到 ffmpeg — 高清 DASH 合并可能失败，建议 winget install Gyan.FFmpeg",
@@ -1100,13 +957,13 @@ class YtParseWorker(QThread):
             )
             if adaptive and max_q < 720:
                 self.log.emit(
-                    "提示：当前仅拿到较低分辨率自适应流；可换网络/更新 Cookie 后重试",
+                    "提示：当前仅拿到较低分辨率自适应流；可换网络后重试",
                     "warn",
                 )
             elif not adaptive and max_q and max_q < 720:
                 self.log.emit(
                     "提示：仅 progressive 低清流（常见于移动端接口）；"
-                    "高清需网页端自适应流，请确认 Cookie 完整并重试",
+                    "高清需要网页端自适应流",
                     "warn",
                 )
             if live_n:
@@ -1442,16 +1299,16 @@ class YtDownloadWorker(QThread):
             )
         self.log.emit(f"保存到：{save_dir}", "info")
 
-        # 复用解析时的客户端，但不附带 Cookie。
+        # 复用解析时的客户端。
         profile = self.extract_profile or {}
         use_cookie = False
         ck = ""
         ea = profile.get("extractor_args")
         if profile.get("name"):
-            self.log.emit(f"复用解析策略：{profile['name']}（不使用 Cookie）", "info")
+            self.log.emit(f"复用解析策略：{profile['name']}", "info")
         else:
             ea = None
-            self.log.emit("无解析策略缓存，回退：默认客户端（不使用 Cookie）", "warn")
+            self.log.emit("无解析策略缓存，回退：默认客户端", "warn")
 
         title = self.video_meta.get("title") or "bilibili_video"
         vid = self.video_meta.get("id") or ""
@@ -1769,7 +1626,6 @@ class PageBilibili(QWidget):
         self._quality_options = []
         self._selected_quality_idx = 0
         self._quality_cards = []
-        self._cookie_auto_tried = False   # 本会话是否已尝试自动加载 Cookie
         self._cookie_loaded_via = None    # 'auto' | 'manual' | None
         self._nav_busy = False  # 解析或下载中（侧栏进度线可见）
         self._tail_url_text = ""
@@ -1800,50 +1656,6 @@ class PageBilibili(QWidget):
         gv_body.setContentsMargins(0, 0, 0, 0)
         gv_body.setSpacing(7)
         gv.addWidget(body_main, 1)
-
-        # ── 第1块：Cookie 配置（由「关于」弹窗统一管理，页面整行隐藏）──
-        self._conf_wrapper = QWidget()
-        wrap_l = QVBoxLayout(self._conf_wrapper)
-        wrap_l.setContentsMargins(0, 0, 0, 0)
-        wrap_l.setSpacing(0)
-
-        conf_row = QHBoxLayout()
-        conf_row.setSpacing(8)
-
-        ck_col = QVBoxLayout()
-        ck_col.setSpacing(5)
-        ck_head = QHBoxLayout()
-        ck_head.setSpacing(8)
-        lbl_ck = QLabel("Cookie 文件（可选，Netscape .txt）")
-        lbl_ck.setObjectName("SecTitle")
-        ck_head.addWidget(lbl_ck, 0)
-        self.ck_status = _ElideLabel("")
-        self.ck_status.setObjectName("StatusLbl")
-        self.ck_status.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.ck_status.setStyleSheet(f"color:{tk('text_faint')}; font-size:12px;")
-        ck_head.addWidget(self.ck_status, 1)
-        ck_col.addLayout(ck_head)
-        ck_row = QHBoxLayout()
-        ck_row.setSpacing(6)
-        self.btn_ck = QPushButton("选择文件")
-        self.btn_ck.setObjectName("BtnSmall")
-        self.btn_ck.setMinimumWidth(72)
-        self.btn_ck.clicked.connect(self._pick_cookie)
-        ck_row.addWidget(self.btn_ck)
-        self.ck_path = QLineEdit()
-        self.ck_path.setPlaceholderText("自动扫描下载目录…")
-        self.ck_path.setReadOnly(True)
-        self._ck_path_icon_action = apply_folder_path_edit(self.ck_path)
-        self.ck_path.textChanged.connect(self._on_cookie_change)
-        ck_row.addWidget(self.ck_path, 1)
-        ck_col.addLayout(ck_row)
-        conf_row.addLayout(ck_col, 60)
-
-        conf_row.addStretch(40)
-
-        wrap_l.addLayout(conf_row)
-        gv_body.addWidget(self._conf_wrapper)
-        self._conf_wrapper.setVisible(False)
 
         # ── Row1：链接输入 + 取消 ────────────────────────────────────────
         row1 = QHBoxLayout()
@@ -1984,8 +1796,6 @@ class PageBilibili(QWidget):
     def refresh_theme(self, *_):
         if hasattr(self, "dir_hint"):
             self.dir_hint.setStyleSheet(f"color:{tk('text_faint')}; font-size:12px;")
-        if hasattr(self, "ck_path"):
-            restyle_folder_path_edit(self.ck_path, getattr(self, "_ck_path_icon_action", None))
         if hasattr(self, "save_edit"):
             restyle_folder_path_edit(self.save_edit, getattr(self, "_save_edit_icon_action", None))
         if hasattr(self, "url_edit"):
@@ -1997,9 +1807,6 @@ class PageBilibili(QWidget):
             restyle_card_title(lbl)
         for frame in getattr(self, "_func_cards", []):
             restyle_card_frame(frame)
-        # Cookie 按钮绿色态要跟主题重刷
-        path = (self.ck_path.text() or "").strip() if hasattr(self, "ck_path") else ""
-        self._set_cookie_btn_loaded(bool(path and os.path.isfile(path)))
 
     # ── 日志 / 进度 ───────────────────────────────────────────────────────────
 
@@ -2141,150 +1948,11 @@ class PageBilibili(QWidget):
         except Exception:
             pass
 
-    # ── Cookie / 目录 ─────────────────────────────────────────────────────────
-
-    def showEvent(self, event):
-        """本会话第一次显示本页时：自动在下载目录扫描并加载 B站 Cookie。"""
-        super().showEvent(event)
-        if self._cookie_auto_tried:
-            return
-        self._cookie_auto_tried = True
-        QTimer.singleShot(0, self._auto_load_cookie)
-
-    def _set_cookie_btn_loaded(self, loaded: bool):
-        """加载成功 → 绿色「已加载」；否则恢复「选择文件」。仍可点击重选。"""
-        btn = getattr(self, "btn_ck", None)
-        if btn is None:
-            return
-        if loaded:
-            btn.setText("已加载")
-            btn.setStyleSheet(
-                f"QPushButton{{background:{tk('ok')}; color:#ffffff;"
-                f"border:1px solid {tk('ok')}; border-radius:6px;"
-                f"padding:4px 12px; font-weight:600;}}"
-                f"QPushButton:hover{{background:{tk('ok')}; color:#ffffff;}}"
-            )
-        else:
-            btn.setText("选择文件")
-            btn.setStyleSheet("")
-            st = btn.style()
-            if st is not None:
-                st.unpolish(btn)
-                st.polish(btn)
-            btn.update()
-
-    def _auto_load_cookie(self):
-        """扫描下载目录，优先加载 www.bilibili.com_cookies.txt。"""
-        cur = (self.ck_path.text() or "").strip()
-        if cur and os.path.isfile(cur):
-            # 已有有效路径（例如用户刚选手动），只刷新按钮态
-            self._on_cookie_change(cur)
-            return
-
-        dirs = []
-        if hasattr(self, "save_edit"):
-            save_dir = (self.save_edit.text() or "").strip()
-            if save_dir:
-                dirs.append(save_dir)
-        for d in _default_download_dirs():
-            dirs.append(d)
-
-        path = find_bilibili_cookie_file(dirs)
-        if path:
-            self._cookie_loaded_via = "auto"
-            self.ck_path.setText(path.replace("\\", "/"))  # 触发 _on_cookie_change
-            name = os.path.basename(path)
-            self._log(
-                f"✓ 已自动从下载目录加载 Cookie「{name}」，"
-                f"无需再点「选择文件」（路径：{path}）",
-                "ok",
-            )
-            self._set_status("Cookie 已自动加载 ✓", "#22c55e")
-        else:
-            self._cookie_loaded_via = None
-            self._set_cookie_btn_loaded(False)
-            self._log(
-                "下载目录未找到 B站 Cookie"
-                "（优先 www.bilibili.com_cookies.txt，Netscape .txt），"
-                "请点「选择文件」手动指定；公开视频也可不填",
-                "warn",
-            )
+    # ── 目录 ─────────────────────────────────────────────────────────────────
 
     def _warn_no_ytdlp(self):
         self._log("未检测到 yt-dlp，B站下载不可用。请执行：pip install -U yt-dlp", "err")
         self._set_status("缺少 yt-dlp", "#ef4444")
-
-    def _pick_cookie(self):
-        start = (self.ck_path.text() or "").strip()
-        if start and os.path.isfile(start):
-            start = os.path.dirname(start)
-        elif self.save_edit.text().strip():
-            start = self.save_edit.text().strip()
-        else:
-            dd = _default_download_dirs()
-            start = dd[0] if dd else os.path.expanduser("~/Downloads")
-        p, _ = QFileDialog.getOpenFileName(
-            self, "选择 cookies.txt", start,
-            "Cookie 文件 (*.txt);;所有文件 (*.*)",
-        )
-        if p:
-            self._cookie_loaded_via = "manual"
-            self.ck_path.setText(p.replace("\\", "/"))
-            self._log(f"✓ 已手动加载 Cookie：{p}", "ok")
-
-    def _on_cookie_change(self, path):
-        path = (path or "").strip()
-        if not path or not os.path.isfile(path):
-            self.ck_status.setFullText("")
-            self.ck_status.setStyleSheet(f"color:{tk('text_faint')}; font-size:12px;")
-            self._set_cookie_btn_loaded(False)
-            return
-
-        via_auto = getattr(self, "_cookie_loaded_via", None) == "auto"
-        try:
-            text = open(path, encoding="utf-8", errors="ignore").read()
-        except Exception as e:
-            self.ck_status.setFullText(f"❌ 读取失败: {e}")
-            self.ck_status.setStyleSheet(f"color:{tk('err')}; font-size:12px;")
-            self._set_cookie_btn_loaded(False)
-            return
-
-        low = text.lower()
-        has_bili = ("bilibili.com" in low) or ("biliapi" in low) or ("b23.tv" in low)
-        lines = [ln for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
-        count = len(lines)
-        strong = any(
-            k in text
-            for k in (
-                "SESSDATA", "bili_jct", "DedeUserID", "DedeUserID__ckMd5",
-            )
-        )
-
-        if not has_bili:
-            self.ck_status.setFullText("⚠ 文件中未见 bilibili.com / SESSDATA")
-            self.ck_status.setStyleSheet(f"color:{tk('warn')}; font-size:12px;")
-            self._set_cookie_btn_loaded(False)
-            return
-
-        if strong:
-            if via_auto:
-                msg = f"✅ 已自动加载（{count} 行，含登录态）· 无需再点「选择文件」"
-            else:
-                msg = f"✅ Cookie 有效（{count} 行，含登录态）"
-            self.ck_status.setStyleSheet(f"color:{tk('ok')}; font-size:12px;")
-            self._set_cookie_btn_loaded(True)
-        elif count > 0:
-            prefix = "已自动加载但" if via_auto else ""
-            msg = f"⚠ {prefix}可能缺少登录字段（SESSDATA 等）"
-            self.ck_status.setStyleSheet(f"color:{tk('warn')}; font-size:12px;")
-            # 文件有效仍算已加载（绿按钮），缺字段在状态里提示
-            self._set_cookie_btn_loaded(True)
-        else:
-            msg = "⚠ Cookie 文件为空"
-            self.ck_status.setStyleSheet(f"color:{tk('warn')}; font-size:12px;")
-            self._set_cookie_btn_loaded(False)
-        # setFullText：窄窗省略显示，完整文案由 setFullText 持有
-        self.ck_status.setFullText(msg)
 
     def _choose_dir(self):
         d = QFileDialog.getExistingDirectory(
@@ -2326,9 +1994,7 @@ class PageBilibili(QWidget):
             "【使用方法】\n"
             "1. 粘贴 B站链接 / BV号 → 回车自动解析下载\n"
             "2. 选画质 → 自动下载到保存位置\n\n"
-            "【Cookie 说明】\n"
-            "需要大会员/高画质时：Chrome 装扩展 Get cookies.txt LOCALLY\n"
-            "→ 登录 bilibili.com → Export 保存到下载目录，程序会自动加载"
+            "大会员、地区限制或需要登录才能看的稿件，公开解析可能失败。"
         )
         try:
             from styles.style_all import message_box_info
@@ -2680,7 +2346,7 @@ class PageBilibili(QWidget):
         # 侧栏：解析一开始就出灰色整线
         self._emit_nav_progress(True, mode="busy")
 
-        self._parse_worker = YtParseWorker(url_text, self.ck_path.text().strip())
+        self._parse_worker = YtParseWorker(url_text, "")
         self._parse_worker.ok.connect(self._on_parse_ok)
         self._parse_worker.err.connect(self._on_parse_err)
         self._parse_worker.log.connect(self._log)
@@ -2823,7 +2489,7 @@ class PageBilibili(QWidget):
             url=url,
             save_dir=save_dir,
             jobs=jobs,
-            cookie_path=self.ck_path.text().strip(),
+            cookie_path="",
             extract_profile=self._info.get("extract_profile") or {},
             formats_full=self._info.get("formats") or [],
             video_meta={
@@ -2950,7 +2616,6 @@ class PageBilibili(QWidget):
         """导出B站页设置，供 user_prefs 落盘。"""
         return {
             "save_path": (self.save_edit.text() or "").strip(),
-            "cookie_path": (self.ck_path.text() or "").strip(),
         }
 
     def apply_settings(self, d: dict):
@@ -2964,13 +2629,6 @@ class PageBilibili(QWidget):
                 self.save_edit.setText(path.replace("\\", "/"))
             finally:
                 self.save_edit.blockSignals(False)
-        ck = (d.get("cookie_path") or "").strip()
-        if ck and os.path.isfile(ck):
-            self.ck_path.blockSignals(True)
-            try:
-                self.ck_path.setText(ck.replace("\\", "/"))
-            finally:
-                self.ck_path.blockSignals(False)
 
     def shutdown(self):
         """主窗口关窗时调用：打断解析/下载线程。"""

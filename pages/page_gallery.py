@@ -104,7 +104,7 @@ class _RatioCol(QWidget):
     """双列 stretch 比例始终生效：忽略子控件横向 minimumSizeHint。
 
     普通 QHBoxLayout 的 stretch 只分配「满足 min 之后」的剩余空间；
-    左列 Cookie 标题 / 选项行 / 长 placeholder 的 min 很大时，窄窗会变成 8:2。
+    左列标题或长 placeholder 的 min 很大时，窄窗会变成 8:2。
     这里强制横向 min=0，由 70:30 stretch 决定列宽，列内控件再自行收缩/省略。
     """
 
@@ -193,220 +193,7 @@ def _style_delay_spin(spin: QDoubleSpinBox) -> None:
     )
 
 
-# ── Cookie 自动扫描（对齐 YouTube 页逻辑）────────────────────────────────────
-
-# 扩展导出名优先；用户点名 e-hentai.org_cookies.txt
-_EH_COOKIE_PREFERRED_NAMES = (
-    "e-hentai.org_cookies.txt",
-    "www.e-hentai.org_cookies.txt",
-    "exhentai.org_cookies.txt",
-    "www.exhentai.org_cookies.txt",
-    "e-hentai_cookies.txt",
-    "exhentai_cookies.txt",
-    "eh_cookies.txt",
-    "cookies.txt",
-)
-
-
-def _default_download_dirs() -> list:
-    """常见下载目录：用户 Downloads / 下载。"""
-    dirs, seen = [], set()
-
-    def _add(p):
-        p = os.path.normpath(os.path.expanduser(p or ""))
-        if not p:
-            return
-        key = os.path.normcase(p)
-        if key in seen:
-            return
-        if os.path.isdir(p):
-            seen.add(key)
-            dirs.append(p)
-
-    home = os.path.expanduser("~")
-    for name in ("Downloads", "下载"):
-        _add(os.path.join(home, name))
-    up = os.environ.get("USERPROFILE") or os.environ.get("HOME") or ""
-    if up:
-        for name in ("Downloads", "下载"):
-            _add(os.path.join(up, name))
-    return dirs
-
-
-def _file_has_eh_cookies(path: str) -> bool:
-    """粗判 Netscape cookie 是否含 e-hentai / exhentai 域。"""
-    try:
-        if not path or not os.path.isfile(path):
-            return False
-        if os.path.getsize(path) > 2 * 1024 * 1024:
-            return False
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            head = f.read(65536).lower()
-        return (
-            "e-hentai.org" in head
-            or "exhentai.org" in head
-            or ".e-hentai." in head
-            or ".exhentai." in head
-        )
-    except Exception:
-        return False
-
-
-def _score_eh_cookie_file(path: str) -> int:
-    """评分：优先完整登录态 + 字段多；无效返回 -1。"""
-    if not _file_has_eh_cookies(path):
-        return -1
-    try:
-        text = open(path, encoding="utf-8", errors="ignore").read()
-    except Exception:
-        return -1
-    lines = [ln for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
-    score = len(lines)
-    # e-hentai / exhentai 常见登录相关字段
-    strong_keys = (
-        "ipb_member_id", "ipb_pass_hash", "ipb_session_id",
-        "sk", "igneous", "yay", "s",
-    )
-    for k in strong_keys:
-        if k in text:
-            score += 200
-    base = os.path.basename(path).lower()
-    for i, pref in enumerate(_EH_COOKIE_PREFERRED_NAMES):
-        if base == pref.lower():
-            score += 500 - i * 40
-            break
-    if "exhentai" in base:
-        score += 120
-    elif "e-hentai" in base or "ehentai" in base or base.startswith("eh_"):
-        score += 100
-    return score
-
-
-def find_eh_cookie_file(search_dirs) -> str:
-    """在目录顶层找最合适的 e-hentai / exhentai Netscape Cookie。
-
-    优先：e-hentai.org_cookies.txt 等常见导出名；
-    其次：任意含 e-hentai.org / exhentai.org 的 .txt。
-    找不到返回 ""。
-    """
-    for d in search_dirs or []:
-        if not d or not os.path.isdir(d):
-            continue
-        for name in _EH_COOKIE_PREFERRED_NAMES:
-            p = os.path.join(d, name)
-            if os.path.isfile(p) and _file_has_eh_cookies(p):
-                return os.path.normpath(p)
-
-    candidates = []
-    for d in search_dirs or []:
-        if not d or not os.path.isdir(d):
-            continue
-        try:
-            names = os.listdir(d)
-        except Exception:
-            continue
-        for name in names:
-            if not name.lower().endswith(".txt"):
-                continue
-            low = name.lower()
-            if low in ("readme.txt", "license.txt", "changelog.txt"):
-                continue
-            path = os.path.join(d, name)
-            if not os.path.isfile(path):
-                continue
-            sc = _score_eh_cookie_file(path)
-            if sc < 0:
-                continue
-            try:
-                mtime = os.path.getmtime(path)
-            except Exception:
-                mtime = 0
-            candidates.append((sc, mtime, path))
-    if not candidates:
-        return ""
-    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
-    return os.path.normpath(candidates[0][2])
-
-
-# ── Pixiv 辅助 ────────────────────────────────────────────────────────────────
-
-_PIXIV_ARTWORK_RE = re.compile(
-    r"https?://(?:www\.)?pixiv\.net/(?:en/)?artworks/(\d+)",
-    re.I,
-)
-
-_PIXIV_PRELOAD_RE = re.compile(
-    r'<meta\s+name=["\']preload-data["\'][^>]*content=[\'"]([^\'"]+)[\'"]',
-    re.I,
-)
-
-_PIXIV_COOKIE_PREFERRED_NAMES = (
-    "www.pixiv.net_cookies.txt",
-    "www.pixiv.net_cookie.txt",
-    "pixiv.net_cookies.txt",
-    "pixiv.net_cookie.txt",
-    "pixiv_cookies.txt",
-    "pixiv_cookie.txt",
-    "cookies.txt",
-)
-
-
-def _file_has_pixiv_cookies(path: str) -> bool:
-    try:
-        if not path or not os.path.isfile(path):
-            return False
-        if os.path.getsize(path) > 2 * 1024 * 1024:
-            return False
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            head = f.read(65536).lower()
-        return "pixiv.net" in head or ".pixiv." in head or "pixiv" in head
-    except Exception:
-        return False
-
-
-def find_pixiv_cookie_file(search_dirs) -> str:
-    for d in search_dirs or []:
-        if not d or not os.path.isdir(d):
-            continue
-        for name in _PIXIV_COOKIE_PREFERRED_NAMES:
-            p = os.path.join(d, name)
-            if os.path.isfile(p) and _file_has_pixiv_cookies(p):
-                return os.path.normpath(p)
-    for d in search_dirs or []:
-        if not d or not os.path.isdir(d):
-            continue
-        try:
-            names = os.listdir(d)
-        except Exception:
-            continue
-        candidates = []
-        for name in names:
-            if not name.lower().endswith(".txt"):
-                continue
-            low = name.lower()
-            if low in ("readme.txt", "license.txt", "changelog.txt"):
-                continue
-            path = os.path.join(d, name)
-            if not os.path.isfile(path):
-                continue
-            try:
-                if os.path.getsize(path) > 2 * 1024 * 1024:
-                    continue
-            except Exception:
-                continue
-            if _file_has_pixiv_cookies(path):
-                try:
-                    mtime = os.path.getmtime(path)
-                except Exception:
-                    mtime = 0
-                candidates.append((mtime, path))
-        if candidates:
-            candidates.sort(key=lambda x: x[0], reverse=True)
-            return os.path.normpath(candidates[0][1])
-    return ""
-
-
-# ── Hitomi.la 辅助（无需 Cookie）────────────────────────────────────────────
+# ── Hitomi.la 辅助────────────────────────────────────────────
 
 # 路径形态：…/type/slug-标题-4091293.html  或  …/galleries/4091293.html
 # 注意：slug 里常含 chapter-4 这类短数字，不能用「第一个 \d+」去抓 ID。
@@ -797,7 +584,7 @@ def debug_hitomi_gallery(url_or_id, *, sample: int = 8, log=None) -> dict:
 
 
 def parse_hitomi_gallery(session, gallery_id, log=None, cancel_flag=None, title_callback=None) -> dict:
-    """解析 hitomi.la 图库（无需 Cookie）。
+    """解析 hitomi.la 图库。
 
     与官网「Download」按钮同源：只取 webp 直链，下载阶段再打成 zip。
     """
@@ -924,23 +711,18 @@ def parse_pixiv_page(session, url: str, log=None, cancel_flag=None) -> dict:
             preload_m = _PIXIV_PRELOAD_RE.search(body)
             if not preload_m:
                 raise RuntimeError(
-                    "无法从页面提取作品数据（可能需要登录 Cookie）。\n"
-                    "请先在 pixiv.net 登录后导出 cookies.txt 并加载到本页"
+                    "无法从页面提取作品数据。公开作品可直接下载；需要登录的作品会失败。"
                 )
             raw = html_lib.unescape(preload_m.group(1))
             data = json.loads(raw)
         except json.JSONDecodeError:
             raise RuntimeError(
-                "无法从页面提取作品数据（可能需要登录 Cookie）。\n"
-                "请先在 pixiv.net 登录后导出 cookies.txt 并加载到本页"
+                "无法从页面提取作品数据。公开作品可直接下载；需要登录的作品会失败。"
             )
 
     if not data or not isinstance(data, dict):
         raise RuntimeError(
-            "获取作品数据失败。请确认：\n"
-            "  1. 已在浏览器登录 pixiv.net\n"
-            "  2. 已用「Get cookies.txt LOCALLY」扩展导出当前域 cookies\n"
-            "  3. 文件保存为 .txt 格式并加载到本页"
+            "获取作品数据失败。公开作品可直接下载；需要登录的作品会失败。"
         )
 
     # 从 AJAX 响应中提取 illust 数据
@@ -959,7 +741,7 @@ def parse_pixiv_page(session, url: str, log=None, cancel_flag=None) -> dict:
     original = urls.get("original") or ""
 
     if not original:
-        raise RuntimeError("无法获取原始图片地址（可能需要登录 Cookie）")
+        raise RuntimeError("无法获取原始图片地址（可能需要登录）")
 
     # 注意：i.pximg.net 的防盗链校验只认「裸域名」Referer（https://www.pixiv.net/），
     # 用带 /artworks/xxxx 路径的完整页面地址当 Referer 会被判定不匹配而返回 403。
@@ -1276,34 +1058,8 @@ def _find_unified_batch_engine(widget):
     return None
 
 
-def load_netscape_cookies(path: str):
-    """简易 Netscape cookie → requests.cookies.RequestsCookieJar 兼容 dict 列表。"""
-    if not path or not os.path.isfile(path):
-        return []
-    out = []
-    try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                parts = line.split("\t")
-                if len(parts) < 7:
-                    continue
-                domain, _flag, cpath, _secure, _exp, name, value = parts[:7]
-                out.append({
-                    "domain": domain.lstrip("."),
-                    "path": cpath or "/",
-                    "name": name,
-                    "value": value,
-                })
-    except Exception:
-        return []
-    return out
-
-
 def _make_session(cookie_path: str = "") -> "req_lib.Session":
-    """图集请求不带 Cookie。参数保留，避免旧调用要改签名。"""
+    """图集请求会话。参数保留，避免旧调用要改签名。"""
     del cookie_path
     if not HAS_REQUESTS:
         raise RuntimeError("未安装 requests，请 pip install requests")
@@ -1450,8 +1206,7 @@ def parse_eh_gallery(
     html = r.text
     if "exhentai.org" in host and ("sadpanda" in html.lower() or len(html) < 500):
         raise RuntimeError(
-            "exhentai 需要有效登录 Cookie（sad panda）。\n"
-            "请用浏览器登录 exhentai.org 后导出 cookies.txt。"
+            "exhentai 需要登录才能查看（sad panda），公开解析无法下载。"
         )
     if "Content Warning" in html or "Offensive For Everyone" in html:
         # 跳过内容警告
@@ -1637,7 +1392,7 @@ def parse_eh_gallery(
             log(f"  缩略图未找到阅读链：{prev}{more}", "warn")
 
     if not show_by_page:
-        raise RuntimeError("图库页未找到阅读链接（可能被拦或 Cookie 无效）")
+        raise RuntimeError("图库页未找到阅读链接（可能被拦或需要登录）")
 
     # 输出顺序：定点按页码；全量按页码（与 0001… 一致）
     page_nums = sorted(show_by_page.keys())
@@ -1810,7 +1565,7 @@ def parse_generic_page(session, url: str, log=None) -> dict:
     if not images:
         raise RuntimeError(
             "页面上没有识别到图片地址。\n"
-            "可能是动态加载（需浏览器）或需要登录 Cookie。"
+            "可能是动态加载（需浏览器）或需要登录。"
         )
     return {
         "site": urlparse(base).netloc,
@@ -2894,8 +2649,7 @@ class GalleryParseWorker(QThread):
             self.log.emit(f"定点解析：{prev}{more}（跳过已有页）", "ok")
         try:
             session = _make_session("")
-            self.log.emit("本次不使用 Cookie", "info")
-
+    
             def _lg(msg, level="info"):
                 self.log.emit(msg, level)
 
@@ -2952,8 +2706,7 @@ class PixivParseWorker(QThread):
         self.log.emit(f"链接：{url}", "info")
         try:
             session = _make_session("")
-            self.log.emit("本次不使用 Cookie", "info")
-
+    
             info = parse_pixiv_page(
                 session, url,
                 log=lambda msg, level="info": self.log.emit(msg, level),
@@ -2995,7 +2748,7 @@ class HitomiParseWorker(QThread):
         except Exception as e:
             self.err.emit(str(e))
             return
-        self.log.emit(f"图库 ID：{gid}（无需 Cookie · 官网 Download 同款 zip）", "info")
+        self.log.emit(f"图库 ID：{gid}（官网 Download 同款 zip）", "info")
         try:
             session = _make_session("")
             info = parse_hitomi_gallery(
@@ -3446,7 +3199,6 @@ class GalleryDownloadWorker(QThread):
 
         tag = "补全" if self.mode == "fill" else "下载"
         self.log.emit(f"{tag}保存到：{folder} · 共 {len(self.images)} 项 · 每张最多重试 {self.retries} 次", "info")
-        self.log.emit("本次不使用 Cookie", "info")
         session = _make_session("")
         total = len(self.images)
         ok_n = 0
@@ -4451,8 +4203,6 @@ class _GalleryEHentaiPage(QWidget):
         self._dl_worker = None
         self._cancel = [False]
         self._auto_dl = False
-        self._cookie_auto_tried = False   # 本会话是否已尝试自动加载 Cookie
-        self._cookie_loaded_via = None    # 'auto' | 'manual' | None
         self._last_failed = []            # 最近一次下载失败的条目
         self._last_download_ok = False   # 供自动下载引擎判断本次下载是否成功
         self._name_cards = []             # [GalleryNameCard, ...]
@@ -4514,25 +4264,7 @@ class _GalleryEHentaiPage(QWidget):
         bl.setSpacing(7)
         gv.addWidget(body, 1)
 
-        # Cookie / 保存位置控件（由「关于」弹窗统一管理，页面 UI 隐藏）
-        self.ck_status = _ElideLabel("")
-        self.ck_status.setObjectName("StatusLbl")
-        self.ck_status.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.ck_status.setStyleSheet(f"color:{tk('text_faint')}; font-size:12px;")
-        self.ck_status.setVisible(False)
-        self.btn_ck = QPushButton("选择文件")
-        self.btn_ck.setObjectName("BtnSmall")
-        self.btn_ck.setMinimumWidth(72)
-        self.btn_ck.clicked.connect(self._pick_cookie)
-        self.btn_ck.setVisible(False)
-        self.ck_path = QLineEdit()
-        self.ck_path.setPlaceholderText("自动扫描下载目录…")
-        self.ck_path.setReadOnly(True)
-        self.ck_path.setMinimumWidth(0)
-        self.ck_path.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self._ck_icon = apply_folder_path_edit(self.ck_path)
-        self.ck_path.textChanged.connect(self._on_cookie_change)
-        self.ck_path.setVisible(False)
+        # 保存位置（页面不展示）
         self.save_edit = QLineEdit(
             os.path.join(os.path.expanduser("~"), "Downloads", "Galleries").replace("\\", "/")
         )
@@ -4727,7 +4459,6 @@ class _GalleryEHentaiPage(QWidget):
 
 
     def refresh_theme(self, *_):
-        restyle_folder_path_edit(self.ck_path, getattr(self, "_ck_icon", None))
         restyle_folder_path_edit(self.save_edit, getattr(self, "_sv_icon", None))
         restyle_folder_path_edit(self.url_edit, getattr(self, "_url_icon", None))
         for lbl in self._theme_titles:
@@ -4737,9 +4468,6 @@ class _GalleryEHentaiPage(QWidget):
         for c in getattr(self, "_name_cards", []):
             if hasattr(c, "refresh_theme"):
                 c.refresh_theme()
-        # Cookie 绿按钮随主题重刷
-        path = (self.ck_path.text() or "").strip() if hasattr(self, "ck_path") else ""
-        self._set_cookie_btn_loaded(bool(path and os.path.isfile(path)))
 
     def _log(self, msg, level="info"):
         _gallery_log_append(self, msg, level)
@@ -4856,21 +4584,7 @@ class _GalleryEHentaiPage(QWidget):
         except Exception:
             pass
 
-        # 保存目录与 Cookie 由「关于」弹窗统一管理，页面 UI 隐藏
-        self.btn_ck.setVisible(False)
-        self.ck_path.setVisible(False)
-        self.ck_status.setVisible(False)
         self.save_edit.setVisible(False)
-
-    # ── Cookie / 目录 ─────────────────────────────────────────────────────────
-
-    def showEvent(self, event):
-        """本会话第一次显示本页时：自动扫描下载目录加载 e-hentai Cookie。"""
-        super().showEvent(event)
-        if self._cookie_auto_tried:
-            return
-        self._cookie_auto_tried = True
-        QTimer.singleShot(0, self._auto_load_cookie)
 
     # ── 下载间隔：由父级 PageGallery 统一管理 ──
 
@@ -4884,7 +4598,6 @@ class _GalleryEHentaiPage(QWidget):
         """导出图集页设置，供 user_prefs 落盘。"""
         return {
             "save_path": (self.save_edit.text() or "").strip(),
-            "cookie_path": (self.ck_path.text() or "").strip(),
             "check_records": _record_skip_enabled(self),
         }
 
@@ -4902,18 +4615,6 @@ class _GalleryEHentaiPage(QWidget):
                 self.save_edit.blockSignals(False)
             scan_dir_records("gallery_eh", path)
 
-        ck = (d.get("cookie_path") or "").strip()
-        if ck and os.path.isfile(ck):
-            self.ck_path.blockSignals(True)
-            try:
-                self.ck_path.setText(ck.replace("\\", "/"))
-            finally:
-                self.ck_path.blockSignals(False)
-            self._on_cookie_change(ck)
-            # 已有合法 Cookie：跳过本会话自动扫描，避免覆盖用户选择
-            self._cookie_auto_tried = True
-            self._cookie_loaded_via = "manual"
-
         if "check_records" in d:
             _gallery_set_record_skip(self, bool(d.get("check_records")))
 
@@ -4925,147 +4626,6 @@ class _GalleryEHentaiPage(QWidget):
                     fn(int(d.get("delay_ms")))
             except Exception:
                 pass
-
-    def _set_cookie_btn_loaded(self, loaded: bool):
-        """加载成功 → 绿色「已加载」；否则恢复「选择文件」。仍可点击重选。"""
-        btn = getattr(self, "btn_ck", None)
-        if btn is None:
-            return
-        if loaded:
-            btn.setText("已加载")
-            btn.setStyleSheet(
-                f"QPushButton{{background:{tk('ok')}; color:#ffffff;"
-                f"border:1px solid {tk('ok')}; border-radius:6px;"
-                f"padding:4px 12px; font-weight:600;}}"
-                f"QPushButton:hover{{background:{tk('ok')}; color:#ffffff;}}"
-            )
-        else:
-            btn.setText("选择文件")
-            btn.setStyleSheet("")
-            st = btn.style()
-            if st is not None:
-                st.unpolish(btn)
-                st.polish(btn)
-            btn.update()
-
-    def _auto_load_cookie(self):
-        """扫描下载目录，优先加载 e-hentai.org_cookies.txt。"""
-        cur = (self.ck_path.text() or "").strip()
-        if cur and os.path.isfile(cur):
-            self._on_cookie_change(cur)
-            return
-
-        dirs = []
-        if hasattr(self, "save_edit"):
-            save_dir = (self.save_edit.text() or "").strip()
-            if save_dir:
-                dirs.append(save_dir)
-                # 若保存位置是 …/Galleries，也扫其父目录（Downloads）
-                parent = os.path.dirname(save_dir.rstrip("\\/"))
-                if parent:
-                    dirs.append(parent)
-        for d in _default_download_dirs():
-            dirs.append(d)
-
-        path = find_eh_cookie_file(dirs)
-        if path:
-            self._cookie_loaded_via = "auto"
-            self.ck_path.setText(path.replace("\\", "/"))  # 触发 _on_cookie_change
-            name = os.path.basename(path)
-            self._log(
-                f"✓ 已自动从下载目录加载 Cookie「{name}」，"
-                f"无需再点「选择文件」（路径：{path}）",
-                "ok",
-            )
-            self._set_status("Cookie 已自动加载 ✓", tk("ok"))
-        else:
-            self._cookie_loaded_via = None
-            self._set_cookie_btn_loaded(False)
-            self._log(
-                "下载目录未找到 e-hentai Cookie"
-                "（优先 e-hentai.org_cookies.txt，Netscape .txt），"
-                "请点「选择文件」手动指定；公开图库也可不填",
-                "warn",
-            )
-
-    def _pick_cookie(self):
-        start = (self.ck_path.text() or "").strip()
-        if start and os.path.isfile(start):
-            start = os.path.dirname(start)
-        elif self.save_edit.text().strip():
-            start = self.save_edit.text().strip()
-        else:
-            dd = _default_download_dirs()
-            start = dd[0] if dd else os.path.expanduser("~/Downloads")
-        p, _ = QFileDialog.getOpenFileName(
-            self, "选择 cookies.txt", start,
-            "Cookie 文件 (*.txt);;所有文件 (*.*)",
-        )
-        if p:
-            self._cookie_loaded_via = "manual"
-            self.ck_path.setText(p.replace("\\", "/"))
-            self._log(f"✓ 已手动加载 Cookie：{p}", "ok")
-
-    def _on_cookie_change(self, path):
-        path = (path or "").strip()
-        if not path or not os.path.isfile(path):
-            self.ck_status.setFullText("")
-            self.ck_status.setStyleSheet(f"color:{tk('text_faint')}; font-size:12px;")
-            self._set_cookie_btn_loaded(False)
-            return
-
-        via_auto = getattr(self, "_cookie_loaded_via", None) == "auto"
-        try:
-            text = open(path, encoding="utf-8", errors="ignore").read()
-        except Exception as e:
-            self.ck_status.setFullText(f"❌ 读取失败: {e}")
-            self.ck_status.setStyleSheet(f"color:{tk('err')}; font-size:12px;")
-            self._set_cookie_btn_loaded(False)
-            return
-
-        low = text.lower()
-        has_eh = (
-            "e-hentai.org" in low
-            or "exhentai.org" in low
-            or ".e-hentai." in low
-            or ".exhentai." in low
-        )
-        lines = [ln for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
-        count = len(lines)
-        strong = any(
-            k in text
-            for k in (
-                "ipb_member_id", "ipb_pass_hash", "ipb_session_id",
-                "igneous", "sk",
-            )
-        )
-
-
-        if not has_eh:
-            msg = "⚠ 文件中未见 e-hentai / exhentai 域"
-            self.ck_status.setFullText(msg)
-            self.ck_status.setStyleSheet(f"color:{tk('warn')}; font-size:12px;")
-            # 仍算已选文件，可能用户有意用其它站 Cookie
-            self._set_cookie_btn_loaded(True)
-            return
-
-        if strong:
-            if via_auto:
-                msg = f"✅ 已自动加载（{count} 行，含登录态）· 无需再点「选择文件」"
-            else:
-                msg = f"✅ Cookie 有效（{count} 行，含登录态）"
-            self.ck_status.setStyleSheet(f"color:{tk('ok')}; font-size:12px;")
-            self._set_cookie_btn_loaded(True)
-        elif count > 0:
-            prefix = "已自动加载但" if via_auto else ""
-            msg = f"⚠ {prefix}可能缺少登录字段（ipb_member_id / ipb_pass_hash 等）"
-            self.ck_status.setStyleSheet(f"color:{tk('warn')}; font-size:12px;")
-            self._set_cookie_btn_loaded(True)
-        else:
-            msg = "⚠ Cookie 文件为空"
-            self.ck_status.setStyleSheet(f"color:{tk('warn')}; font-size:12px;")
-            self._set_cookie_btn_loaded(False)
-        self.ck_status.setFullText(msg)
 
     def _choose_dir(self):
         d = QFileDialog.getExistingDirectory(
@@ -5081,11 +4641,9 @@ class _GalleryEHentaiPage(QWidget):
             self,
             "图集下载说明",
             "1. 粘贴 e-hentai / exhentai 图库链接，自动解析图片直链并下载\n\n"
-            "2. Cookie：用扩展导出 Netscape cookies.txt\n"
-            "   推荐文件名 e-hentai.org_cookies.txt，放入下载目录自动加载\n"
-            "   exhentai 必须登录后导出，e-hentai 公开图库可不填\n\n"
-            "3. 内容卡亮起 = 待下载，变灰 = 已下载，点击灰卡可重新亮起重下\n\n"
-            "4. 请控制下载间隔，避免触发站点限制",
+            "2. 内容卡亮起 = 待下载，变灰 = 已下载，点击灰卡可重新亮起重下\n\n"
+            "3. 请控制下载间隔，避免触发站点限制\n\n"
+            "需要登录才能看的图库，公开解析会失败。",
         )
 
     def _find_page_video_engine(self):
@@ -5361,7 +4919,7 @@ class _GalleryEHentaiPage(QWidget):
 
         self._parse_worker = GalleryParseWorker(
             url_text,
-            self.ck_path.text().strip(),
+            "",
             self._cancel,
             only_indices=only_indices,
         )
@@ -5790,7 +5348,7 @@ class _GalleryEHentaiPage(QWidget):
         self._log(f"图库链接：{url}", "ok")
         self._log("下一步：解析图库 → 只下载序列缺失序号", "info")
         self._log("━" * 36, "info")
-        # 切页后再解析，避免与 showEvent/Cookie 自动加载抢同一拍
+        # 切页后再解析，避免和当前界面抢同一拍
         QTimer.singleShot(0, self._run_fill_parse)
         return True
 
@@ -6471,7 +6029,7 @@ class _GalleryEHentaiPage(QWidget):
             images=images,
             save_dir=save_dir,
             title=title,
-            cookie_path=self.ck_path.text().strip(),
+            cookie_path="",
             delay_ms=self._delay_ms(),
             skip_existing=skip_existing,
             cancel_flag=self._cancel,
@@ -6502,14 +6060,11 @@ class _GalleryEHentaiPage(QWidget):
     def freeze_as_placeholder(self):
         """把本实例彻底冻结成不可交互的静态展示（用于「two」占位分页）。
 
-        · 提前把 _cookie_auto_tried 标记为已尝试 → showEvent 不会再触发
-          自动扫描/加载 Cookie（不会弹出「Cookie 文件加载」相关提示）。
         · 整个控件 setEnabled(False) → 任何点击/输入/粘贴都不会生效，
           不会解析、不会下载，也不会新建线程，与「e-hentai.org」页完全隔离。
         · 必须在构造完成后、加入 Tab 之前调用。
         """
         self._is_placeholder = True
-        self._cookie_auto_tried = True
         self._auto_dl = False
         self.setEnabled(False)
 
@@ -7032,8 +6587,6 @@ class _GalleryPixivPage(QWidget):
         self._dl_worker = None
         self._cancel = [False]
         self._auto_dl = False
-        self._cookie_auto_tried = False
-        self._cookie_loaded_via = None
         self._last_failed = []
         self._name_cards = []
         self._card_by_name = {}
@@ -7086,25 +6639,7 @@ class _GalleryPixivPage(QWidget):
         bl.setSpacing(7)
         gv.addWidget(body, 1)
 
-        # Cookie / 保存位置控件（由「关于」弹窗统一管理，页面 UI 隐藏）
-        self.ck_status = _ElideLabel("")
-        self.ck_status.setObjectName("StatusLbl")
-        self.ck_status.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.ck_status.setStyleSheet(f"color:{tk('text_faint')}; font-size:12px;")
-        self.ck_status.setVisible(False)
-        self.btn_ck = QPushButton("选择文件")
-        self.btn_ck.setObjectName("BtnSmall")
-        self.btn_ck.setMinimumWidth(72)
-        self.btn_ck.clicked.connect(self._pick_cookie)
-        self.btn_ck.setVisible(False)
-        self.ck_path = QLineEdit()
-        self.ck_path.setPlaceholderText("自动扫描下载目录…")
-        self.ck_path.setReadOnly(True)
-        self.ck_path.setMinimumWidth(0)
-        self.ck_path.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self._ck_icon = apply_folder_path_edit(self.ck_path)
-        self.ck_path.textChanged.connect(self._on_cookie_change)
-        self.ck_path.setVisible(False)
+        # 保存位置（页面不展示）
         self.save_edit = QLineEdit(
             os.path.join(os.path.expanduser("~"), "Downloads").replace("\\", "/")
         )
@@ -7288,7 +6823,6 @@ class _GalleryPixivPage(QWidget):
             inner.updateGeometry()
 
     def refresh_theme(self, *_):
-        restyle_folder_path_edit(self.ck_path, getattr(self, "_ck_icon", None))
         restyle_folder_path_edit(self.save_edit, getattr(self, "_sv_icon", None))
         restyle_folder_path_edit(self.url_edit, getattr(self, "_url_icon", None))
         for lbl in self._theme_titles:
@@ -7298,8 +6832,6 @@ class _GalleryPixivPage(QWidget):
         for c in getattr(self, "_name_cards", []):
             if hasattr(c, "refresh_theme"):
                 c.refresh_theme()
-        path = (self.ck_path.text() or "").strip() if hasattr(self, "ck_path") else ""
-        self._set_cookie_btn_loaded(bool(path and os.path.isfile(path)))
 
     def _log(self, msg, level="info"):
         _gallery_log_append(self, msg, level)
@@ -7420,117 +6952,6 @@ class _GalleryPixivPage(QWidget):
         except Exception:
             pass
 
-    # ── Cookie / 目录 ─────────────────────────────────────────────────────────
-
-    def showEvent(self, event):
-        super().showEvent(event)
-        if self._cookie_auto_tried:
-            return
-        self._cookie_auto_tried = True
-        QTimer.singleShot(0, self._auto_load_cookie)
-
-    def _set_cookie_btn_loaded(self, loaded: bool):
-        btn = getattr(self, "btn_ck", None)
-        if btn is None:
-            return
-        if loaded:
-            btn.setText("已加载")
-            btn.setStyleSheet(
-                f"QPushButton{{background:{tk('ok')}; color:#ffffff;"
-                f"border:1px solid {tk('ok')}; border-radius:6px;"
-                f"padding:4px 12px; font-weight:600;}}"
-                f"QPushButton:hover{{background:{tk('ok')}; color:#ffffff;}}"
-            )
-        else:
-            btn.setText("选择文件")
-            btn.setStyleSheet("")
-            st = btn.style()
-            if st is not None:
-                st.unpolish(btn)
-                st.polish(btn)
-            btn.update()
-
-    def _auto_load_cookie(self):
-        cur = (self.ck_path.text() or "").strip()
-        if cur and os.path.isfile(cur):
-            self._on_cookie_change(cur)
-            return
-        dirs = []
-        if hasattr(self, "save_edit"):
-            save_dir = (self.save_edit.text() or "").strip()
-            if save_dir:
-                dirs.append(save_dir)
-        for d in _default_download_dirs():
-            dirs.append(d)
-        path = find_pixiv_cookie_file(dirs)
-        if path:
-            self._cookie_loaded_via = "auto"
-            self.ck_path.setText(path.replace("\\", "/"))
-            name = os.path.basename(path)
-            self._log(f"✓ 已自动从下载目录加载 Cookie「{name}」", "ok")
-            self._set_status("Cookie 已自动加载 ✓", tk("ok"))
-        else:
-            self._cookie_loaded_via = None
-            self._set_cookie_btn_loaded(False)
-            self._log("下载目录未找到 pixiv Cookie，请点「选择文件」手动指定", "warn")
-
-    def _pick_cookie(self):
-        start = (self.ck_path.text() or "").strip()
-        if start and os.path.isfile(start):
-            start = os.path.dirname(start)
-        elif hasattr(self, "save_edit") and self.save_edit.text().strip():
-            start = self.save_edit.text().strip()
-        else:
-            dd = _default_download_dirs()
-            start = dd[0] if dd else ""
-        p, _ = QFileDialog.getOpenFileName(
-            self, "选择 cookies.txt", start,
-            "Cookie 文件 (*.txt);;所有文件 (*.*)",
-        )
-        if p:
-            self._cookie_loaded_via = "manual"
-            self.ck_path.setText(p.replace("\\", "/"))
-            self._log(f"✓ 已手动加载 Cookie：{p}", "ok")
-
-    def _on_cookie_change(self, path):
-        path = (path or "").strip()
-        if not path or not os.path.isfile(path):
-            self.ck_status.setFullText("")
-            self.ck_status.setStyleSheet(f"color:{tk('text_faint')}; font-size:12px;")
-            self._set_cookie_btn_loaded(False)
-            return
-        via_auto = getattr(self, "_cookie_loaded_via", None) == "auto"
-        try:
-            text = open(path, encoding="utf-8", errors="ignore").read()
-        except Exception as e:
-            self.ck_status.setFullText(f"❌ 读取失败: {e}")
-            self.ck_status.setStyleSheet(f"color:{tk('err')}; font-size:12px;")
-            self._set_cookie_btn_loaded(False)
-            return
-        low = text.lower()
-        has_pixiv = "pixiv.net" in low or ".pixiv." in low
-        lines = [ln for ln in text.splitlines() if ln.strip() and not ln.startswith("#")]
-        count = len(lines)
-        strong = any(k in text for k in ("PHPSESSID", "device_token", "tag_view_ranking"))
-        if not has_pixiv:
-            self.ck_status.setFullText("⚠ 文件中未见 pixiv.net 域")
-            self.ck_status.setStyleSheet(f"color:{tk('warn')}; font-size:12px;")
-            self._set_cookie_btn_loaded(True)
-            return
-        if strong:
-            msg = f"✅ Cookie 有效（{count} 行，含登录字段）" if not via_auto else f"✅ 已自动加载（{count} 行）"
-            self.ck_status.setStyleSheet(f"color:{tk('ok')}; font-size:12px;")
-            self._set_cookie_btn_loaded(True)
-        elif count > 0:
-            msg = "⚠ 可能缺少登录字段（PHPSESSID 等）"
-            self.ck_status.setStyleSheet(f"color:{tk('warn')}; font-size:12px;")
-            self._set_cookie_btn_loaded(True)
-        else:
-            msg = "⚠ Cookie 文件为空"
-            self.ck_status.setStyleSheet(f"color:{tk('warn')}; font-size:12px;")
-            self._set_cookie_btn_loaded(False)
-        self.ck_status.setFullText(msg)
-
     def _choose_dir(self):
         d = QFileDialog.getExistingDirectory(
             self, "选择保存目录",
@@ -7545,11 +6966,9 @@ class _GalleryPixivPage(QWidget):
             self,
             "Pixiv 下载说明",
             "1. 粘贴 pixiv 作品链接（artworks/数字），自动解析图片并下载\n\n"
-            "2. Cookie：用扩展导出 Netscape cookies.txt\n"
-            "   推荐文件名 www.pixiv.net_cookies.txt，放入下载目录自动加载\n"
-            "   多数作品需要登录才能查看原图\n\n"
-            "3. 内容卡亮起 = 待下载，变灰 = 已下载，点击灰卡可重新亮起重下\n\n"
-            "4. 请控制下载频率，避免触发 pixiv 限制",
+            "2. 内容卡亮起 = 待下载，变灰 = 已下载，点击灰卡可重新亮起重下\n\n"
+            "3. 请控制下载频率，避免触发 pixiv 限制\n\n"
+            "公开作品可直接下载。需要登录才能看的作品会失败。",
         )
 
     def _find_page_video_engine(self):
@@ -7791,7 +7210,7 @@ class _GalleryPixivPage(QWidget):
         self._last_failed = []
         self._emit_nav_progress(True, mode="busy")
         self._parse_worker = PixivParseWorker(
-            url_text, self.ck_path.text().strip(), self._cancel
+            url_text, "", self._cancel
         )
         self._parse_worker.ok.connect(self._on_parse_ok)
         self._parse_worker.err.connect(self._on_parse_err)
@@ -8382,7 +7801,7 @@ class _GalleryPixivPage(QWidget):
             images=images,
             save_dir=save_dir,
             title=title,
-            cookie_path=self.ck_path.text().strip(),
+            cookie_path="",
             delay_ms=self._delay_ms(),
             skip_existing=skip_existing,
             cancel_flag=self._cancel,
@@ -8715,7 +8134,6 @@ class _GalleryPixivPage(QWidget):
 
     def freeze_as_placeholder(self):
         self._is_placeholder = True
-        self._cookie_auto_tried = True
         self._auto_dl = False
         self.setEnabled(False)
 
@@ -8724,7 +8142,6 @@ class _GalleryPixivPage(QWidget):
     def export_settings(self) -> dict:
         return {
             "save_path": (self.save_edit.text() or "").strip(),
-            "cookie_path": (self.ck_path.text() or "").strip(),
         }
 
     def apply_settings(self, d: dict):
@@ -8737,20 +8154,10 @@ class _GalleryPixivPage(QWidget):
                 self.save_edit.setText(path.replace("\\", "/"))
             finally:
                 self.save_edit.blockSignals(False)
-        ck = (d.get("cookie_path") or "").strip()
-        if ck and os.path.isfile(ck):
-            self.ck_path.blockSignals(True)
-            try:
-                self.ck_path.setText(ck.replace("\\", "/"))
-            finally:
-                self.ck_path.blockSignals(False)
-            self._on_cookie_change(ck)
-            self._cookie_auto_tried = True
-            self._cookie_loaded_via = "manual"
 
 
 class _GalleryHitomiPage(_GalleryPixivPage):
-    """hitomi.la：无需 Cookie；对齐官网 Download 按钮，下载为单个 .zip。"""
+    """hitomi.la：对齐官网 Download 按钮，下载为单个 .zip。"""
 
     _BATCH_LABEL = "hitomi.la"
     _BATCH_ENGINE_KEY = "hitomi"
@@ -8762,15 +8169,12 @@ class _GalleryHitomiPage(_GalleryPixivPage):
         self._record_key = "gallery_hitomi"
         self._set_record_section_visible(True)
         self._refresh_record_count()
-        # 跳过 Cookie 自动扫描
-        self._cookie_auto_tried = True
-        self._cookie_loaded_via = None
         self._debug_worker = None
         try:
             self.url_edit.setPlaceholderText(
-                "粘贴 hitomi.la 图库链接 → 回车解析并打包 zip（无需 Cookie）"
+                "粘贴 hitomi.la 图库链接 → 回车解析并打包 zip"
             )
-            self._set_status("粘贴 hitomi.la 链接 → 解析并下载 zip（无需 Cookie）")
+            self._set_status("粘贴 hitomi.la 链接 → 解析并下载 zip")
         except Exception:
             pass
         # 「调试」按钮保留方法，界面隐藏
@@ -8780,7 +8184,7 @@ class _GalleryHitomiPage(_GalleryPixivPage):
         except Exception:
             pass
         self._log(
-            "hitomi.la：无需 Cookie · 输出单个 .zip（官网 Download 同款：本地打包 webp）",
+            "hitomi.la：输出单个 .zip（官网 Download 同款：本地打包 webp）",
             "ok",
         )
         self._log(
@@ -8788,16 +8192,6 @@ class _GalleryHitomiPage(_GalleryPixivPage):
             "完整取证：python tools/hitomi_zip_debug.py <链接>",
             "info",
         )
-
-    def showEvent(self, event):
-        # 不调用 Pixiv 的 Cookie 自动加载
-        QWidget.showEvent(self, event)
-
-    def _try_autoload_cookie(self):
-        return
-
-    def _auto_load_cookie(self):
-        return
 
     def _run_debug(self):
         """后台检测当前输入框 / 剪贴板链接的直链是否正确。"""
@@ -9204,7 +8598,6 @@ class _GalleryHitomiPage(_GalleryPixivPage):
     def export_settings(self) -> dict:
         return {
             "save_path": (self.save_edit.text() or "").strip(),
-            "cookie_path": "",
             "check_records": _record_skip_enabled(self),
         }
 
@@ -9261,7 +8654,7 @@ class PageGallery(QWidget):
 
     · 第 1 页「e-hentai.org」：当前的解析 + 下载完整内容（即 _GalleryEHentaiPage）。
     · 第 2 页「pixiv」：Pixiv 作品页解析与下载。
-    · 第 3 页「hitomi.la」：无需 Cookie 的 hitomi 图库。
+    · 第 3 页「hitomi.la」：hitomi 图库，下载为单个 zip。
 
     分页交互对齐「视频下载」页（抖音 / B站 / YouTube）的 QTabWidget 折角样式。
     """
@@ -9327,7 +8720,7 @@ class PageGallery(QWidget):
         self.page_pixiv = _GalleryPixivPage()
         _apply_gallery_tab_bg(self.page_pixiv, "TabGalleryPixiv")
 
-        # 第 3 页：hitomi.la —— 无需 Cookie
+        # 第 3 页：hitomi.la
         self.page_hitomi = _GalleryHitomiPage()
         _apply_gallery_tab_bg(self.page_hitomi, "TabGalleryHitomi")
 

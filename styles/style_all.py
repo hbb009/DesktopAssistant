@@ -1782,7 +1782,7 @@ PAGE_QSS = """
     QLabel#StatusLbl {{ font-size: 12px; }}
 """
 
-# GroupBox 卡片样式（左侧「下载设置」、右侧「Cookie + 链接」共用）
+# GroupBox 卡片样式（下载设置与链接区共用）
 GB_STYLE = """
     QGroupBox {{
         color: {text_dim};

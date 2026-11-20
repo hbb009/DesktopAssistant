@@ -1300,9 +1300,7 @@ class PageAbout(QWidget):
     def set_main_window(self, mw):
         self._mw = mw
 
-    def on_enter(self, cookie_alert: bool = False):
-        # cookie_alert 参数保留兼容旧调用
-        del cookie_alert
+    def on_enter(self):
         self.reload_from_prefs()
         self._refresh_all_component_status()
         # 只刷新清单；重挂改由热键页就绪后异步轻量执行，避免启动卡死
