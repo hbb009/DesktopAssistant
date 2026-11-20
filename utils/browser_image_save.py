@@ -18,7 +18,7 @@ _COPY_IMAGE_NAMES = {
 _OBJECT_FOCUS = 0x8005
 _ROLE_MENU_ITEM = 0x0C
 _ROLE_GRAPHIC = 0x28
-_IMAGE_HOTKEY = ord("1")  # MV41 also registers Alt+1 as a Chrome/Edge command.
+_IMAGE_HOTKEY = ord("1")
 
 
 def _menu_label(name):

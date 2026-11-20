@@ -37,4 +37,4 @@ docs/_draft_*.md
 *.bak
 *.bak_*
 *.pyw.bak*
-# NOTE: assets/ (qss/icons/guides), docs/提示词分类.txt and MV41/ (browser extension) are needed at runtime -> tracked
+# NOTE: assets/ (qss/icons/guides) and docs/提示词分类.txt are needed at runtime -> tracked
