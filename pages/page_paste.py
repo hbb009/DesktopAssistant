@@ -50,7 +50,7 @@ from PyQt5.QtCore import (
     QPropertyAnimation, QEasingCurve,
 )
 from PyQt5.QtGui import (
-    QFont, QFontMetrics, QColor, QDrag, QPixmap, QPainter, QPen, QBrush, QPolygonF,
+    QFont, QFontMetrics, QColor, QDrag, QPixmap, QPainter, QPainterPath, QPen, QBrush, QPolygonF,
     QIcon, QCursor, QLinearGradient, QRadialGradient,
 )
 from PyQt5.QtWidgets import (
@@ -150,6 +150,7 @@ _ASSIST_BTN_TEXT = {
     2: "减去  Ctrl+Alt+2\n从剪贴板去掉",
     3: "互换  Ctrl+Alt+3\n和剪贴板对调",
 }
+_ASSIST_HISTORY_LIMIT = 5
 _VK_CONTROL, _VK_C, _VK_V = 0x11, 0x43, 0x56
 _VK_SHIFT, _VK_LSHIFT, _VK_RSHIFT = 0x10, 0xA0, 0xA1
 _VK_MENU = 0x12
@@ -428,7 +429,10 @@ def _clone_mime(md) -> QMimeData:
         return out
     try:
         for fmt in md.formats():
-            out.setData(fmt, md.data(fmt))
+            if fmt != "application/x-qt-image":
+                out.setData(fmt, md.data(fmt))
+        if md.hasImage():
+            out.setImageData(md.imageData())
     except Exception:
         try:
             if md.hasText():
@@ -605,6 +609,27 @@ def _trash_icon(size: int, color: str) -> QIcon:
     p.drawLine(QPointF(s * 0.34, s * 0.80), QPointF(s * 0.66, s * 0.80))
     p.end()
     return QIcon(pm)
+
+
+def _history_arrow(redo: bool, color: str) -> QPixmap:
+    pixmap = QPixmap(18, 18)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setPen(QPen(QColor(color), 1.6, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    if redo:
+        painter.translate(18, 0)
+        painter.scale(-1, 1)
+    path = QPainterPath(QPointF(3, 7))
+    path.lineTo(11, 7)
+    path.cubicTo(16, 7, 16, 14, 11, 14)
+    path.lineTo(7, 14)
+    path.moveTo(6.5, 3.5)
+    path.lineTo(3, 7)
+    path.lineTo(6.5, 10.5)
+    painter.drawPath(path)
+    painter.end()
+    return pixmap
 
 
 def _icon_action_btn(object_name: str, icon: QIcon) -> QPushButton:
@@ -1665,6 +1690,7 @@ class PagePaste(QWidget):
         self._applying_clip = False
         self._ignore_clip = 0
         self._clip_op_busy = False
+        self._clip_op = None
         self._hotkeys_ok = False
         self._hotkey_filter = None
         self._hotkey_bridge = None
@@ -1672,6 +1698,9 @@ class PagePaste(QWidget):
         self._clip_watch_connected = False
         self._clipboard_capture_enabled = False  # 侧栏剪贴板归属；默认关
         self._assist_watch = False  # 辅助粘贴开关：只看系统剪贴板
+        self._assist_undo = []
+        self._assist_redo = []
+        self._assist_history_mime = None
         self._entry_title_tone = "idle"
         self._entry_title_text = "录入"
         self._theme_mode = "draft"
@@ -1847,7 +1876,7 @@ class PagePaste(QWidget):
         return box
 
     def _build_assist_paste_panel(self) -> QWidget:
-        """保存下方：滑动开关 + 三个热键按钮。用法写在按钮上。"""
+        """保存下方：滑动开关、历史按钮和三个辅助粘贴操作。"""
         box = _transparent_bg(QWidget())
         box.setObjectName("PasteAssistBox")
         lay = QVBoxLayout(box)
@@ -1864,6 +1893,19 @@ class PagePaste(QWidget):
         self.btn_assist_watch = _AssistWatchButton()
         self.btn_assist_watch.toggled.connect(self._on_assist_watch_toggled)
         head_l.addWidget(self.btn_assist_watch, 0, Qt.AlignVCenter)
+        self.btn_assist_undo = QPushButton()
+        self.btn_assist_redo = QPushButton()
+        for button, label, undo in (
+            (self.btn_assist_undo, "撤销", True),
+            (self.btn_assist_redo, "重做", False),
+        ):
+            button.setFixedSize(24, 24)
+            button.setIconSize(QSize(18, 18))
+            button.setCursor(Qt.PointingHandCursor)
+            button.setAccessibleName(label)
+            button.setToolTip(f"{label}剪贴板修改")
+            button.clicked.connect(lambda _checked=False, move_back=undo: self._step_assist_history(move_back))
+            head_l.addWidget(button, 0, Qt.AlignVCenter)
         lay.addWidget(head)
 
         self._assist_btns = []
@@ -1880,6 +1922,7 @@ class PagePaste(QWidget):
 
         self._restyle_assist_panel()
         self._set_assist_ops_enabled(False)
+        self._refresh_assist_history_buttons()
         return box
 
     def _on_assist_watch_toggled(self, on: bool):
@@ -1938,6 +1981,7 @@ class PagePaste(QWidget):
             return
         snap = getattr(self, "_assist_watch_snap", None) or {}
         self._assist_watch = False
+        self._clear_assist_history()
         self._set_assist_ops_enabled(False)
         self._unbind_hotkeys(keep_filter=True)
         theme_w = getattr(self, "inp_theme", None)
@@ -2073,6 +2117,18 @@ class PagePaste(QWidget):
         )
         for btn in getattr(self, "_assist_btns", []) or []:
             btn.setStyleSheet(qss)
+        history_qss = (
+            f"QPushButton{{background:{bg};border:1px solid {border};border-radius:5px;padding:0;min-width:0;}}"
+            f"QPushButton:hover{{background:{hover};}}"
+            f"QPushButton:pressed{{background:{pressed};}}"
+            f"QPushButton:focus{{border-color:{tk('accent')};}}"
+            f"QPushButton:disabled{{background:{dis_bg};border-color:{dis_bd};}}"
+        )
+        for btn, redo in ((self.btn_assist_undo, False), (self.btn_assist_redo, True)):
+            icon = QIcon(_history_arrow(redo, fg))
+            icon.addPixmap(_history_arrow(redo, mut), QIcon.Disabled)
+            btn.setIcon(icon)
+            btn.setStyleSheet(history_qss)
         watch = getattr(self, "btn_assist_watch", None)
         if watch is not None:
             watch.update()
@@ -2542,6 +2598,8 @@ class PagePaste(QWidget):
         watching = bool(getattr(self, "_assist_watch", False))
         if not watching and not getattr(self, "_clipboard_capture_enabled", False):
             return
+        if watching and not self._clip_op_busy:
+            self._check_assist_history()
         if self._ignore_clip > 0 or self._clip_op_busy:
             return
         timer = getattr(self, "_clip_timer", None)
@@ -2696,18 +2754,68 @@ class PagePaste(QWidget):
             self._copied_live = False
             self._set_entry_status("正在编辑。" + _PASTE_SAVE_HINT, "warn")
 
-    def _set_clipboard_text(self, text: str):
-        """写入剪贴板；短暂忽略 dataChanged，写完再自己刷录入区。"""
-        self._ignore_clip += 1
+    def _write_clipboard_mime(self, data: QMimeData) -> bool:
+        self.begin_clip_ignore()
         try:
             cb = QApplication.clipboard()
             if cb is not None:
-                cb.setText(text or "")
+                cb.setMimeData(data)
+                if cb.mimeData() is data:
+                    return True
         except Exception:
             log.exception("粘贴助手写剪贴板失败")
         finally:
-            QTimer.singleShot(80, self._release_ignore_clip)
-        self._apply_clipboard_text(text or "")
+            if self._assist_watch:
+                self._release_ignore_clip()
+            else:
+                QTimer.singleShot(80, self._release_ignore_clip)
+        return False
+
+    def _refresh_assist_history_buttons(self):
+        ready = self._assist_watch and not self._clip_op_busy
+        self.btn_assist_undo.setEnabled(ready and bool(self._assist_undo))
+        self.btn_assist_redo.setEnabled(ready and bool(self._assist_redo))
+
+    def _clear_assist_history(self):
+        self._assist_undo.clear()
+        self._assist_redo.clear()
+        self._assist_history_mime = None
+        self._refresh_assist_history_buttons()
+
+    def _check_assist_history(self):
+        # Qt 持有剪贴板时返回原 MIME 对象；其他复制即使文本相同也不会误认成历史项。
+        if self._assist_history_mime is None:
+            return
+        cb = QApplication.clipboard()
+        if cb is None or cb.mimeData() is not self._assist_history_mime:
+            self._clear_assist_history()
+
+    def _step_assist_history(self, undo: bool):
+        if not self._assist_watch or self._clip_op_busy:
+            return
+        self._check_assist_history()
+        source, target = (self._assist_undo, self._assist_redo) if undo else (self._assist_redo, self._assist_undo)
+        if not source:
+            self._show_system_clipboard_now()
+            return
+        saved, before, after = source[-1]
+        if undo:
+            data = _clone_mime(saved)
+        else:
+            data = QMimeData()
+            data.setText(after)
+
+        self._clip_op_busy = True
+        written = self._write_clipboard_mime(data)
+        self._clip_op_busy = False
+        if written:
+            target.append(source.pop())
+            self._assist_history_mime = data
+            self._show_system_clipboard(before if undo else after)
+        else:
+            self._check_assist_history()
+            self._show_system_clipboard_now()
+        self._refresh_assist_history_buttons()
 
     def _release_ignore_clip(self):
         self._ignore_clip = max(0, int(self._ignore_clip) - 1)
@@ -2783,6 +2891,7 @@ class PagePaste(QWidget):
     def shutdown(self):
         self._clip_op_busy = False
         self._clip_op = None
+        self._clear_assist_history()
         self._unbind_hotkeys()
         timer = getattr(self, "_clip_timer", None)
         if timer is not None:
@@ -2846,7 +2955,9 @@ class PagePaste(QWidget):
 
     def _begin_clip_op(self, op: int):
         """Ctrl+Alt+1/2/3：取当前选中文本 B，与剪贴板 A 做加入/减去/互换。"""
+        self._check_assist_history()
         self._clip_op_busy = True
+        self._refresh_assist_history_buttons()
         a = ""
         saved = QMimeData()
         try:
@@ -2861,6 +2972,7 @@ class PagePaste(QWidget):
             "a": a,
             "saved": saved,
             "seq": _clip_seq(),
+            "session": self._assist_watch_snap,
         }
         # 本进程前台且控件里有选区：不必模拟 Ctrl+C
         try:
@@ -2920,24 +3032,28 @@ class PagePaste(QWidget):
     def _clip_op_restore_saved(self):
         ctx = getattr(self, "_clip_op", None) or {}
         saved = ctx.get("saved")
-        try:
-            cb = QApplication.clipboard()
-            if cb is not None and isinstance(saved, QMimeData):
-                cb.setMimeData(_clone_mime(saved))
-        except Exception:
-            a = ctx.get("a")
-            if a:
-                try:
-                    QApplication.clipboard().setText(a)
-                except Exception:
-                    pass
+        if isinstance(saved, QMimeData):
+            data = _clone_mime(saved)
+            if self._write_clipboard_mime(data):
+                return data
+        a = ctx.get("a")
+        if a:
+            data = QMimeData()
+            data.setText(a)
+            if self._write_clipboard_mime(data):
+                return data
+        return None
 
     def _clip_op_abort(self, hint: str):
-        self._ignore_clip += 1
-        self._clip_op_restore_saved()
+        restored = self._clip_op_restore_saved()
+        if self._assist_history_mime is not None:
+            if restored is not None:
+                self._assist_history_mime = restored
+            else:
+                self._check_assist_history()
         self._clip_op_busy = False
         self._clip_op = None
-        QTimer.singleShot(80, self._release_ignore_clip)
+        self._refresh_assist_history_buttons()
         if hint:
             self._show_hint(hint)
             QTimer.singleShot(1400, self._restore_hint_after_op)
@@ -2949,6 +3065,29 @@ class PagePaste(QWidget):
         else:
             self._set_entry_copied(False)
 
+    def _commit_clip_op(self, text: str, hint: str):
+        ctx = self._clip_op
+        before = ctx["a"]
+        if text == before:
+            self._clip_op_abort("")
+            return
+        data = QMimeData()
+        data.setText(text)
+        if not self._write_clipboard_mime(data):
+            self._clip_op_abort("写入剪贴板失败")
+            return
+        if self._assist_watch and ctx["session"] is self._assist_watch_snap:
+            self._assist_undo.append((ctx["saved"], before, text))
+            del self._assist_undo[:-_ASSIST_HISTORY_LIMIT]
+            self._assist_redo.clear()
+            self._assist_history_mime = data
+        self._clip_op_busy = False
+        self._clip_op = None
+        self._refresh_assist_history_buttons()
+        self._apply_clipboard_text(text)
+        self._show_hint(self._status_with_plat(hint, text))
+        QTimer.singleShot(1600, self._restore_hint_after_op)
+
     def _finish_clip_op(self, b: str):
         ctx = getattr(self, "_clip_op", None) or {}
         op = int(ctx.get("op") or 0)
@@ -2958,12 +3097,7 @@ class PagePaste(QWidget):
             self._clip_op_abort("没有选中文本")
             return
         if op == 1:
-            new = _clip_add(a, b)
-            self._clip_op_busy = False
-            self._clip_op = None
-            self._set_clipboard_text(new)
-            self._show_hint(self._status_with_plat("已加入选中文本", new))
-            QTimer.singleShot(1600, self._restore_hint_after_op)
+            self._commit_clip_op(_clip_add(a, b), "已加入选中文本")
             return
         if op == 2:
             if not a:
@@ -2973,11 +3107,7 @@ class PagePaste(QWidget):
             if not found:
                 self._clip_op_abort("选中内容不在复制里")
                 return
-            self._clip_op_busy = False
-            self._clip_op = None
-            self._set_clipboard_text(new)
-            self._show_hint(self._status_with_plat("已从复制中减去选中文本", new))
-            QTimer.singleShot(1600, self._restore_hint_after_op)
+            self._commit_clip_op(new, "已从复制中减去选中文本")
             return
         if op == 3:
             self._clip_op_do_swap(a, b)
@@ -2991,11 +3121,7 @@ class PagePaste(QWidget):
         except Exception:
             fg = 0
         if _hwnd_is_self(fg) and self._replace_form_selection(a):
-            self._clip_op_busy = False
-            self._clip_op = None
-            self._set_clipboard_text(b)
-            self._show_hint(self._status_with_plat("已互换复制与选中文本", b))
-            QTimer.singleShot(1600, self._restore_hint_after_op)
+            self._commit_clip_op(b, "已互换复制与选中文本")
             return
         # 外进程：剪贴板先放 A，Ctrl+V 覆盖选区，再把剪贴板改成 B
         self._swap_b = b
@@ -3022,11 +3148,7 @@ class PagePaste(QWidget):
             return
         b = getattr(self, "_swap_b", None)
         self._swap_b = None
-        self._clip_op_busy = False
-        self._clip_op = None
-        self._set_clipboard_text(b or "")
-        self._show_hint(self._status_with_plat("已互换复制与选中文本", b or ""))
-        QTimer.singleShot(1600, self._restore_hint_after_op)
+        self._commit_clip_op(b or "", "已互换复制与选中文本")
 
     def _action_icon_colors(self, frozen: bool):
         if frozen:

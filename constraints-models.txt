@@ -1,0 +1,6 @@
+# Keep the model stack on the NumPy 1.x ABI.
+numpy>=1.24,<2
+opencv-python<4.12
+opencv-python-headless<4.12
+opencv-contrib-python<4.12
+opencv-contrib-python-headless<4.12

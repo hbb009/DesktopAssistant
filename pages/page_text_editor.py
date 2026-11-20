@@ -6,14 +6,14 @@ import os
 import re
 from datetime import datetime
 
-from PyQt5.QtCore import Qt, QEvent, QTimer, QSize, QPoint, QRectF, pyqtSignal
+from PyQt5.QtCore import Qt, QEvent, QTimer, QSize, QPoint, QRect, QRectF, QMimeData, pyqtSignal
 from PyQt5.QtGui import (
-    QTextCursor, QFont, QPixmap, QPainter, QColor, QPen, QKeySequence,
+    QTextCursor, QFont, QPixmap, QPainter, QColor, QPen, QKeySequence, QDrag,
 )
 from PyQt5.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit,
+    QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QPushButton, QTextEdit,
     QSizePolicy, QApplication, QLineEdit, QScrollArea, QFrame,
-    QListWidget, QRadioButton, QButtonGroup, QCheckBox, QShortcut,
+    QListWidget, QCheckBox, QShortcut, QDialog, QDialogButtonBox, QTabWidget,
 )
 
 from styles.style_all import (
@@ -23,11 +23,15 @@ from styles.style_all import (
     restyle_card_frame,
     apply_btn_download,
     apply_medium_button,
+    make_glyph_icon,
     MEDIUM_BUTTON_H,
     CARD_LEFT_GAP,
+    VIDEO_TAB_QSS,
+    fmt,
 )
 from pages.seq_dup_panel import SeqDupPanel
 from pages.editor_speak import EditorSpeak, make_speak_button, style_speak_button
+from utils.flow_layout import FlowLayout, FlowLayoutHost
 from utils.logger import get_logger
 
 log = get_logger(__name__)
@@ -38,9 +42,26 @@ _KEEP_VER_FALLBACK = "v9.19"
 _PREFIX_MAX = 24          # 历史前缀上限
 _PREFIX_CARD_H = 30       # 卡片高（压缩以适配小窗口）
 _PREFIX_CARD_MIN_W = 46   # 卡片最小宽
+_PREFIX_CARD_MAX_W = 180  # 较长符号在卡片内省略，完整内容仍可应用
 _PREFIX_DRAG_PX = 6       # 拖拽启动阈值
 _PREFIX_GUIDE_W = 12      # 拖拽插入虚线宽
 _PREFIX_SPACING = 6
+_NUMBER_STYLES = (
+    ("decimal", "1.2.", "数字加句点"),
+    ("upper", "A.B.", "大写字母"),
+    ("circled", "① ②", "带圈数字"),
+    ("chinese", "一、 二、", "中文序号"),
+    ("comma", "1、2、", "数字加顿号"),
+    ("brackets", "(1)(2)", "数字加括号"),
+    ("right_bracket", "1)2)", "数字加右括号"),
+    ("lower", "a.b.", "小写字母"),
+)
+_PREFIX_BLANK = re.compile(r"[\s\u00ad\u180e\u200b-\u200f\u202a-\u202e\u2060\u2066-\u2069\ufeff]*")
+_NUMBER_PREFIX = re.compile(
+    r"^(?:(?:\d+|[A-Za-z])[.．](?!\d)|(?:[A-Z]{2,5}|[a-z]{2,5})[.．](?=\s)"
+    r"|(?:\d+|[A-Z]{1,5}|[a-z]{1,5})[、)）]"
+    r"|[（(]\d+[）)]|[零〇一二三四五六七八九十百千万亿]+、|[①-⑳㉑-㉟㊱-㊿])\s*"
+)
 _PREFIX_PALETTE = (
     "#3b82f6", "#8b5cf6", "#ec4899", "#ef4444", "#f97316",
     "#eab308", "#22c55e", "#14b8a6", "#06b6d4", "#f43f5e",
@@ -359,6 +380,124 @@ def smart_line_breaks(raw: str) -> str:
     return "\n\n".join(paras)
 
 
+def remove_right_margin_breaks(text: str) -> str:
+    """接回句内硬换行，保留空行、句末断行和明显的段落起点。"""
+    lines = text.split("\n")
+    parts = [lines[0]]
+    for previous, line in zip(lines, lines[1:]):
+        left, right = previous.rstrip(), line.lstrip()
+        if (
+            not left or not right
+            or _ends_with_sentence(left)
+            or line.startswith(("  ", "\t", "\u3000"))
+            or _LIST_START.match(right)
+        ):
+            parts.extend(("\n", line))
+            continue
+
+        left_char, right_char = left[-1], right[0]
+        parts[-1] = parts[-1].rstrip()
+        if not (
+            _is_cjk_letter(left_char) or _is_cjk_letter(right_char)
+            or left_char in "([{/（【《「『“‘"
+            or right_char in ",.!?;:%)]}，。！？、；：）】》」』”’…"
+            or (left_char == "-" and right_char.isascii() and right_char.islower())
+        ):
+            parts.append(" ")
+        parts.append(right)
+    return "".join(parts)
+
+
+def remove_intrasentence_whitespace(text: str) -> str:
+    """清理句内空白，保留句末分隔、空行和段首缩进。"""
+    def replace_gap(match: re.Match) -> str:
+        gap = match.group()
+        start, end = match.span()
+        if start == 0 or end == len(text):
+            return gap
+
+        lines = gap.split("\n")
+        if len(lines) > 2 or (len(lines) == 2 and lines[-1].startswith(("  ", "\t", "\u3000"))):
+            return gap
+
+        mark = start - 1
+        while mark >= 0 and text[mark] in _CLOSERS:
+            mark -= 1
+        if mark < 0 or text[end] in "”’）)】》」』]}":
+            return ""
+
+        punctuation = text[mark]
+        if punctuation in _SENT_END or punctuation == "．":
+            return gap
+        # 省略号可以表示句中的停顿。普通句点仍保留后面的句间空白。
+        if punctuation == "." and text[mark - 1:mark] != "." and _period_ends_sentence(text, mark):
+            return gap
+        return ""
+
+    return re.sub(r"\s+", replace_gap, text)
+
+
+_LAYOUT_MARKER = re.compile(r"^(?:#{1,6}(?:\s|$)|[>|])")
+_LAYOUT_LIST = re.compile(r"^(?:\+\s|[A-Za-z][.)]\s)")
+_LAYOUT_FENCE = re.compile(r"^(?:`{3,}|~{3,})")
+
+
+def format_paragraphs(text: str, *, blank_line: bool, indent: bool, trim_end: bool, line_range=None) -> str:
+    """以编辑器里实际的换行为段落边界。标题、列表、引用、表格和围栏代码保留结构。"""
+    result = []
+    blanks = []
+    previous_paragraph = False
+    in_list = False
+    fence = ""
+    for index, line in enumerate(text.split("\n")):
+        selected = line_range is None or line_range[0] <= index <= line_range[1]
+        content = line.lstrip()
+        marker = _LAYOUT_FENCE.match(content)
+        if fence or marker:
+            result.extend(blanks)
+            blanks.clear()
+            result.append(line)
+            previous_paragraph = False
+            in_list = False
+            if marker:
+                token = marker.group()
+                if not fence:
+                    fence = token
+                elif token.startswith(fence) and not content[marker.end():].strip():
+                    fence = ""
+            continue
+
+        if trim_end and selected:
+            line = line.rstrip()
+            content = content.rstrip()
+        if not content:
+            blanks.append(line)
+            continue
+
+        list_continuation = in_list and not blanks and line.startswith(("  ", "\t"))
+        in_list = bool(list_continuation or _LIST_START.match(content) or _LAYOUT_LIST.match(content))
+        paragraph = selected and not (in_list or _LAYOUT_MARKER.match(content))
+        if blank_line and previous_paragraph and paragraph:
+            result.append("")
+        else:
+            result.extend(blanks)
+        blanks.clear()
+        result.append("\u3000\u3000" + content if indent and paragraph else line)
+        previous_paragraph = paragraph
+
+    result.extend(blanks)
+    return "\n".join(result)
+
+
+def _selected_text_offsets(cursor):
+    """把 Qt 的 UTF-16 光标位置换算为 Python 文本下标。"""
+    prefix = QTextCursor(cursor)
+    prefix.setPosition(cursor.selectionStart())
+    prefix.movePosition(QTextCursor.Start, QTextCursor.KeepAnchor)
+    start = len(prefix.selectedText())
+    return start, start + len(cursor.selectedText())
+
+
 class _PrefixCard(QWidget):
     """前缀卡片：彩色圆角（仿提示词分类卡）。单击回填 / ✕删除 / 按住拖动排序。
 
@@ -379,6 +518,7 @@ class _PrefixCard(QWidget):
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setAutoFillBackground(False)
         self.setCursor(Qt.OpenHandCursor)
+        self.setToolTip(f"点击添加行首前缀「{symbol}」，拖动可排序")
         self.setFixedHeight(_PREFIX_CARD_H)
         self.setMinimumWidth(_PREFIX_CARD_MIN_W)
 
@@ -390,7 +530,9 @@ class _PrefixCard(QWidget):
         lay.setContentsMargins(8, 0, 20, 0)
         lay.setSpacing(0)
         lab = QLabel(symbol)
+        lab.setTextFormat(Qt.PlainText)
         lab.setAlignment(Qt.AlignCenter)
+        lab.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         lab.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         lay.addWidget(lab, 1)
         self._lab = lab
@@ -411,6 +553,9 @@ class _PrefixCard(QWidget):
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._place_x()
+        margins = self.layout().contentsMargins()
+        width = max(0, self.width() - margins.left() - margins.right())
+        self._lab.setText(self._lab.fontMetrics().elidedText(self.symbol, Qt.ElideRight, width))
 
     def apply_theme(self):
         self._apply_card_style()
@@ -458,7 +603,7 @@ class _PrefixCard(QWidget):
     def mouseReleaseEvent(self, e):
         was_drag = self._dragging
         if was_drag:
-            self._owner._end_prefix_drag()
+            self._owner._end_prefix_drag(e.globalPos())
         self._dragging = False
         self._press = None
         self.setCursor(Qt.OpenHandCursor)
@@ -466,37 +611,6 @@ class _PrefixCard(QWidget):
             if self.rect().contains(e.pos()):
                 self.clicked.emit(self.symbol)
         super().mouseReleaseEvent(e)
-
-
-class _PrefixEmptyCard(QWidget):
-    """无历史时的占位「前缀卡」：虚线圆角框 + 中央「空」。"""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("VoicePrefixEmptyCard")
-        self.setFixedSize(64, _PREFIX_CARD_H)
-        self.setCursor(Qt.ArrowCursor)
-
-    def paintEvent(self, _e):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        try:
-            dark = bool(theme.is_dark)
-        except Exception:
-            dark = True
-        rim = QColor("#4b5a85" if dark else "#c2cce0")
-        dim = QColor("#6f7fa8" if dark else "#94a3b8")
-        pen = QPen(rim, 1, Qt.CustomDashLine)
-        pen.setDashPattern([3, 3])
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
-        p.drawRoundedRect(QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5), 8.0, 8.0)
-        p.setPen(dim)
-        f = QFont()
-        f.setPixelSize(12)
-        p.setFont(f)
-        p.drawText(self.rect(), Qt.AlignCenter, "空")
-        p.end()
 
 
 class _PrefixDragPreview(QWidget):
@@ -546,32 +660,28 @@ class _PrefixDropGuide(QWidget):
 
 _CHAR_CELL_H = 22
 _CHAR_GAP = 3
-_CHAR_PREVIEW_MAX_W = 280
+_SYMBOL_INPUT_W = 180
 
 
 class _CharPreview(QWidget):
-    """输入框右侧：每个字符一块小格子，空格显示成可见空位。"""
+    """输入框下方：每个字符一块小格子，空格显示成可见空位。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("SymbolCharPreview")
+        self.setAccessibleName("字符预览")
         self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setFixedHeight(28)
-        self.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
+        self.setFixedSize(_SYMBOL_INPUT_W, 28)
         f = QFont(self.font())
         f.setPixelSize(12)
         self.setFont(f)
         self._text = ""
-        self.hide()
 
     def set_text(self, text: str):
         text = text if isinstance(text, str) else str(text or "")
         if text == self._text:
-            self._sync_width()
             return
         self._text = text
-        self.setVisible(bool(text))
-        self._sync_width()
         self.update()
 
     def _cells(self):
@@ -593,35 +703,14 @@ class _CharPreview(QWidget):
             out.append((shown, space, w))
         return out
 
-    def _content_w(self) -> int:
-        cells = self._cells()
-        if not cells:
-            return 0
-        return int(sum(c[2] for c in cells) + _CHAR_GAP * (len(cells) - 1))
-
-    def _sync_width(self):
-        w = self._content_w()
-        if w <= 0:
-            self.setFixedWidth(0)
-        else:
-            cap = _CHAR_PREVIEW_MAX_W
-            parent = self.parentWidget()
-            if parent is not None and parent.width() > 0:
-                cap = min(cap, max(18, parent.width()))
-            self.setFixedWidth(min(cap, w))
-        self.updateGeometry()
-
-    def sizeHint(self):
-        return QSize(min(_CHAR_PREVIEW_MAX_W, self._content_w()) if self._text else 0, 28)
-
-    def minimumSizeHint(self):
-        return QSize(0, 28)
-
     def paintEvent(self, _e):
-        if not self._text:
-            return
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing, True)
+        if not self._text:
+            p.setPen(QColor(tk("text_dim")))
+            p.drawText(self.rect().adjusted(2, 0, 0, 0), Qt.AlignLeft | Qt.AlignVCenter, "字符预览")
+            p.end()
+            return
         try:
             fg = QColor(tk("text"))
             dim = QColor(tk("text_dim"))
@@ -655,22 +744,153 @@ class _CharPreview(QWidget):
         p.end()
 
 
-class _PrefixHScroll(QScrollArea):
-    """横向滚动区：滚轮转横滑，像提示词分区卡那行。"""
-
-    def wheelEvent(self, e):
-        bar = self.horizontalScrollBar()
-        delta = e.angleDelta().x() or e.angleDelta().y()
-        if bar is not None and bar.maximum() > 0 and delta:
-            bar.setValue(bar.value() - delta)
-            e.accept()
-            return
-        super().wheelEvent(e)
-
-
 _SEP_PX = 3
+_TEXT_ACTION_SPACING = 4
+_TEXT_TOOL_MIME = "application/x-desktop-assistant-text-tool"
 _UNDO_MAX = 5           # 操作记录「撤销 / 重做」最多 5 步
 _UNDO_IDLE_MS = 700     # 连续输入停这么久算一步
+
+
+class _TextToolButton(QPushButton):
+    def __init__(self, text):
+        super().__init__(text)
+        self._press_pos = None
+
+    def mousePressEvent(self, event):
+        self._press_pos = event.pos() if event.button() == Qt.LeftButton else None
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        press = self._press_pos
+        if (
+            press is None or not (event.buttons() & Qt.LeftButton)
+            or (event.pos() - press).manhattanLength() < QApplication.startDragDistance()
+        ):
+            super().mouseMoveEvent(event)
+            return
+
+        self._press_pos = None
+        self.setDown(False)
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData(_TEXT_TOOL_MIME, b"1")
+        drag.setMimeData(mime)
+        preview = self.grab()
+        painter = QPainter(preview)
+        painter.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+        painter.fillRect(self.rect(), QColor(0, 0, 0, 170))
+        painter.end()
+        drag.setPixmap(preview)
+        drag.setHotSpot(press)
+        try:
+            drag.exec_(Qt.MoveAction)
+        finally:
+            self.parentWidget().clear_drop_guide()
+
+    def mouseReleaseEvent(self, event):
+        self._press_pos = None
+        super().mouseReleaseEvent(event)
+
+
+class _TextToolGrid(QWidget):
+    order_changed = pyqtSignal()
+    COLUMNS = 3
+
+    def __init__(self, buttons, parent=None):
+        super().__init__(parent)
+        self.setAcceptDrops(True)
+        self._buttons = buttons
+        self._grid = QGridLayout(self)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setSpacing(_TEXT_ACTION_SPACING)
+        for column in range(self.COLUMNS):
+            self._grid.setColumnStretch(column, 1)
+        self._guide = QFrame(self)
+        self._guide.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self._guide.hide()
+        self.restore_order(None)
+
+    def order(self):
+        return list(self._order)
+
+    def restore_order(self, saved):
+        keys = saved if isinstance(saved, list) else []
+        order = dict.fromkeys(key for key in keys if isinstance(key, str) and key in self._buttons)
+        order.update(dict.fromkeys(self._buttons))
+        self._arrange(list(order))
+
+    def _arrange(self, order):
+        self._order = order
+        for button in self._buttons.values():
+            self._grid.removeWidget(button)
+        for index, key in enumerate(order):
+            row, column = divmod(index, self.COLUMNS)
+            self._grid.addWidget(self._buttons[key], row, column)
+
+    def clear_drop_guide(self):
+        self._guide.hide()
+
+    def _drag_source(self, event):
+        if not event.mimeData().hasFormat(_TEXT_TOOL_MIME):
+            return None
+        source = event.source()
+        return next((i for i, key in enumerate(self._order) if self._buttons[key] is source), None)
+
+    def _drop_location(self, pos):
+        rects = [self._buttons[key].geometry() for key in self._order]
+        row_starts = range(0, len(rects), self.COLUMNS)
+        row = min(row_starts, key=lambda index: abs(rects[index].center().y() - pos.y()))
+        row_end = min(row + self.COLUMNS, len(rects))
+        for index in range(row, row_end):
+            rect = rects[index]
+            if pos.x() <= rect.center().x():
+                return index, self._guide_rect(rect, after=False)
+        return row_end, self._guide_rect(rects[row_end - 1], after=True)
+
+    def _guide_rect(self, target, after):
+        gap = _TEXT_ACTION_SPACING // 2
+        x = target.right() + gap if after else target.left() - gap
+        return QRect(max(0, min(x, self.width() - 2)), target.y(), 2, target.height())
+
+    def dragEnterEvent(self, event):
+        if self._drag_source(event) is None:
+            event.ignore()
+            return
+        self._guide.setStyleSheet(f"background:{tk('text')};border:none;")
+        event.acceptProposedAction()
+
+    def dragMoveEvent(self, event):
+        source = self._drag_source(event)
+        if source is None:
+            event.ignore()
+            return
+        insert, rect = self._drop_location(event.pos())
+        if insert in (source, source + 1):
+            self.clear_drop_guide()
+        else:
+            self._guide.setGeometry(rect)
+            self._guide.show()
+            self._guide.raise_()
+        event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event):
+        self.clear_drop_guide()
+        event.accept()
+
+    def dropEvent(self, event):
+        self.clear_drop_guide()
+        source = self._drag_source(event)
+        if source is None:
+            event.ignore()
+            return
+        insert, _ = self._drop_location(event.pos())
+        if insert not in (source, source + 1):
+            order = self.order()
+            key = order.pop(source)
+            order.insert(insert - int(source < insert), key)
+            self._arrange(order)
+            self.order_changed.emit()
+        event.acceptProposedAction()
 
 
 class PageTextEditor(QWidget):
@@ -811,21 +1031,23 @@ class PageTextEditor(QWidget):
         cve.addWidget(self.editor, 1)
 
         row_edit_btn = QHBoxLayout()
-        row_edit_btn.setSpacing(8)
+        row_edit_btn.setSpacing(_TEXT_ACTION_SPACING)
         self.chk_tr_selection = QCheckBox("选中文本")
         self.chk_tr_selection.setChecked(False)
         self.chk_tr_selection.setStyleSheet("background:transparent;")
         self.chk_tr_selection.setMinimumWidth(0)
         self.chk_tr_selection.setCursor(Qt.PointingHandCursor)
-        self.btn_tr_en = apply_medium_button(QPushButton("译为英"))
+        self.btn_tr_en = apply_medium_button(QPushButton("En"))
+        self.btn_tr_en.setToolTip("译为英文")
         self.btn_tr_en.setMinimumHeight(28)
         self.btn_tr_en.setMinimumWidth(0)
         self.btn_tr_en.clicked.connect(lambda: self._translate_editor("zh-en"))
-        self.btn_tr_zh = apply_medium_button(QPushButton("译为中"))
+        self.btn_tr_zh = apply_medium_button(QPushButton("Ch"))
+        self.btn_tr_zh.setToolTip("译为中文")
         self.btn_tr_zh.setMinimumHeight(28)
         self.btn_tr_zh.setMinimumWidth(0)
         self.btn_tr_zh.clicked.connect(lambda: self._translate_editor("en-zh"))
-        self.btn_quick_keep = apply_medium_button(QPushButton("速存文本"))
+        self.btn_quick_keep = apply_medium_button(QPushButton("速存"))
         self.btn_quick_keep.setMinimumHeight(28)
         self.btn_quick_keep.setMinimumWidth(0)
         self.btn_quick_keep.clicked.connect(self._quick_keep)
@@ -835,10 +1057,23 @@ class PageTextEditor(QWidget):
         self.btn_copy.setMinimumWidth(0)
         self.btn_copy.setCursor(Qt.PointingHandCursor)
         self.btn_copy.clicked.connect(self._copy_text)
-        self.btn_clear_editor = apply_medium_button(QPushButton("清空编辑区"))
+        self.btn_clear_editor = apply_medium_button(QPushButton("清空"))
         self.btn_clear_editor.setMinimumHeight(28)
         self.btn_clear_editor.setMinimumWidth(0)
         self.btn_clear_editor.clicked.connect(self._on_clear_editor)
+        self.btn_undo = apply_medium_button(QPushButton())
+        self.btn_redo = apply_medium_button(QPushButton())
+        for button, label, action in (
+            (self.btn_undo, "撤销", self._undo_editor),
+            (self.btn_redo, "重做", self._redo_editor),
+        ):
+            button.setFixedSize(MEDIUM_BUTTON_H, MEDIUM_BUTTON_H)
+            button.setStyleSheet(f"padding: 0; min-width: {MEDIUM_BUTTON_H - 2}px;")
+            button.setIconSize(QSize(22, 22))
+            button.setAccessibleName(label)
+            button.setToolTip(label)
+            button.clicked.connect(action)
+        self._refresh_history_icons()
         row_edit_btn.addWidget(self.chk_tr_selection, 0, Qt.AlignVCenter)
         row_edit_btn.addWidget(self.btn_tr_en, 0)
         row_edit_btn.addWidget(self.btn_tr_zh, 0)
@@ -846,15 +1081,16 @@ class PageTextEditor(QWidget):
         row_edit_btn.addWidget(self.btn_quick_keep, 0)
         row_edit_btn.addWidget(self.btn_copy, 0)
         row_edit_btn.addWidget(self.btn_clear_editor, 0)
+        row_edit_btn.addWidget(self.btn_undo, 0)
+        row_edit_btn.addWidget(self.btn_redo, 0)
         cve.addLayout(row_edit_btn)
 
 
-        # ══ 右 30%：操作记录 | 编辑 | 文件处理（三区，无互斥蒙层）══
+        # ══ 右 30%：操作记录和文本操作页签 ════════════════════════
         right = QWidget()
         right.setObjectName("TextEditorRight")
         right.setAttribute(Qt.WA_StyledBackground, True)
         right.setStyleSheet("#TextEditorRight{background:transparent;border:none;}")
-        right.setMinimumWidth(0)
         right.setMinimumHeight(0)
         right.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         rv = QVBoxLayout(right)
@@ -871,24 +1107,7 @@ class PageTextEditor(QWidget):
         cv3 = QVBoxLayout(card_log)
         cv3.setContentsMargins(0, 0, 0, 0)
         cv3.setSpacing(2)
-        row_log_title = QHBoxLayout()
-        row_log_title.setContentsMargins(0, 0, 0, 0)
-        row_log_title.setSpacing(6)
-        row_log_title.addWidget(self._section_title("操作记录"), 0, Qt.AlignVCenter)
-        row_log_title.addStretch(1)
-        self.btn_undo = apply_medium_button(QPushButton("撤销"))
-        self.btn_undo.setMinimumHeight(MEDIUM_BUTTON_H)
-        self.btn_undo.setMinimumWidth(0)
-        self.btn_undo.setCursor(Qt.PointingHandCursor)
-        self.btn_undo.clicked.connect(self._undo_editor)
-        self.btn_redo = apply_medium_button(QPushButton("重做"))
-        self.btn_redo.setMinimumHeight(MEDIUM_BUTTON_H)
-        self.btn_redo.setMinimumWidth(0)
-        self.btn_redo.setCursor(Qt.PointingHandCursor)
-        self.btn_redo.clicked.connect(self._redo_editor)
-        row_log_title.addWidget(self.btn_undo, 0)
-        row_log_title.addWidget(self.btn_redo, 0)
-        cv3.addLayout(row_log_title)
+        cv3.addWidget(self._section_title("操作记录"), 0, Qt.AlignLeft)
         self.log = QListWidget()
         self.log.setObjectName("SimpleRecordList")
         self.log.setMinimumWidth(0)
@@ -901,76 +1120,135 @@ class PageTextEditor(QWidget):
         rv.addWidget(card_log, 28)
         self._refresh_undo_btns()
 
-        # —— 2) 编辑（整理 + 加序号 + 加符号，压成约 4 行）——
+        self.tool_tabs = QTabWidget()
+        self.tool_tabs.setObjectName("VideoTabWidget")
+        self.tool_tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        tab_bar = self.tool_tabs.tabBar()
+        tab_bar.setDrawBase(False)
+        tab_bar.setExpanding(False)
+        tab_bar.setElideMode(Qt.ElideNone)
+        rv.addWidget(self.tool_tabs, 72)
+
+        # —— 2) 文本编辑（整理、替换、加序号、加符号）——
         edit_panel = QWidget()
         edit_panel.setObjectName("TextEditorEditZone")
         edit_panel.setAttribute(Qt.WA_StyledBackground, True)
         edit_panel.setStyleSheet("#TextEditorEditZone{background:transparent;border:none;}")
         edit_panel.setMinimumHeight(0)
-        edit_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        edit_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
         cve_r = QVBoxLayout(edit_panel)
         cve_r.setContentsMargins(0, 0, 0, 0)
         cve_r.setSpacing(4)
         cve_r.setAlignment(Qt.AlignTop)
-        cve_r.addWidget(self._section_title("文本操作"), 0, Qt.AlignLeft)
-        cve_r.addWidget(self._make_hsep())
 
-        row_tools = QHBoxLayout()
-        row_tools.setSpacing(4)
-        self.btn_one_para = apply_medium_button(QPushButton("整理成1段"))
-        self.btn_one_para.setMinimumHeight(MEDIUM_BUTTON_H)
-        self.btn_one_para.setMinimumWidth(0)
-        self.btn_one_para.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.btn_one_para.setCursor(Qt.PointingHandCursor)
+        self.btn_right_margin = apply_medium_button(_TextToolButton("去右边界"))
+        self.btn_right_margin.setToolTip("接回句子中间的硬换行，保留空行和明显的段落边界")
+        self.btn_right_margin.clicked.connect(self._remove_right_margin)
+        self.btn_one_para = apply_medium_button(_TextToolButton("整理成1段"))
         self.btn_one_para.clicked.connect(self._collapse_to_one_paragraph)
-        self.btn_del_blank = apply_medium_button(QPushButton("删除空行"))
-        self.btn_del_blank.setMinimumHeight(MEDIUM_BUTTON_H)
-        self.btn_del_blank.setMinimumWidth(0)
-        self.btn_del_blank.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.btn_del_blank.setCursor(Qt.PointingHandCursor)
+        self.btn_del_blank = apply_medium_button(_TextToolButton("删除空行"))
         self.btn_del_blank.clicked.connect(self._remove_blank_lines)
-        self.btn_smart_wrap = apply_medium_button(QPushButton("智能换行"))
-        self.btn_smart_wrap.setMinimumHeight(MEDIUM_BUTTON_H)
-        self.btn_smart_wrap.setMinimumWidth(0)
-        self.btn_smart_wrap.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.btn_smart_wrap.setCursor(Qt.PointingHandCursor)
+        self.btn_smart_wrap = apply_medium_button(_TextToolButton("智能换行"))
         self.btn_smart_wrap.clicked.connect(self._smart_wrap_lines)
-        row_tools.addWidget(self.btn_one_para, 1)
-        row_tools.addWidget(self.btn_del_blank, 1)
-        row_tools.addWidget(self.btn_smart_wrap, 1)
-        cve_r.addLayout(row_tools)
+        self.btn_remove_whitespace = apply_medium_button(_TextToolButton("去除空格"))
+        self.btn_remove_whitespace.setToolTip("去除句内的空格和换行，保留句间分隔。选中文本时只处理选区")
+        self.btn_remove_whitespace.clicked.connect(self._remove_whitespace)
+        self.btn_smart_layout = apply_medium_button(_TextToolButton("智能排版"))
+        self.btn_smart_layout.setToolTip("设置段间空行、段首缩进和行尾空白")
+        self.btn_smart_layout.clicked.connect(self._smart_layout)
+        text_tools = {
+            "right_margin": self.btn_right_margin,
+            "one_paragraph": self.btn_one_para,
+            "delete_blank_lines": self.btn_del_blank,
+            "smart_wrap": self.btn_smart_wrap,
+            "remove_whitespace": self.btn_remove_whitespace,
+            "smart_layout": self.btn_smart_layout,
+        }
+        for button in text_tools.values():
+            button.setMinimumHeight(MEDIUM_BUTTON_H)
+            button.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            button.setStyleSheet("padding: 0 4px;")
+            button.setCursor(Qt.OpenHandCursor)
+        self.tool_grid = _TextToolGrid(text_tools)
+        self.tool_grid.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        self.tool_grid.order_changed.connect(self._mark_prefs_dirty)
+        cve_r.addWidget(self.tool_grid)
+        right.setMinimumWidth(self.tool_grid.sizeHint().width())
         cve_r.addWidget(self._make_hsep())
 
-        row_num = QHBoxLayout()
-        row_num.setSpacing(4)
-        self.btn_add_num = apply_medium_button(QPushButton("加序号"))
-        self.btn_add_num.setMinimumHeight(MEDIUM_BUTTON_H)
-        self.btn_add_num.setMinimumWidth(0)
-        self.btn_add_num.setCursor(Qt.PointingHandCursor)
-        self.btn_add_num.clicked.connect(self._add_line_numbers)
-        row_num.addWidget(self.btn_add_num, 0)
+        row_replace = QHBoxLayout()
+        row_replace.setSpacing(4)
+        self.inp_find_text = QLineEdit()
+        self.inp_replace_text = QLineEdit()
+        for field, label in (
+            (self.inp_find_text, "查找内容"),
+            (self.inp_replace_text, "替换为"),
+        ):
+            field.setObjectName("CalcInput")
+            field.setPlaceholderText(label)
+            field.setAccessibleName(label)
+            field.setFixedHeight(MEDIUM_BUTTON_H)
+            field.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            field.setStyleSheet("padding: 4px 6px;")
+            row_replace.addWidget(field, 1)
+        self.inp_replace_text.setToolTip("留空可删除匹配的文字")
+        self.btn_replace_text = apply_medium_button(QPushButton("替换"))
+        self.btn_replace_text.setMinimumHeight(MEDIUM_BUTTON_H)
+        self.btn_replace_text.setCursor(Qt.PointingHandCursor)
+        self.btn_replace_text.setToolTip("替换选区内的所有匹配，未选中文字时替换全文")
+        self.btn_replace_text.setEnabled(False)
+        self.inp_find_text.textChanged.connect(
+            lambda value: self.btn_replace_text.setEnabled(bool(value))
+        )
+        self.inp_find_text.returnPressed.connect(self.inp_replace_text.setFocus)
+        self.inp_replace_text.returnPressed.connect(self.btn_replace_text.click)
+        self.btn_replace_text.clicked.connect(self._replace_text)
+        row_replace.addWidget(self.btn_replace_text)
+        cve_r.addLayout(row_replace)
+        cve_r.addWidget(self._make_hsep())
+
+        prefix_header = QHBoxLayout()
+        prefix_header.setSpacing(4)
+        prefix_title = QLabel("行首前缀")
+        prefix_title.setProperty("typo", "muted")
+        prefix_header.addWidget(prefix_title)
+        prefix_header.addStretch(1)
+        self.chk_prefix_skip_blank = QCheckBox("忽略空行")
+        self.chk_prefix_skip_blank.setStyleSheet("background:transparent;")
+        self.chk_prefix_skip_blank.setChecked(True)
+        self.chk_prefix_skip_blank.setToolTip("保留空行原样，序号只计算有内容的行")
+        self.chk_prefix_skip_blank.toggled.connect(self._mark_prefs_dirty)
+        prefix_header.addWidget(self.chk_prefix_skip_blank)
         self.inp_num_start = QLineEdit("1")
         self.inp_num_start.setObjectName("CalcInput")
         self.inp_num_start.setToolTip("起始序号（正整数；无效时按 1）")
+        self.inp_num_start.setAccessibleName("起始序号")
         self.inp_num_start.setFixedHeight(MEDIUM_BUTTON_H)
-        self.inp_num_start.setFixedWidth(44)
+        self.inp_num_start.setFixedWidth(46)
+        self.inp_num_start.setStyleSheet("padding: 0 4px;")
         self.inp_num_start.setAlignment(Qt.AlignCenter)
         self.inp_num_start.setMaxLength(6)
-        row_num.addWidget(self.inp_num_start, 0)
-        self._num_style_group = QButtonGroup(self)
-        self.radio_num_abc = QRadioButton("ABC")
-        self.radio_num_123 = QRadioButton("123")
-        self.radio_num_123.setChecked(True)
-        for r in (self.radio_num_abc, self.radio_num_123):
-            r.setStyleSheet("background:transparent;")
-            r.setMinimumWidth(0)
-            r.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
-            r.setCursor(Qt.PointingHandCursor)
-            self._num_style_group.addButton(r)
-            row_num.addWidget(r, 0)
-        row_num.addStretch(1)
-        cve_r.addLayout(row_num)
-        cve_r.addWidget(self._make_hsep())
+        start_label = QLabel("起始")
+        start_label.setProperty("typo", "muted")
+        start_label.setBuddy(self.inp_num_start)
+        prefix_header.addWidget(start_label)
+        prefix_header.addWidget(self.inp_num_start)
+        cve_r.addLayout(prefix_header)
+
+        number_grid = QGridLayout()
+        number_grid.setSpacing(4)
+        for column in range(3):
+            number_grid.setColumnStretch(column, 1)
+        for index, (style, caption, tooltip) in enumerate(_NUMBER_STYLES):
+            button = apply_medium_button(QPushButton(caption))
+            button.setFixedHeight(MEDIUM_BUTTON_H)
+            button.setStyleSheet("padding: 0 3px;")
+            button.setToolTip(tooltip)
+            button.setAccessibleName(tooltip)
+            button.clicked.connect(lambda _checked=False, scheme=style: self._add_line_numbers(scheme))
+            row, column = divmod(index, 3)
+            number_grid.addWidget(button, row, column)
+        cve_r.addLayout(number_grid)
 
         row_add_sym = QHBoxLayout()
         row_add_sym.setSpacing(4)
@@ -978,28 +1256,34 @@ class PageTextEditor(QWidget):
         self.btn_add_symbol.setMinimumHeight(MEDIUM_BUTTON_H)
         self.btn_add_symbol.setMinimumWidth(0)
         self.btn_add_symbol.setCursor(Qt.PointingHandCursor)
-        self.btn_add_symbol.clicked.connect(self._add_symbol_prefix)
-        row_add_sym.addWidget(self.btn_add_symbol, 0)
-        self.inp_symbol = QLineEdit()
-        self.inp_symbol.setObjectName("CalcInput")
-        self.inp_symbol.setPlaceholderText("符号编辑")
-        self.inp_symbol.setFixedHeight(MEDIUM_BUTTON_H)
-        self.inp_symbol.setMinimumWidth(0)
-        self.inp_symbol.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.inp_symbol.setClearButtonEnabled(True)
-        self.inp_symbol.setCursor(Qt.IBeamCursor)
-        row_add_sym.addWidget(self.inp_symbol, 1)
+        self.btn_add_symbol.setToolTip("添加选中的符号卡")
+        self.btn_add_symbol.setEnabled(False)
+        self.btn_add_symbol.clicked.connect(self._apply_selected_symbol)
+        row_add_sym.addWidget(self.btn_add_symbol)
         self.btn_symbol_save = apply_medium_button(QPushButton("+"))
         self.btn_symbol_save.setFixedWidth(36)
-        self.btn_symbol_save.setMinimumHeight(28)
+        self.btn_symbol_save.setMinimumHeight(MEDIUM_BUTTON_H)
         self.btn_symbol_save.setCursor(Qt.PointingHandCursor)
         self.btn_symbol_save.setToolTip("把当前前缀内容直接存成一张「前缀卡」")
+        self.btn_symbol_save.setAccessibleName("保存为前缀卡")
         self.btn_symbol_save.clicked.connect(self._save_current_symbol_as_card)
-        row_add_sym.addWidget(self.btn_symbol_save, 0)
-        self.symbol_preview = _CharPreview()
-        self.symbol_preview.setMinimumWidth(0)
-        row_add_sym.addWidget(self.symbol_preview, 0, Qt.AlignVCenter)
+        row_add_sym.addWidget(self.btn_symbol_save)
+        row_add_sym.addStretch()
         cve_r.addLayout(row_add_sym)
+
+        self.inp_symbol = QLineEdit()
+        self.inp_symbol.setObjectName("CalcInput")
+        self.inp_symbol.setPlaceholderText("自定义符号")
+        self.inp_symbol.setAccessibleName("自定义行首符号")
+        self.inp_symbol.setFixedHeight(MEDIUM_BUTTON_H)
+        self.inp_symbol.setFixedWidth(_SYMBOL_INPUT_W)
+        self.inp_symbol.setClearButtonEnabled(True)
+        self.inp_symbol.setCursor(Qt.IBeamCursor)
+        self.inp_symbol.returnPressed.connect(self.btn_add_symbol.click)
+        self.inp_symbol.textChanged.connect(self._on_symbol_input_changed)
+        cve_r.addWidget(self.inp_symbol, 0, Qt.AlignLeft)
+        self.symbol_preview = _CharPreview()
+        cve_r.addWidget(self.symbol_preview, 0, Qt.AlignLeft)
         self.inp_symbol.textChanged.connect(self.symbol_preview.set_text)
 
         self.symbol_row = QWidget()
@@ -1010,15 +1294,15 @@ class PageTextEditor(QWidget):
         sr = QHBoxLayout(self.symbol_row)
         sr.setContentsMargins(0, 0, 0, 0)
         sr.setSpacing(4)
-        self.prefix_scroll = _PrefixHScroll()
+        self.prefix_scroll = QScrollArea()
         self.prefix_scroll.setObjectName("VoicePrefixScroll")
         self.prefix_scroll.setWidgetResizable(True)
         self.prefix_scroll.setFrameShape(QFrame.NoFrame)
-        self.prefix_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        self.prefix_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.prefix_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.prefix_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.prefix_scroll.setAlignment(Qt.AlignLeft | Qt.AlignTop)
-        self.prefix_scroll.setFixedHeight(_PREFIX_CARD_H + 4)
         self.prefix_scroll.setMinimumWidth(0)
+        self.prefix_scroll.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         self.prefix_scroll.setAttribute(Qt.WA_StyledBackground, True)
         self.prefix_scroll.setStyleSheet(
             "#VoicePrefixScroll{background:transparent;border:none;}"
@@ -1029,36 +1313,38 @@ class PageTextEditor(QWidget):
             self.prefix_scroll.viewport().setStyleSheet("background:transparent;")
         except Exception:
             pass
-        self.prefix_host = QWidget()
+        self.prefix_host = FlowLayoutHost()
         self.prefix_host.setObjectName("VoicePrefixHost")
         self.prefix_host.setAttribute(Qt.WA_StyledBackground, True)
         self.prefix_host.setStyleSheet("#VoicePrefixHost{background:transparent;border:none;}")
-        self.prefix_flow = QHBoxLayout(self.prefix_host)
-        self.prefix_flow.setContentsMargins(0, 0, 0, 0)
-        self.prefix_flow.setSpacing(_PREFIX_SPACING)
-        self.prefix_flow.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self.prefix_flow = FlowLayout(self.prefix_host, h_spacing=_PREFIX_SPACING, v_spacing=_PREFIX_SPACING)
         self.prefix_scroll.setWidget(self.prefix_host)
         sr.addWidget(self.prefix_scroll, 1)
-        sr.setAlignment(Qt.AlignTop)
         self._pfx_guide = _PrefixDropGuide(self.prefix_host)
         self._pfx_preview = None
         self._pfx_drag_sym = None
         self._pfx_grab = None
         self._pfx_drag_card = None
-        self.symbol_row.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Maximum)
-        cve_r.addWidget(self.symbol_row, 0, Qt.AlignTop)
+        self.symbol_row.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        cve_r.addWidget(self.symbol_row, 1)
         self._refresh_symbol_chips()
         self._restyle_sep()
-        rv.addWidget(edit_panel, 32)
+        self.tool_tabs.addTab(edit_panel, "文本编辑")
 
         # —— 3) 文件处理（序列 + 查重）——
         self.seq_dup = SeqDupPanel()
+        self.seq_dup.setProperty("borderless", "1")
+        self.seq_dup.layout().setContentsMargins(0, 0, 0, 0)
+        self.seq_dup.refresh_theme()
+        self.seq_dup.dup_status_changed.connect(self._log)
         try:
             self.seq_dup.prefs_changed.connect(self._mark_prefs_dirty)
         except Exception:
             pass
         self._theme_frames.append(self.seq_dup)
-        rv.addWidget(self.seq_dup, 40)
+        self.tool_tabs.addTab(self.seq_dup, "文件检查")
+        self.tool_tabs.currentChanged.connect(self._sync_tool_tab_chrome)
+        self._restyle_tool_tabs()
 
         body.addWidget(left, 70)
         body.addWidget(right, 30)
@@ -1149,9 +1435,11 @@ class PageTextEditor(QWidget):
             n = len(new_text)
             s = max(0, min(int(select[0]), n))
             e = max(s, min(int(select[1]), n))
+            qt_start = len(new_text[:s].encode("utf-16-le", errors="surrogatepass")) // 2
+            qt_length = len(new_text[s:e].encode("utf-16-le", errors="surrogatepass")) // 2
             c = self.editor.textCursor()
-            c.setPosition(s)
-            c.setPosition(e, QTextCursor.KeepAnchor)
+            c.setPosition(qt_start)
+            c.setPosition(qt_start + qt_length, QTextCursor.KeepAnchor)
             self.editor.setTextCursor(c)
             self.editor.ensureCursorVisible()
         self._last_snapshot = new_text
@@ -1196,6 +1484,20 @@ class PageTextEditor(QWidget):
         self._log("已重做")
 
     # ── 主题 ──────────────────────────────────────────────────────────
+    def _restyle_tool_tabs(self):
+        self.tool_tabs.setStyleSheet(
+            fmt(VIDEO_TAB_QSS) + "\nQTabWidget#VideoTabWidget::pane { padding: 4px; }"
+        )
+        self._sync_tool_tab_chrome()
+
+    def _sync_tool_tab_chrome(self, *_):
+        tabs = self.tool_tabs
+        tabs.setProperty("firstSelected", "true" if tabs.currentIndex() == 0 else "false")
+        style = tabs.style()
+        style.unpolish(tabs)
+        style.polish(tabs)
+        tabs.update()
+
     def _restyle_sep(self):
         # 占位高度仍用 _SEP_PX，只把可见线画成 1px，不改布局间距
         color = tk("border")
@@ -1207,7 +1509,12 @@ class PageTextEditor(QWidget):
         for sep in getattr(self, "_h_seps", []) or []:
             sep.setStyleSheet(qss)
 
+    def _refresh_history_icons(self):
+        self.btn_undo.setIcon(make_glyph_icon("↶", px=22, color=tk("text")))
+        self.btn_redo.setIcon(make_glyph_icon("↷", px=22, color=tk("text")))
+
     def refresh_theme(self, *_):
+        self._restyle_tool_tabs()
         for t in self._theme_titles:
             restyle_card_title(t)
         panel = getattr(self, "seq_dup", None)
@@ -1225,6 +1532,7 @@ class PageTextEditor(QWidget):
         for w in self._prefix_cards():
             w.apply_theme()
         self._paint_speak_btns()
+        self._refresh_history_icons()
 
     # ── 日志 ──────────────────────────────────────────────────────────
     def _log(self, text: str):
@@ -1232,6 +1540,34 @@ class PageTextEditor(QWidget):
         self.log.scrollToBottom()
 
     # ── 编辑工具 ──────────────────────────────────────────────────────
+    def _replace_text(self):
+        target = self.inp_find_text.text()
+        if not target:
+            return
+        replacement = self.inp_replace_text.text()
+        if target == replacement:
+            self._log("查找内容与替换内容相同")
+            return
+
+        raw = self.editor.toPlainText()
+        cursor = self.editor.textCursor()
+        selected = cursor.hasSelection()
+        start, end = _selected_text_offsets(cursor) if selected else (0, len(raw))
+        source = raw[start:end]
+        count = source.count(target)
+        scope = "选区" if selected else "全文"
+        if not count:
+            self._log(f"{scope}中没有找到匹配内容")
+            return
+
+        changed = source.replace(target, replacement)
+        selection = (start, start + len(changed)) if selected else None
+        self._mutate_editor(
+            raw[:start] + changed + raw[end:],
+            f"已在{scope}替换 {count} 处",
+            select=selection,
+        )
+
     def _on_clear_editor(self):
         if not (self.editor.toPlainText() or "").strip():
             self._log("编辑区为空")
@@ -1494,6 +1830,70 @@ class PageTextEditor(QWidget):
         n = sum(1 for ln in new.split("\n") if ln.strip())
         self._mutate_editor(new, f"已智能换行（共 {n} 行）")
 
+    def _remove_right_margin(self):
+        raw = self.editor.toPlainText()
+        new = remove_right_margin_breaks(raw)
+        if new == raw:
+            self._log("未发现需要接回的硬换行")
+            return
+        removed = raw.count("\n") - new.count("\n")
+        self._mutate_editor(new, f"已去右边界（接回 {removed} 处换行）")
+
+    def _remove_whitespace(self):
+        raw = self.editor.toPlainText()
+        cursor = self.editor.textCursor()
+        if cursor.hasSelection():
+            start, end = _selected_text_offsets(cursor)
+            cleaned = raw[:start] + remove_intrasentence_whitespace(raw[start:end]) + raw[end:]
+        else:
+            cleaned = remove_intrasentence_whitespace(raw)
+        if cleaned == raw:
+            self._log("未发现需要去除的句内空格或换行")
+            return
+        self._mutate_editor(cleaned, "已去除句内空格和换行")
+
+    def _smart_layout(self):
+        raw = self.editor.toPlainText()
+        cursor = self.editor.textCursor()
+        selected = cursor.hasSelection()
+        line_range = None
+        if selected:
+            start, end = _selected_text_offsets(cursor)
+            line_range = raw.count("\n", 0, start), raw.count("\n", 0, end - 1)
+        if not raw.strip():
+            self._log("没有可排版的文本")
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("智能排版")
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("处理选中的段落" if selected else "处理全文"))
+        blank_line = QCheckBox("段间统一留一个空行")
+        blank_line.setChecked(True)
+        indent = QCheckBox("段首缩进两个全角空格")
+        indent.setChecked(True)
+        trim_end = QCheckBox("清理行尾空格和制表符")
+        for option in (blank_line, indent, trim_end):
+            layout.addWidget(option)
+        buttons = QDialogButtonBox(QDialogButtonBox.Apply | QDialogButtonBox.Cancel)
+        apply_medium_button(buttons.button(QDialogButtonBox.Apply)).setText("应用")
+        apply_medium_button(buttons.button(QDialogButtonBox.Cancel)).setText("取消")
+        buttons.button(QDialogButtonBox.Apply).clicked.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        formatted = format_paragraphs(
+            raw,
+            blank_line=blank_line.isChecked(),
+            indent=indent.isChecked(),
+            trim_end=trim_end.isChecked(),
+            line_range=line_range,
+        )
+        message = "已完成智能排版" if formatted != raw else "文本已符合所选排版"
+        self._mutate_editor(formatted, message)
+
     @staticmethod
     def _index_to_letters(i: int) -> str:
         """0 → A，25 → Z，26 → AA。"""
@@ -1503,6 +1903,52 @@ class PageTextEditor(QWidget):
             n, rem = divmod(n - 1, 26)
             chars.append(chr(ord("A") + rem))
         return "".join(reversed(chars))
+
+    @classmethod
+    def _chinese_number(cls, number: int, keep_leading_one: bool = False) -> str:
+        for scale, unit in ((100000000, "亿"), (10000, "万")):
+            if number >= scale:
+                high, low = divmod(number, scale)
+                text = cls._chinese_number(high) + unit
+                if low:
+                    text += ("零" if low < scale // 10 else "") + cls._chinese_number(low, True)
+                return text
+
+        digits = "零一二三四五六七八九"
+        parts = []
+        zero_pending = False
+        for place, unit in ((1000, "千"), (100, "百"), (10, "十"), (1, "")):
+            digit, number = divmod(number, place)
+            if not digit:
+                zero_pending = bool(parts)
+                continue
+            if zero_pending:
+                parts.append("零")
+                zero_pending = False
+            if parts or digit != 1 or place != 10 or keep_leading_one:
+                parts.append(digits[digit])
+            parts.append(unit)
+        return "".join(parts)
+
+    @classmethod
+    def _number_prefix(cls, number: int, scheme: str) -> str:
+        if scheme == "chinese":
+            return cls._chinese_number(number) + "、"
+        if scheme in ("upper", "lower"):
+            letters = cls._index_to_letters(number - 1)
+            return (letters if scheme == "upper" else letters.lower()) + ". "
+        if scheme == "circled":
+            for first, last, glyph in ((1, 20, "①"), (21, 35, "㉑"), (36, 50, "㊱")):
+                if first <= number <= last:
+                    return chr(ord(glyph) + number - first) + " "
+            return f"({number}) "
+        if scheme == "comma":
+            return f"{number}、"
+        if scheme == "brackets":
+            return f"({number}) "
+        if scheme == "right_bracket":
+            return f"{number}) "
+        return f"{number}. "
 
     def _num_start_value(self) -> int:
         """起始序号：正整数；空/非法回退为 1。"""
@@ -1523,60 +1969,57 @@ class PageTextEditor(QWidget):
             return 1
         return n
 
-    def _add_line_numbers(self):
-        """按行加序号：123 为 N. N+1…；ABC 为对应字母（超 26 行走 AA）。起始见旁输入框。"""
+    def _add_line_numbers(self, scheme: str):
+        """按所选样式重新编号，空行是否计数由复选框决定。"""
         raw = self.editor.toPlainText()
-        if not (raw or "").strip():
+        ignore_blank = self.chk_prefix_skip_blank.isChecked()
+        if not raw:
             self._log("编辑区为空，无需加序号")
             return
-        lines = [ln.strip() for ln in raw.replace("\r\n", "\n").replace("\r", "\n").split("\n") if ln.strip()]
-        if not lines:
-            self._log("编辑区无有效行，无需加序号")
-            return
         start = self._num_start_value()
-        use_abc = bool(self.radio_num_abc.isChecked())
-        strip_re = re.compile(r"^\s*(?:\d+|[A-Za-z]+)\s*[\.、．\)]\s*")
-        cleaned = [strip_re.sub("", ln).strip() or ln for ln in lines]
-        if use_abc:
-            numbered = [
-                f"{self._index_to_letters(start - 1 + i)}. {text}"
-                for i, text in enumerate(cleaned)
-            ]
-            shown = (
-                f"{self._index_to_letters(start - 1)}"
-                f"–{self._index_to_letters(start - 1 + len(numbered) - 1)}"
-            )
-        else:
-            numbered = [f"{start + i}. {text}" for i, text in enumerate(cleaned)]
-            shown = f"{start}–{start + len(numbered) - 1}"
-        kind = "ABC" if use_abc else "123"
-        self._mutate_editor(
-            "\n".join(numbered),
-            f"已加序号（{kind}）：{shown}（共 {len(numbered)} 行）",
-        )
+        numbered = []
+        number = start
+        for line in raw.split("\n"):
+            if ignore_blank and _PREFIX_BLANK.fullmatch(line):
+                numbered.append(line)
+                continue
+            text = _NUMBER_PREFIX.sub("", line.lstrip(), count=1).strip()
+            if _PREFIX_BLANK.fullmatch(text):
+                if ignore_blank:
+                    numbered.append(text)
+                    continue
+                text = ""
+            numbered.append(self._number_prefix(number, scheme) + text)
+            number += 1
+        self._mutate_editor("\n".join(numbered), f"已加序号（共 {number - start} 行）")
 
-    def _add_symbol_prefix(self):
-        """按行加自定义符号前缀（如「· 」「- 」「→ 」）。"""
+    def _apply_selected_symbol(self):
+        if self._selected_symbol is not None:
+            self._add_symbol_prefix(self._selected_symbol)
+
+    def _add_symbol_prefix(self, symbol: str):
+        """把已选符号加到每一行的开头。"""
         raw = self.editor.toPlainText()
-        if not (raw or "").strip():
+        ignore_blank = self.chk_prefix_skip_blank.isChecked()
+        if not raw:
             self._log("编辑区为空，无需加符号")
             return
-        symbol = self.inp_symbol.text() or ""
-        if not symbol:
-            self.inp_symbol.setFocus()
-            self._log("请先在输入框填写符号前缀（可含空格），如「· 」")
-            return
-        lines = raw.replace("\r\n", "\n").replace("\r", "\n").split("\n")
-        sym_re = re.compile(r"^(\s*)(" + re.escape(symbol) + r")(.*)$")
+        sym_re = re.compile(r"^\s*" + re.escape(symbol))
         out = []
         n_apply = 0
-        for line in lines:
-            m = sym_re.match(line)
-            if m:
-                out.append(m.group(1) + symbol + m.group(3))
-                n_apply += 1
+        for line in raw.split("\n"):
+            blank = bool(_PREFIX_BLANK.fullmatch(line))
+            if ignore_blank and blank:
+                out.append(line)
                 continue
-            if not (line or "").strip():
+            existing = sym_re.match(line)
+            if existing:
+                remainder = line[existing.end():]
+                if ignore_blank and _PREFIX_BLANK.fullmatch(remainder):
+                    out.append(remainder)
+                    continue
+                out.append(line)
+            elif blank:
                 out.append(symbol)
             else:
                 out.append(symbol + line)
@@ -1586,7 +2029,6 @@ class PageTextEditor(QWidget):
             "\n".join(out),
             f"已加符号前缀「{shown}」（共 {n_apply} 行）",
         )
-        self._remember_symbol(symbol)
 
     # ── 朗读（男 / 女，复用阅读器 CosyReader）────────────────────────
     def _speak_source(self) -> str:
@@ -1715,13 +2157,20 @@ class PageTextEditor(QWidget):
             wrap = bool(chk.isChecked())
         return {
             "symbol_history": [str(s) for s in self._symbol_history],
+            "prefix_skip_blank": self.chk_prefix_skip_blank.isChecked(),
             "word_wrap": wrap,
             "editor_text": self.editor.toPlainText() if hasattr(self, "editor") else "",
+            "tool_order": self.tool_grid.order(),
         }
 
     def apply_settings(self, data: dict):
-        """从 user.txt 恢复前缀历史、换行开关、编辑区正文。"""
+        """从 user.txt 恢复前缀历史、换行开关、编辑区正文和工具顺序。"""
         data = data or {}
+        self.tool_grid.restore_order(data.get("tool_order"))
+        if "prefix_skip_blank" in data:
+            blocked = self.chk_prefix_skip_blank.blockSignals(True)
+            self.chk_prefix_skip_blank.setChecked(bool(data["prefix_skip_blank"]))
+            self.chk_prefix_skip_blank.blockSignals(blocked)
         if "word_wrap" in data:
             wrap = bool(data.get("word_wrap"))
             chk = getattr(self, "chk_word_wrap", None)
@@ -1793,10 +2242,14 @@ class PageTextEditor(QWidget):
             self._log(f"已把当前前缀「{symbol}」存成前缀卡")
 
     def _use_symbol(self, symbol: str):
-        """单击卡片：选中（白框）并把前缀内容放进编辑框。"""
+        """单击卡片直接添加前缀，同时填入自定义框以便编辑。"""
         self.inp_symbol.setText(symbol)
-        self.inp_symbol.setFocus()
         self._select_symbol(symbol)
+        self._apply_selected_symbol()
+
+    def _on_symbol_input_changed(self, text: str):
+        if text != self._selected_symbol:
+            self._clear_symbol_selection()
 
     def _prefix_cards(self):
         host = getattr(self, "prefix_host", None)
@@ -1816,13 +2269,16 @@ class PageTextEditor(QWidget):
 
     def _sync_card_selection(self):
         sel = self._selected_symbol
+        self.btn_add_symbol.setEnabled(sel is not None)
         for w in self._prefix_cards():
             w.set_selected(w.symbol == sel)
 
     def _click_keeps_symbol_sel(self, w) -> bool:
         cur = w
         while cur is not None:
-            if isinstance(cur, _PrefixCard):
+            if isinstance(cur, _PrefixCard) or cur in (
+                self.btn_add_symbol, self.inp_symbol, self.chk_prefix_skip_blank, self.editor,
+            ):
                 return True
             if cur is self:
                 break
@@ -1881,7 +2337,7 @@ class PageTextEditor(QWidget):
             self._log(f"已删除前缀卡片「{symbol}」")
 
     def _refresh_symbol_chips(self):
-        """重建彩色前缀卡；无历史时显示一条虚线「空」占位卡。"""
+        """重建可直接应用的自定义前缀卡。"""
         if not hasattr(self, "prefix_host"):
             return
         self._pfx_clear_drag_visual()
@@ -1893,10 +2349,10 @@ class PageTextEditor(QWidget):
                 w.hide()
                 w.setParent(None)
                 w.deleteLater()
+        self.symbol_row.setVisible(bool(self._symbol_history))
         if not self._symbol_history:
-            empty = _PrefixEmptyCard(self.prefix_host)
-            flow.addWidget(empty)
             self._selected_symbol = None
+            self._sync_card_selection()
             return
         from PyQt5.QtGui import QFontMetrics
         fm = QFontMetrics(self.prefix_host.font())
@@ -1905,23 +2361,17 @@ class PageTextEditor(QWidget):
             accent = _PREFIX_PALETTE[i % len(_PREFIX_PALETTE)]
             card = _PrefixCard(text, accent, self, self.prefix_host)
             w = max(_PREFIX_CARD_MIN_W, fm.horizontalAdvance(text) + 36)
-            card.setFixedWidth(w)
+            card.setFixedWidth(min(w, _PREFIX_CARD_MAX_W))
             card.clicked.connect(lambda s=text: self._use_symbol(s))
             card.remove_requested.connect(lambda s=text: self._remove_symbol(s))
             flow.addWidget(card)
-        flow.addStretch(1)
+        flow.invalidate()
+        self.prefix_host.updateGeometry()
         if self._selected_symbol and self._selected_symbol not in self._symbol_history:
             self._selected_symbol = None
         self._sync_card_selection()
 
     # ── 卡片拖拽（影子跟手 + 卡间虚线）────────────────────────────
-    def _pfx_card_rects(self):
-        out = []
-        for w in self.prefix_host.children():
-            if isinstance(w, _PrefixCard):
-                out.append(w)
-        return out
-
     def _pfx_clear_drag_visual(self):
         g = getattr(self, "_pfx_guide", None)
         if g is not None:
@@ -1971,40 +2421,27 @@ class PageTextEditor(QWidget):
         if pv is not None:
             grab = self._pfx_grab or QPoint(pv.width() // 2, pv.height() // 2)
             pv.move(self.mapFromGlobal(gpos) - grab)
-        self._pfx_move_visual(self.mapFromGlobal(gpos))
+        self._pfx_move_visual(gpos)
 
-    def _pfx_drop_index(self, local: QPoint) -> int:
-        cards = self._pfx_card_rects()
-        if not cards:
-            return 0
-        return sum(1 for c in cards if c.x() + c.width() // 2 < local.x())
-
-    def _pfx_guide_line_x(self, insert: int) -> int:
-        cards = self._pfx_card_rects()
-        n = len(cards)
-        if not cards:
-            return 0
-        if insert <= 0:
-            c = cards[0]
-            return c.x() - _PREFIX_SPACING // 2
-        if insert >= n:
-            c = cards[-1]
-            return c.x() + c.width() + _PREFIX_SPACING // 2
-        left = cards[insert - 1]
-        right = cards[insert]
-        return (left.x() + left.width() + right.x()) // 2
+    def _pfx_drop_location(self, gpos):
+        viewport = self.prefix_scroll.viewport()
+        if not viewport.rect().contains(viewport.mapFromGlobal(gpos)):
+            return None
+        return self.prefix_flow.drop_location(self.prefix_host.mapFromGlobal(gpos))
 
     def _pfx_move_visual(self, gpos):
-        host = self.prefix_host
-        local = host.mapFromGlobal(gpos)
-        insert = self._pfx_drop_index(local)
-        g = self._pfx_guide
-        gx = self._pfx_guide_line_x(insert)
-        g.move(max(0, gx - _PREFIX_GUIDE_W // 2), 0)
-        g.show()
-        g.raise_()
+        location = self._pfx_drop_location(gpos)
+        guide = self._pfx_guide
+        if location is None:
+            guide.hide()
+            return
+        _, position = location
+        x = max(0, min(position.x() - _PREFIX_GUIDE_W // 2, self.prefix_host.width() - _PREFIX_GUIDE_W))
+        guide.move(x, position.y())
+        guide.show()
+        guide.raise_()
 
-    def _end_prefix_drag(self):
+    def _end_prefix_drag(self, gpos):
         sym = self._pfx_drag_sym
         card = self._pfx_drag_card
         if card is not None:
@@ -2013,15 +2450,9 @@ class PageTextEditor(QWidget):
             except Exception:
                 pass
             card.setCursor(Qt.OpenHandCursor)
-        if sym:
-            cards = self._pfx_card_rects()
-            if cards:
-                gx = self._pfx_guide.x() + _PREFIX_GUIDE_W // 2
-                insert = 0
-                for c in cards:
-                    if gx > c.x() + c.width() // 2:
-                        insert += 1
-                self._commit_prefix_order(sym, insert)
+        location = self._pfx_drop_location(gpos)
+        if sym and location is not None:
+            self._commit_prefix_order(sym, location[0])
         self._pfx_clear_drag_visual()
 
     def _commit_prefix_order(self, symbol: str, insert: int):

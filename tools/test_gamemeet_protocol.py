@@ -21,6 +21,22 @@ from utils.gamemeet_net import (  # noqa: E402
 )
 
 
+class TestAdmission(unittest.TestCase):
+    def test_room_code_required_before_sharing(self):
+        host = MeetHost(display_name="Host")
+        ip, port = host.start(0, bind_address="127.0.0.1")
+        self.addCleanup(host.stop)
+        host.publish_doc("meeting document")
+        client = MeetClient()
+        self.addCleanup(client.disconnect)
+        with self.assertRaisesRegex(ConnectionError, "加入码不正确"):
+            client.connect(ip, port, "wrong-code")
+        self.assertEqual(client.current_text(), "")
+        client.connect(ip, port, host.join_code)
+        self.assertEqual(client.current_text(), "meeting document")
+        self.assertFalse(client.local_can_edit())
+
+
 class TestNickCollision(unittest.TestCase):
     def test_pick_unique_casefold(self):
         final, renamed = pick_unique_nickname("Hu", ["hu"])
@@ -34,7 +50,7 @@ class TestNickCollision(unittest.TestCase):
 
     def test_live_join_renames_against_host(self):
         host = MeetHost(display_name="Hu")
-        ip, port = host.start(0)
+        ip, port = host.start(0, bind_address="127.0.0.1")
         box = {}
 
         def on_welcome(uid, rev, text, name="", renamed=False):
@@ -52,7 +68,7 @@ class TestNickCollision(unittest.TestCase):
             on_nick_assign=on_assign,
         )
         try:
-            client.connect(ip, port)
+            client.connect("127.0.0.1", port, host.join_code)
             deadline = time.time() + 3
             while time.time() < deadline and "name" not in box:
                 time.sleep(0.05)
@@ -76,7 +92,7 @@ class TestNickCollision(unittest.TestCase):
     def test_two_clients_same_nick_second_renamed(self):
         """两名客户端同昵称：第二个必须被改名。"""
         host = MeetHost(display_name="HostOnly")
-        ip, port = host.start(0)
+        ip, port = host.start(0, bind_address="127.0.0.1")
         boxes = [{}, {}]
 
         def make_welcome(idx):
@@ -89,7 +105,7 @@ class TestNickCollision(unittest.TestCase):
         c1 = MeetClient(display_name="Twin", on_welcome=make_welcome(0))
         c2 = MeetClient(display_name="Twin", on_welcome=make_welcome(1))
         try:
-            c1.connect(ip, port)
+            c1.connect("127.0.0.1", port, host.join_code)
             deadline = time.time() + 3
             while time.time() < deadline and "name" not in boxes[0]:
                 time.sleep(0.05)
@@ -97,7 +113,7 @@ class TestNickCollision(unittest.TestCase):
             self.assertFalse(boxes[0].get("renamed"))
             self.assertEqual(boxes[0]["name"], "Twin")
 
-            c2.connect(ip, port)
+            c2.connect("127.0.0.1", port, host.join_code)
             deadline = time.time() + 3
             while time.time() < deadline and "name" not in boxes[1]:
                 time.sleep(0.05)
@@ -120,7 +136,7 @@ class TestHistorySynthesize(unittest.TestCase):
         host = MeetHost(display_name="HostA")
         host.seed_doc("shared body text for card")
         self.assertEqual(host.current_history(), [])
-        ip, port = host.start(0)
+        ip, port = host.start(0, bind_address="127.0.0.1")
         got = {"hist": None, "text": None, "welcome_hist": None}
 
         def on_hist(items):
@@ -136,7 +152,7 @@ class TestHistorySynthesize(unittest.TestCase):
             on_history=on_hist,
         )
         try:
-            client.connect(ip, port)
+            client.connect("127.0.0.1", port, host.join_code)
             deadline = time.time() + 3
             while time.time() < deadline and not got["hist"]:
                 time.sleep(0.05)
@@ -165,7 +181,7 @@ class TestHistorySynthesize(unittest.TestCase):
         self.assertGreaterEqual(len(hist), 2)
         self.assertEqual(hist[0]["text"], "CURRENT live body")
 
-        ip, port = host.start(0)
+        ip, port = host.start(0, bind_address="127.0.0.1")
         got = {"hist": None, "text": None}
 
         def on_hist(items):
@@ -181,7 +197,7 @@ class TestHistorySynthesize(unittest.TestCase):
             on_history=on_hist,
         )
         try:
-            client.connect(ip, port)
+            client.connect("127.0.0.1", port, host.join_code)
             deadline = time.time() + 3
             while time.time() < deadline and not got["hist"]:
                 time.sleep(0.05)

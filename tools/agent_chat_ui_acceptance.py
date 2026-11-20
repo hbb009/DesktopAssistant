@@ -6,7 +6,7 @@ from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QFont,QFontDatabase
 from pages.page_ollama_chat import PageOllamaChat
 from styles.style_all import apply_theme_palette
-from agent_core.store import atomic_json
+from Agent.agent_core.store import atomic_json
 root=Path(sys.argv[1]).resolve(); root.mkdir(parents=True,exist_ok=True)
 materials=root/'materials'; materials.mkdir(exist_ok=True)
 (materials/'第1章.txt').write_text('林舟在雨夜收到旧信。',encoding='utf-8')

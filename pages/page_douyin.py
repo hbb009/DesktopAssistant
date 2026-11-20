@@ -162,8 +162,6 @@ class DouyinProgressLine(QWidget):
 
 # ── 网络层 ────────────────────────────────────────────────────────────────────
 CTX = ssl.create_default_context()
-CTX.check_hostname = False
-CTX.verify_mode = ssl.CERT_NONE
 
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
       "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -231,8 +229,7 @@ def _get(url, headers, timeout=15):
     if "br" in (headers.get("Accept-Encoding") or ""):
         headers["Accept-Encoding"] = "gzip, deflate"
     if HAS_REQUESTS:
-        r = req_lib.get(url, headers=headers, timeout=timeout,
-                        verify=False, allow_redirects=True)
+        r = req_lib.get(url, headers=headers, timeout=timeout, allow_redirects=True)
         r.raise_for_status()
         body = r.content
         # 少数环境 requests 未自动解压
@@ -263,8 +260,7 @@ def _get_urllib(url, headers, timeout=12):
 def _head(url, headers, timeout=10):
     import urllib.request
     if HAS_REQUESTS:
-        r = req_lib.head(url, headers=headers, timeout=timeout,
-                         verify=False, allow_redirects=True)
+        r = req_lib.head(url, headers=headers, timeout=timeout, allow_redirects=True)
         return r.url
     else:
         req = urllib.request.Request(url, headers=headers)
@@ -387,7 +383,7 @@ def _qishui_fetch_html(url: str, cookie_str: str = "") -> str:
     if cookie_str:
         headers["Cookie"] = cookie_str
     if HAS_REQUESTS:
-        r = req_lib.get(url, headers=headers, timeout=20, verify=False)
+        r = req_lib.get(url, headers=headers, timeout=20)
         r.raise_for_status()
         r.encoding = r.apparent_encoding or "utf-8"
         return r.text or ""
@@ -566,6 +562,33 @@ def refine_content_type(item: dict, current_type: str) -> str:
     if item and item.get("aweme_type") in (2, 68):
         return "note"
     return current_type
+
+
+def _still_images_are_complete(item, page_url) -> bool:
+    """多张静图已经是正文，不必再跑 A/B/C。
+
+    实况和多格视频（aweme_type 2/68，或链接带 slides）的分享页经常只给封面，
+    那些要留给后面的线路补视频轨。type=0 且每格都有图片地址、没有格内视频的，
+    就是静图，网页详情里的图可以直接下。
+    """
+    if not isinstance(item, dict):
+        return False
+    page_url = page_url or ""
+    if "is_slides=1" in page_url or "/share/slides/" in page_url:
+        return False
+    if item.get("aweme_type") in (2, 68):
+        return False
+    images = [im for im in (item.get("images") or []) if isinstance(im, dict)]
+    if len(images) < 2:
+        return False
+    if _collect_live_frames(item):
+        return False
+    for im in images:
+        if _find_live_video_urls(im):
+            return False
+        if not (im.get("url_list") or im.get("urlList")):
+            return False
+    return True
 
 
 def load_cookies(path: str):
@@ -2000,7 +2023,8 @@ class ParseWorker(QThread):
             self._log(f"识别链接：{url}")
 
             # 公开作品先走分享页。分享页不再内嵌数据时改走网页详情签名。
-            # 多格且没有视频轨时，仍交给后面的线路合并，避免只拿到封面。
+            # 静图多图到这里就齐了。实况/多格视频常只有封面：有登录 Cookie 才补视频轨，
+            # 没有 Cookie 时 A/B/C 只会空响应或 403，不再重跑。
             host = urlsplit(url).hostname or ""
             is_douyin = (host == "douyin.com" or host.endswith(".douyin.com")
                          or host == "iesdouyin.com" or host.endswith(".iesdouyin.com"))
@@ -2047,14 +2071,25 @@ class ParseWorker(QThread):
                     )
                     has_video = any(m.kind == "video" for m in public_media)
                     has_image = any(m.kind == "image" for m in public_media)
-                    if (has_video or has_image) and (has_video or not is_multi):
+                    still_done = _still_images_are_complete(public_item, public_url)
+                    if (has_video or has_image) and (
+                        has_video or not is_multi or still_done
+                    ):
                         self._log("免 Cookie 解析成功 ✓，可直接下载", "ok")
                         self.ok.emit(public_item, public_media)
                         return
-                    self._log("已拿到内容但不完整，继续完整解析", "info")
                     early_item = public_item
                     url = public_url
                     is_short = False
+                    # 缺的是格内视频。线路 W 才补得到，而且必须有登录 Cookie。
+                    if not (self.cookie_path and os.path.isfile(self.cookie_path)):
+                        self._log(
+                            "多格未见视频轨，且没有登录 Cookie，使用已经拿到的图片",
+                            "warn",
+                        )
+                        self.ok.emit(early_item, public_media)
+                        return
+                    self._log("已拿到图片但多格未见视频轨，改用登录 Cookie 补全…", "info")
                 except DouyinAccessBlocked:
                     raise
                 except Exception as exc:
@@ -2295,7 +2330,11 @@ class ParseWorker(QThread):
                     self._log(str(e), "err")
                     raise
                 except Exception as e:
-                    self._log(f"线路C 失败: {e}", "err")
+                    # 匿名阶段已经有图时，C 失败只是没补到视频轨，下载仍用已有内容。
+                    self._log(
+                        f"线路C 失败: {e}",
+                        "warn" if early_item is not None else "err",
+                    )
 
             if not item and early_item:
                 item = early_item
@@ -2415,7 +2454,7 @@ class DownloadWorker(QThread):
             """单地址单次尝试，返回 (ok, size_or_err)"""
             if HAS_REQUESTS:
                 r = req_lib.get(url, headers=hdrs, stream=True,
-                                timeout=30, verify=False)
+                                timeout=30)
                 r.raise_for_status()
                 wd.attach_socket(key, find_socket(r))
                 downloaded = 0
@@ -2686,7 +2725,7 @@ class MediaCard(QFrame):
             def run(self):
                 try:
                     if HAS_REQUESTS:
-                        r = req_lib.get(self.u, timeout=8, verify=False,
+                        r = req_lib.get(self.u, timeout=8,
                                         headers={"User-Agent": UA_MOBILE})
                         self.done.emit(r.content)
                     else:

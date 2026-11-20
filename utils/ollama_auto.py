@@ -700,7 +700,9 @@ _NEXT_PAGE_RE = re.compile(r"^\s*(下一页|下页|下一頁|next\s*page|›|»)
 
 
 class PageError(Exception):
-    pass
+    def __init__(self, message, *, retryable=False):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 def _get_html(url: str, timeout: float = 15.0):
@@ -905,9 +907,13 @@ def fetch_page(url: str, should_stop=None, on_status=None, max_pages: int = 30,
         except PageError:
             raise
         except Exception as e:
-            if pages:
-                break
-            raise PageError(f"打开网页失败：{e}")
+            response = getattr(e, 'response', None)
+            status = getattr(response, 'status_code', None)
+            retryable = isinstance(e, (requests.Timeout, requests.ConnectionError,
+                                       requests.exceptions.ChunkedEncodingError))
+            retryable = retryable or status in (408, 425, 429) or (status is not None and 500 <= status < 600)
+            # Never report a partial chapter as a successful complete page.
+            raise PageError(f"打开网页失败：{e}", retryable=retryable) from e
         soup = BeautifulSoup(html, "html.parser")
         if not title:
             title = _title_of(soup)
@@ -953,6 +959,7 @@ def fetch_page(url: str, should_stop=None, on_status=None, max_pages: int = 30,
     return {
         "title": title, "text": text + "\n", "pages": pages, "url": url,
         "links": links, "from_content": from_content,
+        "next_page": cur or None,
     }
 
 

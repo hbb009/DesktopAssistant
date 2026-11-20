@@ -10,9 +10,9 @@ ROOT=Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0,str(ROOT))
 
-from agent_core.llm_client import OllamaClient
-from agent_core.models import Cancellation, ModelConfig
-from agent_core.store import atomic_json, now
+from Agent.agent_core.llm_client import OllamaClient
+from Agent.agent_core.models import Cancellation, ModelConfig
+from Agent.agent_core.store import atomic_json, now
 
 
 def api(base,path,payload=None):

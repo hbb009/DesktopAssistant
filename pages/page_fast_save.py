@@ -1,23 +1,19 @@
 # ==================== 标准库 ====================
 import os
 import re
-import shutil
-import base64
-import hashlib
 import subprocess
 import tempfile
-import threading
 import time
-import urllib.request
+from urllib.parse import urlsplit
 
 # ==================== 第三方：PyQt5 ====================
 from PyQt5.QtCore import (
     Qt, QStandardPaths, QTimer, pyqtSignal, QRectF,
     QAbstractNativeEventFilter, QCoreApplication, QSize,
-    QObject, QEvent,
+    QObject, QEvent, QSignalBlocker, QUrl,
 )
 from PyQt5.QtGui import (
-    QKeySequence, QIcon, QPixmap, QPainter, QColor, QPen, QBrush, QPainterPath, QFont,
+    QKeySequence, QIcon, QPixmap, QPainter, QColor, QPen, QBrush, QPainterPath, QFont, QDesktopServices,
 )
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
@@ -49,15 +45,19 @@ from styles.style_all import (
     theme,
     tk,
 )
+from utils.flow_layout import FlowLayout
+from utils.logger import get_logger
 from utils.cursor_toast import (
     show_cursor_toast, start_record_bubble, stop_record_bubble,
     update_record_bubble_count,
 )
+from utils.browser_image_save import BrowserImageSave
+from utils.background_image_download import BackgroundImageDownload, image_http_url
+from utils.background_download_log import BACKGROUND_STEPS, BackgroundDownloadLog
 
 # ==================== Windows API ====================
 import ctypes
 import ctypes.wintypes as wintypes
-import socket
 
 try:
     LRESULT = wintypes.LRESULT
@@ -131,566 +131,12 @@ except Exception:
 
 _SHARED_QUEUE = []
 
-# ── WebSocket Server（供浏览器扩展连接）────────────────────────
-# 生命周期：由 start_ws_server() / stop_ws_server() 显式管理，
-# 禁止在 import 时起线程（避免测试/IDE 误 import 占端口）。
-from utils.logger import get_logger as _get_logger
-from utils.flow_layout import FlowLayout
-_ws_log = _get_logger("pages.page_fast_save.ws")
-log = _get_logger(__name__)
+log = get_logger(__name__)
 
-_WS_PORT        = 19876
-# MV3 Service Worker 休眠后可能 30–60s 才补心跳；TTL 过短会误判断连
-_WS_PING_TTL    = 90.0
-_WS_MAX_PAYLOAD = 64 * 1024      # 单帧上限，防恶意大包把线程堵死
-_WS_CLIENT_TIMEOUT = 75.0        # 单连接 recv 超时，清掉半死不活的 socket
-_ws_clients     = set()          # 当前 socket 连接集合
-_ws_lock        = threading.Lock()
-_ws_last_ping   = 0.0            # 最后一次收到插件 PING 的时间戳
-_ws_send_lock   = threading.Lock()   # 多线程往同一 socket 写时加锁，避免帧交错
-_ws_enabled     = False          # 桌面程序侧“启用速存图片”的状态，会推送给插件
-_ws_stop        = threading.Event()
-_ws_srv_sock    = None           # type: ignore
-_ws_started     = False
-_ws_pusher_alive = False
-_ws_start_lock  = threading.Lock()
-# 服务器启动状态：None=未启动/启动中, True=正常, False=端口被占用/失败
-_ws_server_ok   = None
-
-# ── SAVE 下载目标目录（由页面初始化时注入，直接存用户路径，不经过暂存区）──
-_ws_user_save_dir = ""
-
-# ── WS SAVE 事件回调（由 PageFastSave 实例在 __init__ 中注册）──
-# cb_start(url)     — 收到插件 SAVE 命令时调用（任意线程）
-# cb_done(url, filename, success) — 下载完成时调用（任意线程）
-_ws_save_started_cb = None
-_ws_save_done_cb = None
-
-
-def _ws_set_save_dir(path: str):
-    global _ws_user_save_dir
-    _ws_user_save_dir = path.strip()
-
-
-def _ws_parse_headers(raw: str) -> dict:
-    headers = {}
-    for line in (raw or "").split("\r\n")[1:]:
-        if not line or ":" not in line:
-            continue
-        k, v = line.split(":", 1)
-        headers[k.strip().lower()] = v.strip()
-    return headers
-
-
-def _ws_origin_allowed(origin: str) -> bool:
-    """仅允许本机扩展或无 Origin（部分原生客户端）。
-
-    浏览器打开的任意 https 页面也能连 127.0.0.1 的 WebSocket（同源策略不管 WS），
-    因此必须拒绝 http(s):// 的 Origin，只放行 chrome-extension / moz-extension。
-    """
-    o = (origin or "").strip()
-    if not o:
-        # 扩展一般会带 Origin；空 Origin 留给本机调试/非浏览器客户端
-        return True
-    low = o.lower()
-    if low.startswith("chrome-extension://") or low.startswith("moz-extension://"):
-        return True
-    # 明确拒绝网页 Origin（含 null 字符串）
-    _ws_log.warning("WS 握手拒绝 Origin=%s", o[:120])
-    return False
-
-
-def _ws_handshake(conn) -> bool:
-    try:
-        data = conn.recv(4096).decode("utf-8", errors="ignore")
-    except Exception:
-        return False
-    if not data:
-        return False
-    headers = _ws_parse_headers(data)
-    if not _ws_origin_allowed(headers.get("origin", "")):
-        try:
-            conn.sendall(b"HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n")
-        except Exception:
-            pass
-        return False
-    key = headers.get("sec-websocket-key")
-    if not key:
-        return False
-    accept = base64.b64encode(
-        hashlib.sha1((key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()
-    ).decode()
-    try:
-        conn.sendall((
-            "HTTP/1.1 101 Switching Protocols\r\n"
-            "Upgrade: websocket\r\nConnection: Upgrade\r\n"
-            f"Sec-WebSocket-Accept: {accept}\r\n\r\n"
-        ).encode())
-    except Exception:
-        return False
-    return True
-
-
-def _ws_send_raw(conn, opcode: int, payload: bytes = b""):
-    """发一帧服务端→客户端（不掩码）。opcode: 1=text 8=close 9=ping 10=pong。"""
-    p = payload if isinstance(payload, (bytes, bytearray)) else bytes(payload or b"")
-    n = len(p)
-    if n < 126:
-        h = bytes([0x80 | (opcode & 0x0F), n])
-    elif n < 65536:
-        h = bytes([0x80 | (opcode & 0x0F), 126, (n >> 8) & 0xFF, n & 0xFF])
-    else:
-        # 本协议从不发大包
-        raise ValueError("WS payload too large")
-    conn.sendall(h + p)
-
-
-def _ws_send(conn, text):
-    p = (text or "").encode("utf-8")
-    n = len(p)
-    if n < 126:
-        h = bytes([0x81, n])
-    elif n < 65536:
-        h = bytes([0x81, 126, (n >> 8) & 0xFF, n & 0xFF])
-    else:
-        _ws_log.warning("WS 文本过长 n=%s，截断发送", n)
-        p = p[:65000]
-        n = len(p)
-        h = bytes([0x81, 126, (n >> 8) & 0xFF, n & 0xFF])
-    conn.sendall(h + p)
-
-
-def _ws_recv_exact(conn, n: int) -> bytes:
-    """读满 n 字节；对端关闭返回不足；超时抛 socket.timeout。"""
-    data = bytearray()
-    while len(data) < n:
-        chunk = conn.recv(n - len(data))
-        if not chunk:
-            break
-        data.extend(chunk)
-    return bytes(data)
-
-
-def _ws_recv(conn):
-    """读一帧。返回 str 文本；\"\" 表示控制帧已处理可继续；None 表示应断开。"""
-    try:
-        h = _ws_recv_exact(conn, 2)
-        if len(h) < 2:
-            return None
-        opcode = h[0] & 0x0F
-        masked = h[1] & 0x80
-        n = h[1] & 0x7F
-        if n == 126:
-            ext = _ws_recv_exact(conn, 2)
-            if len(ext) < 2:
-                return None
-            n = int.from_bytes(ext, "big")
-        elif n == 127:
-            # 不接受 64 位超大帧
-            return None
-        if n > _WS_MAX_PAYLOAD:
-            _ws_log.warning("WS 帧过大 n=%s，断开", n)
-            return None
-        mask = b"\x00\x00\x00\x00"
-        if masked:
-            mask = _ws_recv_exact(conn, 4)
-            if len(mask) < 4:
-                return None
-        data = bytearray(_ws_recv_exact(conn, n)) if n else bytearray()
-        if n and len(data) < n:
-            return None
-        if masked and data:
-            for i in range(len(data)):
-                data[i] ^= mask[i % 4]
-        # 0x8 close → 断开；0x9 ping → 回 pong；0xA pong → 忽略
-        if opcode == 0x8:
-            try:
-                _ws_send_raw(conn, 0x8, bytes(data[:2]) if len(data) >= 2 else b"")
-            except Exception:
-                pass
-            return None
-        if opcode == 0x9:
-            try:
-                with _ws_send_lock:
-                    _ws_send_raw(conn, 0xA, bytes(data))
-            except Exception:
-                return None
-            return ""
-        if opcode == 0xA:
-            return ""
-        if opcode in (1, 2):
-            return data.decode("utf-8", errors="ignore")
-        # 未知 opcode：忽略
-        return ""
-    except socket.timeout:
-        # 交给上层区分「空闲超时」与「对端断开」
-        raise
-    except Exception:
-        return None
-
-
-# ── 浏览器插件 SAVE 请求：用 curl 下载（解决 pixiv 等 CDN 需要 Referer 的问题）──
 _SAVE_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
-
-
-def _ws_staging_dir() -> str:
-    dl = os.path.join(os.path.expanduser("~"), "Downloads")
-    return os.path.join(dl, "WebImageSaver")
-
-
-def _ws_download_image(url: str):
-    """用 curl 下载图片直接到用户保存路径（与图集下载 Pixiv 逻辑一致）。
-    扩展通过 WS 发来 SAVE URL，此函数负责下载，文件名从 URL 提取。
-    """
-    target_dir = _ws_user_save_dir or _ws_staging_dir()
-    os.makedirs(target_dir, exist_ok=True)
-
-    # 从 URL 提取文件名（如 https://i.pximg.net/.../xxx_p0.jpg → xxx_p0.jpg）
-    from urllib.parse import urlparse, unquote
-    path = urlparse(url).path
-    name = unquote(os.path.basename(path)) if path else ""
-    # 清洗非法字符
-    name = re.sub(r'[\\/:*?"<>|]+', '_', name or "image").strip().strip(".")
-    if not re.search(r'\.(png|jpe?g|webp|gif|bmp|avif|tiff?|ico)$', name, re.I):
-        name += ".jpg"
-    # 去重
-    dest = os.path.join(target_dir, name)
-    base, ext = os.path.splitext(dest)
-    i = 1
-    while os.path.exists(dest):
-        dest = f"{base} ({i}){ext}"
-        i += 1
-    tmp = dest + ".part"
-
-    # Referer：部分 CDN 校验来源。pixiv / DeviantArt(wixmp) 不带会 403。
-    low = (url or "").lower()
-    if "pximg.net" in low:
-        referer = "https://www.pixiv.net/"
-    elif "wixmp.com" in low or "deviantart.net" in low or "deviantart.com" in low:
-        referer = "https://www.deviantart.com/"
-    else:
-        referer = ""
-
-    # 系统代理（与图集下载 _system_proxy_for_curl 一致）
-    proxy_url = ""
-    try:
-        proxies = urllib.request.getproxies() or {}
-        proxy_url = proxies.get("https") or proxies.get("http") or ""
-    except Exception:
-        pass
-
-    import shutil
-    curl_exe = shutil.which("curl") or shutil.which("curl.exe") or "curl"
-    cmd = [curl_exe, "-L", "-o", tmp,
-           "-H", f"User-Agent: {_SAVE_UA}",
-           "-H", "Accept: image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-           "--connect-timeout", "20", "--max-time", "120",
-           "-w", "\n%{http_code}", "-sS"]
-    if referer:
-        cmd += ["-H", f"Referer: {referer}"]
-    if proxy_url:
-        cmd += ["-x", proxy_url]
-    cmd.append(url)
-
-    try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=130,
-                              creationflags=subprocess.CREATE_NO_WINDOW)
-        http_code = ""
-        if proc.stdout:
-            lines = proc.stdout.strip().splitlines()
-            if lines:
-                http_code = lines[-1].strip()
-        if http_code and http_code.isdigit() and int(http_code) >= 400:
-            if os.path.isfile(tmp):
-                os.remove(tmp)
-            _ws_log.warning("curl HTTP %s %s", http_code, url[:120])
-            return (False, "")
-        if proc.returncode != 0 or not os.path.isfile(tmp):
-            _ws_log.warning("curl 失败(%d) %s", proc.returncode, url[:120])
-            return (False, "")
-        if os.path.getsize(tmp) < 64:
-            os.remove(tmp)
-            _ws_log.warning("curl 文件过小 %s", url[:120])
-            return (False, "")
-        os.replace(tmp, dest)
-        _ws_log.info("SAVE 已下载 %s", os.path.basename(dest))
-        return (True, dest)
-    except Exception:
-        _ws_log.exception("SAVE curl 异常 %s", url[:120])
-        if os.path.isfile(tmp):
-            try:
-                os.remove(tmp)
-            except Exception:
-                pass
-        return (False, "")
-
-
-def _ws_client(conn):
-    global _ws_last_ping
-    try:
-        try:
-            conn.settimeout(_WS_CLIENT_TIMEOUT)
-        except Exception:
-            pass
-        if not _ws_handshake(conn):
-            return
-        with _ws_lock:
-            _ws_clients.add(conn)
-            _ws_last_ping = time.time()
-        with _ws_send_lock:
-            try:
-                _ws_send(conn, "ENABLE" if _ws_enabled else "DISABLE")
-            except Exception:
-                pass
-        while not _ws_stop.is_set():
-            try:
-                msg = _ws_recv(conn)
-            except socket.timeout:
-                # 长时间无帧：可能 SW 已休眠；保留连接等下一次 PING，不立刻踢
-                with _ws_lock:
-                    stale = (time.time() - _ws_last_ping) > _WS_PING_TTL
-                if stale:
-                    break
-                continue
-            if msg is None:
-                break
-            if msg == "PING":
-                with _ws_lock:
-                    _ws_last_ping = time.time()
-                # 回 PONG：插件可确认链路双向可用（旧插件忽略即可）
-                with _ws_send_lock:
-                    try:
-                        _ws_send(conn, "PONG")
-                    except Exception:
-                        break
-            elif msg.startswith("SAVE "):
-                url = msg[5:].strip()
-                if url:
-                    cb_start = _ws_save_started_cb
-                    cb_done  = _ws_save_done_cb
-                    def _do_save():
-                        if cb_start is not None:
-                            try:
-                                cb_start(url)
-                            except Exception:
-                                _ws_log.exception("SAVE 开始回调失败 %s", url[:120])
-                        ok, dest_path = _ws_download_image(url)
-                        # 回调第二参传完整本地路径（失败则为 ""），供运行记录预览用
-                        if cb_done is not None:
-                            try:
-                                cb_done(url, dest_path if ok and dest_path else "", ok)
-                            except Exception:
-                                _ws_log.exception(
-                                    "SAVE 完成回调失败 ok=%s %s", ok, url[:120]
-                                )
-                    threading.Thread(
-                        target=_do_save,
-                        daemon=True,
-                    ).start()
-    except Exception:
-        _ws_log.exception("WS 客户端会话异常")
-    finally:
-        with _ws_lock:
-            _ws_clients.discard(conn)
-        try:
-            conn.close()
-        except Exception:
-            pass
-
-
-def _ws_schedule_restart(delay: float = 2.0):
-    """监听线程意外退出后延迟重启（关窗 stop 时不调度）。"""
-    def _go():
-        if _ws_stop.is_set():
-            return
-        _ws_log.info("正在自动重启 WS 服务…")
-        start_ws_server()
-
-    t = threading.Timer(max(0.5, float(delay)), _go)
-    t.daemon = True
-    t.name = "ws-restart"
-    t.start()
-
-
-def _ws_server():
-    global _ws_server_ok, _ws_srv_sock, _ws_started
-    srv = None
-    intentional_stop = False
-    try:
-        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        # Windows：进程异常退出后尽快释放端口，方便自愈重启
-        try:
-            srv.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 0)
-        except Exception:
-            pass
-        srv.bind(("127.0.0.1", _WS_PORT))
-        srv.listen(10)
-        srv.settimeout(1.0)
-        _ws_srv_sock = srv
-        _ws_server_ok = True
-        _ws_log.info("WS 服务已监听 127.0.0.1:%s", _WS_PORT)
-        while not _ws_stop.is_set():
-            try:
-                conn, addr = srv.accept()
-                # 双保险：只处理本机连接
-                if addr and addr[0] not in ("127.0.0.1", "::1"):
-                    try:
-                        conn.close()
-                    except Exception:
-                        pass
-                    continue
-                threading.Thread(
-                    target=_ws_client, args=(conn,), daemon=True, name="ws-client"
-                ).start()
-            except socket.timeout:
-                continue
-            except Exception:
-                if _ws_stop.is_set():
-                    intentional_stop = True
-                    break
-                _ws_log.exception("WS accept 异常")
-                break
-        intentional_stop = _ws_stop.is_set()
-    except OSError as e:
-        # 常见：端口被占用 → 标红，稍后仍可再试（用户关掉占用进程后自愈）
-        _ws_log.exception("WS 服务启动失败 port=%s err=%s", _WS_PORT, e)
-        _ws_server_ok = False
-        intentional_stop = _ws_stop.is_set()
-    except Exception:
-        _ws_log.exception("WS 服务启动失败 port=%s", _WS_PORT)
-        _ws_server_ok = False
-        intentional_stop = _ws_stop.is_set()
-    finally:
-        _ws_srv_sock = None
-        if srv is not None:
-            try:
-                srv.close()
-            except Exception:
-                pass
-        with _ws_start_lock:
-            _ws_started = False
-        _ws_log.info("WS 服务线程退出 intentional=%s", intentional_stop)
-        # 非主动停止：自动重启（端口占用也会隔一段时间再试）
-        if not intentional_stop and not _ws_stop.is_set():
-            _ws_server_ok = False
-            _ws_schedule_restart(3.0)
-
-
-def _ws_broadcast(text):
-    """把一条消息发给所有已连接的插件（线程安全）。失败则踢掉死连接。"""
-    with _ws_lock:
-        clients = list(_ws_clients)
-    dead = []
-    for c in clients:
-        with _ws_send_lock:
-            try:
-                _ws_send(c, text)
-            except Exception:
-                dead.append(c)
-    if dead:
-        with _ws_lock:
-            for c in dead:
-                _ws_clients.discard(c)
-        for c in dead:
-            try:
-                c.close()
-            except Exception:
-                pass
-
-
-def _ws_set_enabled(enabled: bool):
-    """更新启用状态并立即推送给插件。"""
-    global _ws_enabled
-    _ws_enabled = bool(enabled)
-    _ws_broadcast("ENABLE" if _ws_enabled else "DISABLE")
-
-
-def _ws_connected():
-    """判断插件是否活跃：TTL 内收到过 PING，或 socket 仍在。"""
-    with _ws_lock:
-        has_socket = len(_ws_clients) > 0
-        ping_fresh = (time.time() - _ws_last_ping) < _WS_PING_TTL
-    return has_socket and ping_fresh
-
-
-def _ws_seconds_since_ping() -> float:
-    with _ws_lock:
-        return time.time() - _ws_last_ping
-
-
-def _ws_state_pusher():
-    """每 10 秒重发一次当前启用状态。插件据此判断“程序是否在线”。"""
-    global _ws_pusher_alive
-    try:
-        while not _ws_stop.wait(10.0):
-            try:
-                _ws_broadcast("ENABLE" if _ws_enabled else "DISABLE")
-            except Exception:
-                _ws_log.exception("WS 状态推送失败")
-    finally:
-        _ws_pusher_alive = False
-
-
-def start_ws_server():
-    """显式启动 WS（PageFastSave 构造 / 自愈重启）。幂等。"""
-    global _ws_started, _ws_server_ok, _ws_pusher_alive
-    with _ws_start_lock:
-        if _ws_started:
-            return
-        _ws_started = True
-    _ws_stop.clear()
-    _ws_server_ok = None
-    threading.Thread(target=_ws_server, daemon=True, name="ws-server").start()
-    if not _ws_pusher_alive:
-        _ws_pusher_alive = True
-        threading.Thread(target=_ws_state_pusher, daemon=True, name="ws-pusher").start()
-    _ws_log.info("已请求启动 WS 服务")
-
-
-def ensure_ws_server():
-    """状态灯检测时调用：若监听线程已死则拉起（不重复起）。"""
-    if _ws_stop.is_set():
-        return
-    if _ws_started and _ws_server_ok is True:
-        return
-    if _ws_started and _ws_server_ok is None:
-        return  # 启动中
-    # 未启动，或曾失败且线程已退出
-    if not _ws_started:
-        start_ws_server()
-
-
-def stop_ws_server():
-    """关窗时停止监听并断开客户端。幂等。"""
-    global _ws_started, _ws_server_ok, _ws_srv_sock
-    _ws_stop.set()
-    sock = _ws_srv_sock
-    _ws_srv_sock = None
-    if sock is not None:
-        try:
-            sock.close()
-        except Exception:
-            pass
-    with _ws_lock:
-        clients = list(_ws_clients)
-        _ws_clients.clear()
-    for c in clients:
-        try:
-            c.close()
-        except Exception:
-            pass
-    with _ws_start_lock:
-        _ws_started = False
-    _ws_server_ok = None
-    _ws_log.info("已停止 WS 服务")
-
-
-
-
 
 
 # ─────────────────────────────────────────────
@@ -710,19 +156,6 @@ class _GlobalHotkeyFilter(QAbstractNativeEventFilter):
             self.cb()
             return True, 0
         return False, 0
-
-
-def _check_chrome_running() -> bool:
-    """检测系统中是否有 Chrome 进程在运行"""
-    try:
-        import subprocess
-        out = subprocess.check_output(
-            ["tasklist", "/FI", "IMAGENAME eq chrome.exe", "/NH"],
-            stderr=subprocess.DEVNULL, creationflags=0x08000000  # CREATE_NO_WINDOW
-        ).decode("gbk", errors="ignore")
-        return "chrome.exe" in out.lower()
-    except Exception:
-        return False
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -787,10 +220,10 @@ class _RecordCardChip(QPushButton):
 
 
 # ═══════════════════════════════════════════════════════════════
-# 插件状态文案：单行、右侧可省略，不把「速存图片」卡撑宽
+# 操作记录详情：单行显示，超宽时省略
 # （卡片宽度只跟 row_top stretch 百分比走）
 # ═══════════════════════════════════════════════════════════════
-class _PluginStatusLabel(QLabel):
+class _ElidedLabel(QLabel):
     def __init__(self, text="", parent=None):
         super().__init__(text, parent)
         self._full = text or ""
@@ -1186,19 +619,12 @@ def _unique_txt_path(folder, stem, content, already_saved):
 
 
 class PageFastSave(QWidget):
-    STATE_IDLE    = 0
-    STATE_IMGSAVE = 1
-
-    log_sig     = pyqtSignal(str)
-    # 插件状态更新信号（color, text, bold）——供后台检测线程安全地切回主线程更新 UI
-    plugin_status_sig = pyqtSignal(str, str, str, bool)
+    background_enabled_changed = pyqtSignal(bool)
+    browser_image_triggered = pyqtSignal(str, str)
+    browser_image_link = pyqtSignal(str, str, str)
+    browser_image_hover = pyqtSignal(bool)
     # 速存操作（存图/存文本/建文件夹）成功时发射，请求主窗口切到「速存图文」页
     request_show = pyqtSignal()
-    # WS SAVE 解析：开始解析（url）→ 主线程添加「解析中」闪烁记录
-    parse_start_sig = pyqtSignal(str)
-    # WS SAVE 解析完成（url, filepath, success）→ 主线程更新记录为成功/失败
-    # filepath 为本地完整路径（失败时可能为空字符串）
-    parse_done_sig = pyqtSignal(str, str, bool)
     # F6 记录模式切换 → 通知主窗口关闭/恢复自动下载
     record_mode_toggled_sig = pyqtSignal(str)
 
@@ -1248,11 +674,7 @@ class PageFastSave(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        h = self.height()
-        if h > 0:
-            top_h = max(248, int(h * 0.46))
-            for _card in (self._card_img, self._card_txt, self._card_mkdir):
-                _card.setFixedHeight(top_h)
+        self._resize_top_cards()
         # 底部：运行记录 与 预览区 各占 50% 宽，写死为固定值，
         # 不受两侧内容 sizeHint / 长文字撑宽影响
         w = self.width()
@@ -1273,6 +695,19 @@ class PageFastSave(QWidget):
                     self._set_image_preview_meta(path, self.preview._src)
         except Exception:
             pass
+
+    def _resize_top_cards(self):
+        if not hasattr(self, "_card_img") or self.height() <= 0:
+            return
+        height = max(248, int(self.height() * 0.46))
+        if self.chk_background_image.isChecked():
+            layout = self._card_img.layout()
+            # The top cards use fixed heights, so reserve enough room for all operation rows.
+            height = max(height, layout.sizeHint().height())
+            if self._card_img.isVisible():
+                height = max(height, layout.heightForWidth(self._card_img.width()))
+        for card in (self._card_img, self._card_txt, self._card_mkdir):
+            card.setFixedHeight(height)
 
     def __init__(self):
         super().__init__()
@@ -1301,52 +736,36 @@ class PageFastSave(QWidget):
         title_img = install_card_title(gb_img, img_box, "速存图片")
         self._theme_titles.append(title_img)
 
-        self.chk_imgonly = QCheckBox("启用速存图片")
-        self.chk_imgonly.setVisible(False)  # 子开关不展示，由总开关控制
+        self.chk_background_image = QCheckBox("后台下载")
+        self.chk_background_image.setStyleSheet("background: transparent;")
+        img_box.addWidget(self.chk_background_image, 0, Qt.AlignLeft)
 
-        # 一排：开关 + 启动速存
-        self.chk_enable_all = QCheckBox("启动速存")
-        self.chk_enable_all.setStyleSheet("background: transparent;")
-        self.chk_enable_all.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        img_box.addWidget(self.chk_enable_all, 0, Qt.AlignLeft)
-
-        # 二排：连接状态（色点 + 文字，不是按钮）
-        self.btn_status = QPushButton("检测中")
+        self.btn_status = QPushButton("已关闭")
         self.btn_status.setObjectName("FastStatusLamp")
         self.btn_status.setFlat(True)
         self.btn_status.setDefault(False)
         self.btn_status.setAutoDefault(False)
         self.btn_status.setFocusPolicy(Qt.NoFocus)
         self.btn_status.setCursor(Qt.PointingHandCursor)
-        self.btn_status.setToolTip("点击诊断连接")
-        self.btn_status.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
-        self._apply_status_btn_style("#f0a500", "检测中", bold=False)
+        self.btn_status.setToolTip("查看后台下载状态")
+        # 状态文字和操作记录随开关变化，卡片宽度仍由顶部三卡的布局分配。
+        self.btn_status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+        self._apply_status_btn_style("#f0a500", "已关闭")
         self.btn_status.clicked.connect(self._diagnose)
-        img_box.addWidget(self.btn_status, 0, Qt.AlignLeft)
+        img_box.addWidget(self.btn_status)
 
-        # 三排：Xs前心跳
-        self.lbl_heartbeat = QLabel("——")
-        self.lbl_heartbeat.setWordWrap(False)
-        self.lbl_heartbeat.setStyleSheet("background: transparent;")
-        self.lbl_heartbeat.setAlignment(Qt.AlignCenter)
-        img_box.addWidget(self.lbl_heartbeat)
 
-        # 四排：操作说明
-        self.lbl_img_hint = QLabel("鼠标停留在浏览器的图片上后，按设置的快捷键进行存图（Alt+1）")
+        self.lbl_img_hint = QLabel("在 Chrome 或 Edge 将鼠标停在图片上，按 Alt+1 下载。")
         self.lbl_img_hint.setWordWrap(True)
         self.lbl_img_hint.setStyleSheet("background: transparent;")
         self.lbl_img_hint.setAlignment(Qt.AlignLeft)
         self._typo(self.lbl_img_hint, "muted")
         img_box.addWidget(self.lbl_img_hint)
 
-        # 快捷键下拉框保留对象（内部逻辑仍会用到），但不再显示在界面上
-        self.combo_img_hotkey = QComboBox()
-        self.combo_img_hotkey.setObjectName("FastSaveHotkey")
-        self.combo_img_hotkey.addItems(["Alt+1"])
-        self.combo_img_hotkey.setItemIcon(0, self._make_glyph_icon("⌨", color=content_secondary_color()))
-        self.combo_img_hotkey.setCurrentText("Alt+1")
-        self.combo_img_hotkey.setEnabled(False)   # 固定 Alt+1，不提供改键
-        self.combo_img_hotkey.setVisible(False)
+        self.background_operations = self._build_background_operations()
+        self.background_operations.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.background_operations.hide()
+        img_box.addWidget(self.background_operations)
 
         # 保存路径 —— 全局「文件夹路径」样式（圆角框 + 📁）
         row_path = QHBoxLayout()
@@ -1372,7 +791,8 @@ class PageFastSave(QWidget):
         self._theme_titles.append(title_txt)
 
         self.chk_manual = QCheckBox("启用速存文本")
-        self.chk_manual.setVisible(False)
+        self.chk_manual.setStyleSheet("background: transparent;")
+        txt_box.addWidget(self.chk_manual, 0, Qt.AlignLeft)
 
         # ── 原速存文本 ──
         lbl_hint = QLabel("选中文件则创建同名文本；未选中时文件名为「桌面助手 v9.19 内容前10个汉字」")
@@ -1448,7 +868,8 @@ class PageFastSave(QWidget):
         self._theme_titles.append(title_mkdir)
 
         self.chk_mkdir = QCheckBox("启用速建文件夹")
-        self.chk_mkdir.setVisible(False)  # 子开关不展示，由速存启用总开关控制
+        self.chk_mkdir.setStyleSheet("background: transparent;")
+        mkdir_box.addWidget(self.chk_mkdir, 0, Qt.AlignLeft)
 
         row_mkdir_key = QHBoxLayout()
         row_mkdir_key.setSpacing(4)
@@ -1588,41 +1009,33 @@ class PageFastSave(QWidget):
         self._theme_glyph_actions = [
             (self._path_icon_action, "📁"),
         ]
-        self._theme_glyph_combo_items = [
-            (self.combo_img_hotkey, 0, "⌨"),
-        ]
-
         # ══════════ 信号与槽 ══════════
-        self.log_sig.connect(self._append_log)
-        self.plugin_status_sig.connect(self._apply_plugin_ui)
+        self.browser_image_triggered.connect(self._on_hover_image_triggered)
+        self.browser_image_link.connect(self._on_hover_image_link)
+        self.browser_image_hover.connect(self._on_hover_image_status)
+        self._hover_has_image = False
+        self._background_captures = set()
+        from utils.app_paths import log_dir
+        self._background_log = BackgroundDownloadLog(os.path.join(log_dir(), "background_image_download.log"), log)
+        self._refresh_background_operations()
+        self._browser_image_save = BrowserImageSave(
+            log, self.browser_image_link.emit, self.browser_image_hover.emit,
+            on_trigger=self.browser_image_triggered.emit,
+        )
+        self._background_download = BackgroundImageDownload(self, _SAVE_UA)
+        self._background_download.saved.connect(self._on_browser_image_saved)
+        self._background_download.failed.connect(self._on_background_download_failed)
+        self._background_download.step_changed.connect(self._record_background_step)
         self.btn_choose_dir.clicked.connect(self._choose_dir)
-        self.chk_imgonly.toggled.connect(self._on_imgonly_toggled)
+        self.chk_background_image.toggled.connect(self._on_background_image_toggled)
         self.chk_manual.toggled.connect(self._on_manual_toggled)
-        self.combo_img_hotkey.currentTextChanged.connect(self._on_img_hotkey_changed)
         self._txt_hotkey_group.buttonClicked.connect(self._on_txt_hotkey_changed)
         self._mkdir_hotkey_group.buttonClicked.connect(self._on_mkdir_hotkey_changed)
         self.save_path.textChanged.connect(self._on_path_edited)
-        # 速存启用总开关
-        self.chk_enable_all.toggled.connect(self._on_enable_all_toggled)
-        # 子功能变化时同步总开关显示
-        self.chk_imgonly.toggled.connect(self._sync_enable_all_display)
-        self.chk_manual.toggled.connect(self._sync_enable_all_display)
-        self.chk_mkdir.toggled.connect(self._sync_enable_all_display)
-
-        # ══════════ 状态 ══════════
-        # 目录监控：把浏览器暂存目录里的新图片移动到保存路径
-        self._archived_seen = set()   # 当“保存路径==暂存区”时，用于记录已见过的文件
-        self._imgonly_timer = QTimer(self)
-        self._imgonly_timer.setInterval(1000)
-        self._imgonly_timer.timeout.connect(self._scan_imgonly_files)
-
-        # 心跳：每 5 秒自动刷新插件连接状态
-        self._closing = False   # 主窗口关闭时置 True，阻止后台检测线程再碰已销毁的界面
-        self._nm_check_timer = QTimer(self)
-        self._nm_check_timer.setInterval(5000)
-        self._nm_check_timer.timeout.connect(self._update_nm_status)
-        self._nm_check_timer.start()
-        QTimer.singleShot(1000, self._update_nm_status)  # 启动 1s 后做第一次检测
+        self._closing = False
+        self._browser_status_timer = QTimer(self)
+        self._browser_status_timer.setInterval(1000)
+        self._browser_status_timer.timeout.connect(self._update_browser_image_status)
 
         # 速存文本热键
         self._hotkey_id              = 0x1002
@@ -1654,10 +1067,10 @@ class PageFastSave(QWidget):
         self._register_recording_hotkey()
 
         self.clipboard = QApplication.clipboard()
-        self.state     = self.STATE_IDLE
 
         # ── F6 记录模式 ──
         self._recording = False
+        self._record_feature_states = None
         self._record_file = ""
         self._record_count = 0
         self._record_base_count = 0  # 已有记录行数（继续记录时从文件读入）
@@ -1667,28 +1080,12 @@ class PageFastSave(QWidget):
         self.clipboard.dataChanged.connect(self._on_record_clipboard)
 
         self._init_save_dir()
-        self._enter_idle(reset_switches=True)
-        # 默认不勾「启用速存」；启动时由 records/user.txt 恢复用户习惯
-        self._sync_enable_all_display()
         # 偏好恢复是否已写过「速存已按习惯启用」摘要（防重复 apply 刷屏）
         self._prefs_restored_once = False
         # quiet 路径下「同类状态/失败」只记一次的 key 集合
         self._runlog_once_keys = set()
 
-        # ── WS SAVE 回调注册（必须在 start_ws_server 之前，避免插件连上瞬间丢消息）──
-        self._parsing_items = {}   # url → QListWidgetItem（正在解析中的条目）
-        self._saved_filenames = set()  # 去重：已记录为「已保存图片」的文件名（小写）
-
-        # 注册模块级回调：收到 SAVE → 信号到主线程加「解析中」记录
-        import pages.page_fast_save as _pfs
-        _pfs._ws_save_started_cb = lambda url: self.parse_start_sig.emit(url)
-        _pfs._ws_save_done_cb    = lambda url, name, ok: self.parse_done_sig.emit(url, name, ok)
-
-        self.parse_start_sig.connect(self._on_parse_start)
-        self.parse_done_sig.connect(self._on_parse_done)
-
-        # 插件 WebSocket：进入页面生命周期后再监听，import 时不起线程
-        start_ws_server()
+        self._saved_images = set()  # 已记录的图片路径
 
         # 启动时加载今天的记录文件按钮
         self._init_record_file()
@@ -1704,8 +1101,11 @@ class PageFastSave(QWidget):
     # ────────────────────────────────────────
     def export_settings(self) -> dict:
         """导出当前速存相关设置，供 user_prefs 落盘。"""
+        images, text, mkdir = self._record_feature_states or self._fast_feature_states()
         return {
-            "enabled": bool(self.is_any_active()),
+            "images_enabled": images,
+            "text_enabled": text,
+            "mkdir_enabled": mkdir,
             "save_path": (self.save_path.text() or "").strip(),
             "txt_hotkey": self._current_txt_key(),
             "mkdir_hotkey": self._current_mkdir_key(),
@@ -1725,7 +1125,6 @@ class PageFastSave(QWidget):
                 self.save_path.setText(path)
             finally:
                 self.save_path.blockSignals(False)
-            _ws_set_save_dir(path)
             self._require_writable_path(interactive=False)
 
         txt_key = str(d.get("txt_hotkey") or "").upper()
@@ -1751,17 +1150,21 @@ class PageFastSave(QWidget):
         if record_random is not None and hasattr(self, "chk_new_record"):
             self.chk_new_record.setChecked(bool(record_random))
 
-        # 总开关最后应用（联动子功能与热键；quiet 避免运行记录被状态行刷屏）
-        # 注：总览保存 / 反复 apply 时若再写「已启用」，同一会话会出现成套重复条目
-        enabled = bool(d.get("enabled", False))
-        self.set_all_features(enabled, quiet=True)
-        self._sync_enable_all_display()
+        states = (
+            bool(d.get("images_enabled")),
+            bool(d.get("text_enabled")),
+            bool(d.get("mkdir_enabled")),
+        )
+        if self._recording:
+            self._record_feature_states = states
+        else:
+            self._set_fast_feature_states(states)
         # 仅首次从偏好恢复时写一行摘要；之后再 apply 不再追加
         if not getattr(self, "_prefs_restored_once", False):
             self._prefs_restored_once = True
-            if enabled:
+            if self.is_img_active():
                 p = (self.save_path.text() or "").strip() or path
-                tip = "🟢 速存已按习惯启用"
+                tip = "🟢 后台下载已按习惯启用"
                 if p:
                     tip += f" → {p}"
                 try:
@@ -1789,8 +1192,6 @@ class PageFastSave(QWidget):
             if action is getattr(self, "_path_icon_action", None):
                 continue  # 已由 restyle_folder_path_edit 处理
             action.setIcon(self._make_glyph_icon(glyph, color=secondary))
-        for combo, idx, glyph in getattr(self, "_theme_glyph_combo_items", []):
-            combo.setItemIcon(idx, self._make_glyph_icon(glyph, color=secondary))
         if hasattr(self, "preview"):
             self.preview.refresh_theme()
         if hasattr(self, "btn_record"):
@@ -2045,103 +1446,26 @@ class PageFastSave(QWidget):
     def allow_accept(self): return False
     def drain_queue(self): pass
 
-    def is_img_active(self):  return self.chk_imgonly.isChecked()
-    def is_txt_active(self):  return self.chk_manual.isChecked()
-    def is_mkdir_active(self): return self.chk_mkdir.isChecked()
-    def is_any_active(self):  return self.is_img_active() or self.is_txt_active() or self.is_mkdir_active()
-    def is_all_active(self):  return self.is_img_active() and self.is_txt_active() and self.is_mkdir_active()
+    def is_img_active(self):
+        return self.chk_background_image.isChecked()
 
-    def _on_enable_all_toggled(self, checked: bool):
-        """速存启用总开关：与左侧菜单 LED 等价，开/关全部子功能"""
-        self.set_all_features(checked)
+    def _fast_feature_states(self):
+        return self.is_img_active(), self.chk_manual.isChecked(), self.chk_mkdir.isChecked()
 
-    def _sync_enable_all_display(self, _=None):
-        """子功能变化时同步总开关的勾选显示（不触发信号循环）"""
-        self.chk_enable_all.blockSignals(True)
-        self.chk_enable_all.setChecked(self.is_any_active())
-        self.chk_enable_all.blockSignals(False)
-
-    def set_all_features(self, enabled: bool, quiet: bool = False):
-        """一键开/关三个功能（供外部 LED / 偏好恢复调用）。
-
-        quiet=True：只改状态与热键，不向「运行记录」写启用/关闭状态行
-        （启动读 user.txt、总览保存后再次 apply 时用，避免同一套日志重复刷）。
-        """
-        self._block_switches(True)
-        self.chk_mkdir.blockSignals(True)
-        try:
-            self.chk_imgonly.setChecked(enabled)
-            self.chk_manual.setChecked(enabled)
-            self.chk_mkdir.setChecked(enabled)
-        finally:
-            self._block_switches(False)
-            self.chk_mkdir.blockSignals(False)
-        # 手动触发各自逻辑（blockSignals 期间 toggled 不会发，须显式调用）
-        self._on_imgonly_toggled(enabled, quiet=quiet)
-        self._on_manual_toggled(enabled, quiet=quiet)
-        self._on_mkdir_toggled(enabled, quiet=quiet)
-
-    # ────────────────────────────────────────
-    # 速存图片：触发逻辑
-    # ────────────────────────────────────────
-    def _update_nm_status(self):
-        """后台检测插件连接状态，映射为三色灯 + 简短状态词（3-4字）。"""
-        GREEN, RED, YELLOW = "#4caf50", "#e05252", "#f0a500"
-
-        def _do_check():
-            if self._closing:
-                return
-            try:
-                ensure_ws_server()
-            except Exception:
-                _ws_log.exception("确保 WS 服务运行失败")
-            if _ws_server_ok is False:
-                self._set_plugin_ui(RED, "端口占用", "")
-                return
-            if _ws_server_ok is None:
-                self._set_plugin_ui(YELLOW, "启动中", "")
-                return
-
-            secs = _ws_seconds_since_ping()
-            has_sock = len(_ws_clients) > 0
-            hb_text = f"{int(secs)}s前心跳" if secs < 9999 else ""
-
-            if has_sock and secs < _WS_PING_TTL:
-                self._set_plugin_ui(GREEN, "已连接", hb_text, bold=True)
-                return
-            if has_sock and secs >= _WS_PING_TTL:
-                self._set_plugin_ui(YELLOW, "无心跳", f"{int(secs)}s无心跳")
-                return
-            if secs < 120:
-                self._set_plugin_ui(YELLOW, "已断开", f"{int(secs)}s前最后心跳")
-                return
-
-            if _check_chrome_running():
-                self._set_plugin_ui(YELLOW, "待连接", "")
-            else:
-                self._set_plugin_ui(RED, "未启动", "")
-
-        if self._closing:
-            return
-        import threading as _th
-        _th.Thread(target=_do_check, daemon=True).start()
-
-    def _set_plugin_ui(self, color: str, chrome_status: str, heartbeat: str, bold: bool = False):
-        """线程安全：通过信号把结果切回主线程更新（不能在子线程里直接碰 UI/定时器）。
-        _closing 关闭了大部分竞态窗口；外层 try/except 是最后一道保险——
-        万一检测线程正好卡在"判断完 _closing、还没来得及 emit"这一瞬间被关闭，
-        C/C++ 侧对象已经没了，emit 会抛 RuntimeError，这里兜住，不让它冒到线程外面。"""
-        if self._closing:
-            return
-        try:
-            self.plugin_status_sig.emit(color, str(chrome_status or ""), str(heartbeat or ""), bool(bold))
-        except RuntimeError:
-            pass
+    def _set_fast_feature_states(self, states):
+        images, text, mkdir = states
+        with QSignalBlocker(self.chk_background_image), QSignalBlocker(self.chk_manual), QSignalBlocker(self.chk_mkdir):
+            self.chk_background_image.setChecked(images)
+            self.chk_manual.setChecked(text)
+            self.chk_mkdir.setChecked(mkdir)
+        self._on_background_image_toggled(images, quiet=True)
+        self._on_manual_toggled(text, quiet=True)
+        self._on_mkdir_toggled(mkdir, quiet=True)
 
     def _apply_status_btn_style(self, color: str, text: str, bold: bool = False):
-        """连接状态：色点 + 彩色文字，透明底，不做成胶囊按钮。"""
+        """用色点和文字显示后台下载状态。"""
         weight = "600" if bold else "400"
-        self.btn_status.setText("●  " + (text or ""))
+        self.btn_status.setText("●  " + text)
         self.btn_status.setStyleSheet(
             f"QPushButton#FastStatusLamp{{background:transparent; color:{color};"
             f"border:none; border-radius:0; padding:0; margin:0;"
@@ -2152,152 +1476,45 @@ class PageFastSave(QWidget):
             f"background:transparent; border:none; color:{color};}}"
         )
 
-    def _apply_plugin_ui(self, color: str, chrome_status: str, heartbeat: str, bold: bool):
-        """在主线程真正更新状态按钮与心跳文字（由 plugin_status_sig 触发）。"""
-        self._apply_status_btn_style(color, chrome_status, bold)
-        hb = heartbeat or "——"
-        self.lbl_heartbeat.setStyleSheet(
-            f"background: transparent; color: {color}; font-size: 14px;"
-        )
-        self.lbl_heartbeat.setText(hb)
-
-
-    # ────────────────────────────────────────
-
-    # ────────────────────────────────────────
-    # 速存图片：开关与设置变更
-    # ────────────────────────────────────────
-    def _on_imgonly_toggled(self, checked: bool, quiet: bool = False):
-        """速存图片开关。quiet=True 时不写启用/关闭/诊断状态行（偏好恢复用）。"""
-        if checked:
-            # 偏好恢复时勿弹路径对话框
-            if not self._require_writable_path(interactive=not quiet):
-                self._block_switches(True)
-                self.chk_imgonly.setChecked(False)
-                self._block_switches(False)
-                _ws_set_enabled(False)          # 路径不可用 → 通知插件停用
-                # 路径问题仍写入记录；quiet 下同类只记一次，避免反复 apply 刷屏
-                msg = "⚠️ 保存路径不可用，已取消速存图片"
-                if quiet:
-                    self._runlog_once("path_unusable", msg)
-                else:
-                    self._log_problem(msg)
-                return
-
-            if not quiet:
-                self._diagnose()                # 用户手动启用：诊断一行，问题一眼可见
-            self._prime_seen_and_quiet()        # 处理暂存区已有的图片
-            self._imgonly_timer.start()
-
-            self.state = self.STATE_IMGSAVE
-            _ws_set_enabled(True)               # 通知插件：可以开始存图
-            if not quiet:
-                self.list_widget.addItem(
-                    "🟢 速存图片：已启用（在浏览器里把鼠标停在图片上按 Alt+1）"
-                )
-                self.list_widget.addItem(
-                    f"📁 图片将归档到：{self.save_path.text().strip()}"
-                )
+    def _update_browser_image_status(self):
+        if not self.is_img_active():
+            self._apply_status_btn_style("#f0a500", "已关闭")
+        elif self._background_download.busy:
+            self._apply_status_btn_style("#f0a500", "下载中")
+        elif self._browser_image_save.running:
+            status = "已识别图片" if self._hover_has_image else "等待 Alt+1"
+            self._apply_status_btn_style("#4caf50", status, bold=True)
         else:
-            self._imgonly_timer.stop()
-            self.state = self.STATE_IDLE
-            _ws_set_enabled(False)              # 通知插件：停止存图
-            if not quiet:
-                self.list_widget.addItem("⏹️ 速存图片：已关闭")
+            self._apply_status_btn_style("#e05252", "浏览器监听未就绪")
 
-    def _on_img_hotkey_changed(self, key: str):
-        # 快捷键固定为 Alt+1，不再需要与浏览器同步，这里保留空实现以兼容信号连接
-        pass
-
-
-
-    # ────────────────────────────────────────
-    # 目录监控：显示插件保存的新文件
-    # ────────────────────────────────────────
-    def _get_plugin_save_dir(self) -> str:
-        """插件把图片存到：系统下载目录/WebImageSaver"""
-        from PyQt5.QtCore import QStandardPaths
-        dl = QStandardPaths.writableLocation(QStandardPaths.DownloadLocation)
-        if not dl:
-            dl = os.path.join(os.path.expanduser("~"), "Downloads")
-        return os.path.join(dl, "WebImageSaver")
-
-    _IMG_EXTS = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tiff", ".avif", ".ico"}
-
-    def _scan_imgonly_files(self):
-        """每秒扫描浏览器暂存目录（下载目录/WebImageSaver）：
-        - 若保存路径与暂存目录不同 → 把新图移动过去并记录；
-        - 若保存路径就等于暂存目录 → 图片本就在此，直接记录（不搬运）。"""
-        try:
-            self._archive_new(log=True)
-        except Exception as e:
-            self._log_problem(f"❌ 图片归档错误：{e}")
-
-    @staticmethod
-    def _file_sig(path):
-        st = os.stat(path)
-        return (os.path.basename(path), st.st_size, int(st.st_mtime))
-
-    def _archive_new(self, log: bool = True):
-        staging = self._get_plugin_save_dir()
-        if not os.path.isdir(staging):
-            return
-        target = self.save_path.text().strip()
-        if not target:
-            return
-        try:
-            os.makedirs(target, exist_ok=True)
-        except Exception as e:
-            if log:
-                self._log_problem(f"❌ 保存路径不可用：{target}（{e}）")
-            return
-
-        same_dir = os.path.abspath(staging) == os.path.abspath(target)
-        for name in sorted(os.listdir(staging)):
-            if name.endswith(".crdownload"):
-                continue
-            if os.path.splitext(name)[1].lower() not in self._IMG_EXTS:
-                continue
-            src = os.path.join(staging, name)
-            if not os.path.isfile(src):
-                continue
-            try:
-                sig = self._file_sig(src)
-            except OSError:
-                continue   # 文件可能刚被移走/占用，下一轮再看
-
-            if sig in self._archived_seen:
-                # 这张已经处理过；若是搬运模式，上次可能“复制成功但删除失败”，顺手清一下暂存副本
-                if not same_dir:
-                    try: os.remove(src)
-                    except OSError: pass
-                continue
-
-            if same_dir:
-                # 目标即暂存区：不搬运，只记录
-                self._archived_seen.add(sig)
-                if log:
-                    self._push_record(
-                        f"✅ 已保存图片：{name}", select=True, filepath=src
-                    )
+    def _on_background_image_toggled(self, checked: bool, quiet: bool = False):
+        if checked and not self._require_writable_path(interactive=not quiet):
+            with QSignalBlocker(self.chk_background_image):
+                self.chk_background_image.setChecked(False)
+            checked = False
+            msg = "⚠️ 保存路径不可用，已取消后台下载"
+            if quiet:
+                self._runlog_once("path_unusable", msg)
             else:
-                # 跨目录：先复制（成功即代表图片已安全落到目标），记录后再删暂存副本
-                dst = self._unique_path(os.path.join(target, name))
-                try:
-                    shutil.copy2(src, dst)
-                except (PermissionError, OSError):
-                    continue   # 文件可能仍在写入或被占用，下一轮重试（不记录、不标记）
-                self._archived_seen.add(sig)   # 复制成功即标记，避免重复
-                if log:
-                    self._push_record(
-                        f"✅ 已保存图片：{os.path.basename(dst)}",
-                        select=True,
-                        filepath=dst,
-                    )
-                try:
-                    os.remove(src)             # 再删暂存副本；删不掉也没关系，下一轮会再清
-                except OSError:
-                    pass
+                self._log_problem(msg)
+                quiet = True
+
+        self._browser_image_save.configure(checked)
+        self.background_operations.setVisible(checked)
+        if checked:
+            self._browser_status_timer.start()
+            if not quiet:
+                path = self.save_path.text().strip()
+                self.list_widget.addItem(f"🟢 后台下载已启用 → {path}")
+        else:
+            self._browser_status_timer.stop()
+            self._hover_has_image = False
+            self._interrupt_background_capture("后台下载已关闭。")
+            if not quiet:
+                self.list_widget.addItem("⏹️ 后台下载已关闭")
+        self._update_browser_image_status()
+        self._resize_top_cards()
+        self.background_enabled_changed.emit(checked)
 
     @staticmethod
     def _unique_path(path: str) -> str:
@@ -2308,33 +1525,6 @@ class PageFastSave(QWidget):
         while os.path.exists(f"{base} ({i}){ext}"):
             i += 1
         return f"{base} ({i}){ext}"
-
-    def _prime_seen_and_quiet(self, scan_dir=None):
-        """启用/切换保存路径时调用：
-        - 目标≠暂存区 → 把暂存区已有的图片搬过去并记录；
-        - 目标==暂存区 → 把已有文件标记为已知（不刷屏），之后只记录新图。"""
-        staging = self._get_plugin_save_dir()
-        target = self.save_path.text().strip()
-        try:
-            same_dir = bool(target) and os.path.isdir(staging) \
-                and os.path.abspath(staging) == os.path.abspath(target)
-        except Exception:
-            same_dir = False
-        if same_dir:
-            self._archived_seen = set()
-            try:
-                for n in os.listdir(staging):
-                    p = os.path.join(staging, n)
-                    if os.path.isfile(p):
-                        try: self._archived_seen.add(self._file_sig(p))
-                        except OSError: pass
-            except Exception:
-                log.exception("扫描速存暂存区失败 staging=%s", staging)
-        else:
-            try:
-                self._archive_new(log=True)
-            except Exception:
-                log.exception("归档速存新文件失败")
 
     def _log_problem(self, msg: str):
         """诊断/连接/错误类信息写入运行记录列表，自动拆行逐条追加并滚屏。"""
@@ -2366,14 +1556,11 @@ class PageFastSave(QWidget):
         return True
 
     def _diagnose(self):
-        """点击按钮时在运行记录中输出一行精简诊断。"""
-        port = (
-            "正常" if _ws_server_ok is True
-            else "占用" if _ws_server_ok is False else "启动中"
-        )
-        conn = "已连接" if _ws_connected() else "未连接"
-        on_off = "开" if self.chk_imgonly.isChecked() else "关"
-        self._log_problem(f"🔧 端口{port} | 插件{conn} | 速存已{on_off}")
+        if self.is_img_active():
+            self._update_browser_image_status()
+            self._log_problem(f"📁 后台下载保存到：{self.save_path.text().strip()}")
+        else:
+            self._log_problem("后台下载已关闭。")
 
     # ────────────────────────────────────────
     # 速存文本
@@ -2609,55 +1796,21 @@ class PageFastSave(QWidget):
     # ────────────────────────────────────────
     # 公共工具
     # ────────────────────────────────────────
-    def _enter_idle(self, reset_switches=False):
-        if reset_switches:
-            self._block_switches(True)
-            try:
-                self.chk_imgonly.setChecked(False)
-                self.chk_manual.setChecked(False)
-            finally:
-                self._block_switches(False)
-        try:
-            self._sc_manual.setEnabled(False)
-        except Exception:
-            pass
-        self.state = self.STATE_IDLE
-        self._unregister_txt_hotkey()
-        for h in [self._imgonly_timer]:
-            try:
-                if hasattr(h, "stop"): h.stop()
-            except Exception:
-                pass
-
-    def _block_switches(self, yes: bool):
-        for w in [self.chk_imgonly, self.chk_manual]:
-            try: w.blockSignals(yes)
-            except Exception: pass
-
-    def _append_log(self, text: str):
-        try:
-            self.list_widget.addItem(text)
-            self.list_widget.scrollToBottom()
-        except Exception:
-            pass
-
     def _push_record(self, text: str, select: bool = False, filepath: str = None):
         """速存操作成功时统一调用：追加运行记录 → 滚到底部显示最新 →
         选中该条（联动右侧预览）→ 请求主窗口切到「速存图文」页。
-        自动去重：同一文件名不会重复记录「已保存图片」。
+        自动去重：同一图片路径不会重复记录「已保存图片」。
         filepath：本地完整路径（图片文件 / 文件夹 / 文本文件均可），
         写入条目 UserRole 供预览区稳定加载。"""
-        # 去重：同文件名只记一次（防 WS 下载 + 目录监控重复记录）
+        path = (filepath or "").strip()
         m = self._IMG_LOG_RE.search(text)
         if m:
-            fn = m.group(1).strip().lower()
-            if fn and fn in self._saved_filenames:
-                return  # 已记录过，跳过重复条目
-            if fn:
-                self._saved_filenames.add(fn)
+            key = os.path.normcase(os.path.abspath(path)) if path else m.group(1).strip().lower()
+            if key in self._saved_images:
+                return
+            self._saved_images.add(key)
         try:
             item = QListWidgetItem(text)
-            path = (filepath or "").strip()
             if path and (os.path.isfile(path) or os.path.isdir(path)):
                 path = os.path.abspath(path)
                 item.setData(Qt.UserRole, path)
@@ -2677,39 +1830,150 @@ class PageFastSave(QWidget):
             pass
         self.request_show.emit()
 
-    # ── WS SAVE 运行记录：解析中（黄灯）→ 完成/失败 ──
-    def _on_parse_start(self, url: str):
-        """主线程：收到插件 SAVE 命令，切到本页并在运行记录添加「解析中」条目。
+    def _build_background_operations(self):
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(0, 5, 0, 0)
+        layout.setSpacing(4)
+        header = QHBoxLayout()
+        header.addWidget(QLabel("操作记录"))
+        header.addStretch()
+        self._open_background_log = QPushButton("打开日志")
+        self._open_background_log.setFlat(True)
+        self._open_background_log.clicked.connect(self._view_background_log)
+        header.addWidget(self._open_background_log)
+        layout.addLayout(header)
+        self._background_history = QComboBox()
+        self._background_history.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self._background_history.setAccessibleName("后台下载操作记录")
+        self._background_history.currentIndexChanged.connect(self._show_background_operation)
+        layout.addWidget(self._background_history)
 
-        新记录事件：选中该条（空预览）并滚屏到最新。
-        """
-        self.request_show.emit()
-        short = url[:60] + "…" if len(url) > 60 else url
-        item = QListWidgetItem(f"🟡 解析中… {short}")
-        item.setData(Qt.UserRole, url)
-        self.list_widget.addItem(item)  # 内部已选中最新 + 滚屏
-        self._parsing_items[url] = item
+        steps = QVBoxLayout()
+        steps.setSpacing(2)
+        self._background_step_labels = {}
+        for key, title in BACKGROUND_STEPS:
+            row = QHBoxLayout()
+            row.setSpacing(5)
+            lamp = QLabel()
+            lamp.setFixedSize(8, 8)
+            label = QLabel(title)
+            row.addWidget(lamp, 0, Qt.AlignVCenter)
+            row.addWidget(label)
+            row.addStretch()
+            steps.addLayout(row)
+            self._background_step_labels[key] = (lamp, label)
+        layout.addLayout(steps)
+        self._background_operation_detail = _ElidedLabel()
+        self._typo(self._background_operation_detail, "muted")
+        layout.addWidget(self._background_operation_detail)
+        return panel
 
-    def _on_parse_done(self, url: str, filepath: str, success: bool):
-        """主线程：下载完成，移除「解析中」条目，以 _push_record 方式添加结果（统一走去重）。
-        filepath：成功时为本地完整路径，失败时可能为空。
-        成功后选中「已保存」并滚屏；失败同理。
-        """
-        item = self._parsing_items.pop(url, None)
-        if item is not None:
-            row = self.list_widget.row(item)
-            if row >= 0:
-                self.list_widget.takeItem(row)
-        path = (filepath or "").strip()
-        if success and path:
-            name = os.path.basename(path)
-            self._push_record(
-                f"✅ 已保存图片：{name}", select=True, filepath=path
-            )
+    def _view_background_log(self):
+        path = self._background_log.path
+        if not path.is_file() or not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path))):
+            self._log_problem(f"无法打开后台下载日志：{path}")
+
+    def _refresh_background_operations(self, follow_latest=False):
+        history = self._background_history
+        current = None if follow_latest else history.currentData()
+        states = {"ok": "成功", "failed": "失败", "pending": "进行中"}
+        with QSignalBlocker(history):
+            history.clear()
+            for entry in reversed(self._background_log.records):
+                started = entry.get("started_at", "")[5:19].replace("T", " ")
+                history.addItem(f"{started}  ·  {states.get(entry.get('status'), '进行中')}", entry["id"])
+            if not history.count():
+                history.addItem("暂无操作")
+            index = history.findData(current) if current is not None else -1
+            history.setCurrentIndex(max(index, 0))
+        self._open_background_log.setEnabled(self._background_log.path.is_file())
+        self._open_background_log.setToolTip(str(self._background_log.path))
+        self._show_background_operation()
+
+    def _show_background_operation(self, _=None):
+        history = self._background_history
+        history.setToolTip(history.currentText())
+        entry = self._background_log.find(history.currentData())
+        states = {
+            "ok": ("#4caf50", "通过"), "failed": ("#e05252", "失败"),
+            "pending": ("#8a909c", "待执行"), "skipped": ("#8a909c", "未执行"),
+        }
+        summary = ""
+        for key, (lamp, label) in self._background_step_labels.items():
+            step = entry["steps"].get(key, {}) if entry else {}
+            state = step.get("status", "pending")
+            color, status = states.get(state, states["pending"])
+            detail = step.get("detail", "")
+            lamp.setStyleSheet(f"background: {color}; border-radius: 4px;")
+            lamp.setAccessibleName(status)
+            tooltip = f"{status} · {detail}" if detail else status
+            lamp.setToolTip(tooltip)
+            label.setToolTip(tooltip)
+            if state == "failed":
+                summary = detail
+            elif key == "save" and state == "ok":
+                summary = f"已保存 {os.path.basename(detail)}"
+        self._background_operation_detail.set_full_text(summary)
+        self._background_operation_detail.setToolTip(summary)
+
+    def _record_background_step(self, operation_id, step, passed, detail):
+        if not self._closing and self._background_log.step(operation_id, step, passed, detail):
+            self._refresh_background_operations()
+
+    def _interrupt_background_capture(self, reason):
+        if self._background_captures:
+            if self._background_log.interrupt(reason, self._background_captures):
+                self._refresh_background_operations()
+            self._background_captures.clear()
+
+    def _on_browser_image_saved(self, path: str):
+        if not self._closing:
+            self._push_record(f"✅ 已保存图片：{os.path.basename(path)}", select=True, filepath=path)
+            if self.chk_background_image.isChecked():
+                self._update_browser_image_status()
+
+    def _on_hover_image_triggered(self, operation_id: str, browser: str):
+        if self._closing:
+            return
+        self._background_log.start(operation_id, browser)
+        if self.chk_background_image.isChecked():
+            self._background_captures.add(operation_id)
         else:
-            fail_hint = os.path.basename(path) if path else (url[:60] if url else "")
-            fail_item = QListWidgetItem(f"❌ 解析失败：{fail_hint}")
-            self.list_widget.addItem(fail_item)  # 内部已选中最新 + 滚屏
+            self._background_log.step(operation_id, "source", False, "后台下载模式已关闭。")
+        self._refresh_background_operations(follow_latest=True)
+
+    def _on_hover_image_link(self, operation_id: str, address: str, reason: str):
+        if self._closing or operation_id not in self._background_captures:
+            return
+        self._background_captures.discard(operation_id)
+        url = image_http_url(address)
+        if not url:
+            reason = reason or "后台下载只支持 HTTP 或 HTTPS 图片链接。"
+            self._record_background_step(operation_id, "source", False, reason)
+            self._log_problem(reason)
+            return
+        origin = f"来源：{urlsplit(url).hostname}"
+        self._record_background_step(operation_id, "source", True, f"{reason} {origin}" if reason else origin)
+        folder = self.save_path.text().strip()
+        if not folder:
+            reason = "未设置速存图片目录。"
+            self._record_background_step(operation_id, "process", False, reason)
+            self._log_problem(reason)
+            return
+        self._background_download.submit(url, folder, operation_id)
+        self._update_browser_image_status()
+
+    def _on_hover_image_status(self, ready: bool):
+        if not self._closing and self.chk_background_image.isChecked():
+            self._hover_has_image = ready
+            self._update_browser_image_status()
+
+    def _on_background_download_failed(self, message: str):
+        if not self._closing:
+            self._log_problem(f"❌ 后台下载失败：{message}")
+            if self.chk_background_image.isChecked():
+                self._update_browser_image_status()
 
     def _init_save_dir(self):
         # 仅设默认路径；不写运行记录——随后 apply_settings 会恢复用户路径，
@@ -2790,13 +2054,17 @@ class PageFastSave(QWidget):
             if ok2:
                 self.save_path.setStyleSheet("")
                 self.save_path.setText(norm2)
-                self._prime_seen_and_quiet(norm2)
                 return True
             self.list_widget.addItem(f"❌ 该目录不可写：{folder}（{err2}），请重新选择")
 
     def _on_path_edited(self, _=None):
-        _ws_set_save_dir(self.save_path.text().strip())
-        self._require_writable_path(interactive=False)
+        writable = self._require_writable_path(interactive=False)
+        if self.is_img_active():
+            if not writable:
+                self._hover_has_image = False
+                self._interrupt_background_capture("速存图片目录不可用。")
+            self._browser_image_save.configure(writable)
+            self._update_browser_image_status()
 
     def _choose_dir(self):
         folder = QFileDialog.getExistingDirectory(self, "选择保存文件夹")
@@ -2806,7 +2074,6 @@ class PageFastSave(QWidget):
             path = self.save_path.text().strip()
             self.list_widget.addItem(f"📁 保存路径已改为：{path}")
             self.list_widget.scrollToBottom()
-            self._prime_seen_and_quiet(path)
 
     # ────────────────────────────────────────
     # 生命周期
@@ -4127,11 +3394,8 @@ class PageFastSave(QWidget):
         self.list_widget.addItem(tip)
         self.list_widget.scrollToBottom()
         start_record_bubble(self._record_base_count)
-        # 记录模式期间静默关掉速存三项，避免再刷三行「已关闭」
-        self.set_all_features(False, quiet=True)
-        self.chk_enable_all.blockSignals(True)
-        self.chk_enable_all.setChecked(False)
-        self.chk_enable_all.blockSignals(False)
+        self._record_feature_states = self._fast_feature_states()
+        self._set_fast_feature_states((False, False, False))
         self.record_mode_toggled_sig.emit("started")
         self.request_show.emit()
 
@@ -4268,11 +3532,9 @@ class PageFastSave(QWidget):
         self.list_widget.scrollToBottom()
         stop_record_bubble()
 
-        # 恢复速存三项时静默，避免再刷三行「已启用」（停止提示已足够）
-        self.set_all_features(True, quiet=True)
-        self.chk_enable_all.blockSignals(True)
-        self.chk_enable_all.setChecked(True)
-        self.chk_enable_all.blockSignals(False)
+        states, self._record_feature_states = self._record_feature_states, None
+        if states is not None:
+            self._set_fast_feature_states(states)
         self.record_mode_toggled_sig.emit("stopped")
         self.request_show.emit()
 
@@ -4327,26 +3589,18 @@ class PageFastSave(QWidget):
         self._unregister_mkdir_hotkey()
         super().closeEvent(e)
     def stop_background_checks(self):
-        """主窗口真正关闭时调用（见 ui_main.py MainWindow.closeEvent）。
-        本页面是嵌在 QStackedWidget 里的子页面，Qt 不会对它单独触发 closeEvent，
-        所以之前那个 closeEvent 里的清理其实从没被执行过——这才是报错的根本原因。
-        这里先置位 _closing 挡住新的检测线程，再停掉定时器与 WS 服务；已经在跑的检测线程
-        自己也会在 _do_check / _set_plugin_ui 里检查这个标志位，安全退出。"""
+        """主窗口关闭时清理下载、热键和后台任务。"""
         if self._closing:
             return
         self._closing = True
+        self._browser_image_save.configure(False)
+        self._background_log.interrupt("程序已关闭，后台下载中断。")
+        self._background_download.stop()
         try:
             stop_record_bubble()
         except Exception:
             pass
-        try:
-            self._nm_check_timer.stop()
-        except Exception:
-            pass
-        try:
-            self._imgonly_timer.stop()
-        except Exception:
-            pass
+        self._browser_status_timer.stop()
         try:
             self._unregister_txt_hotkey()
         except Exception:
@@ -4359,17 +3613,6 @@ class PageFastSave(QWidget):
             self._unregister_recording_hotkey()
         except Exception:
             pass
-        try:
-            self._parsing_items.clear()
-        except Exception:
-            pass
-        import pages.page_fast_save as _pfs
-        _pfs._ws_save_started_cb = None
-        _pfs._ws_save_done_cb = None
-        try:
-            stop_ws_server()
-        except Exception:
-            _ws_log.exception("停止 WS 服务失败")
         try:
             w = getattr(self, "_dup_worker", None)
             if w is not None:

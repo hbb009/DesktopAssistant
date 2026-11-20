@@ -25,8 +25,6 @@ from styles.style_all import (
     message_box_info,
 )
 from pages.page_douyin import PageDouyin
-from pages.page_bilibili import PageBilibili
-from pages.page_youtube import PageYoutube
 from pages.page_other_video import PageOtherVideo
 from utils.logger import get_logger
 from utils.cursor_toast import (
@@ -397,6 +395,7 @@ class PageVideo(QWidget):
 
     # 侧栏「视频下载」底边进度线（汇总三个子页）
     nav_progress = pyqtSignal(bool, int, str)
+    platform_ready = pyqtSignal(object)
 
     def __init__(self):
         super().__init__()
@@ -462,15 +461,20 @@ class PageVideo(QWidget):
         self._batch_timer.timeout.connect(self._batch_check_next)
 
         self.page_douyin = PageDouyin()
-        self.page_bilibili = PageBilibili()
-        self.page_youtube = PageYoutube()
+        self.page_bilibili = None
+        self.page_youtube = None
+        self._video_prefs = {}
+        self._lazy_video_tabs = {}
+        for platform in ("bilibili", "youtube"):
+            host = QWidget()
+            layout = QVBoxLayout(host)
+            layout.setContentsMargins(0, 0, 0, 0)
+            self._lazy_video_tabs[platform] = host
         self.page_other = PageOtherVideo()
         # 兼容旧引用：即梦 / LibTV / 汽水都走其它视频页
         self.page_jimeng = self.page_other
         self.page_liblib = self.page_other
         _apply_tab_page_bg(self.page_douyin, "TabDouyin")
-        _apply_tab_page_bg(self.page_bilibili, "TabBilibili")
-        _apply_tab_page_bg(self.page_youtube, "TabYoutube")
         _apply_tab_page_bg(self.page_other, "TabOtherVideo")
 
         # 顺序：抖音 → B站 → YouTube → 其它视频
@@ -482,12 +486,12 @@ class PageVideo(QWidget):
         )
         self._pre_dl_counts = {k: 0 for k, _ in self._pre_dl_tab_specs}
         self.tabs.addTab(self.page_douyin, "douyin")
-        self.tabs.addTab(self.page_bilibili, "bilibili.com")
-        self.tabs.addTab(self.page_youtube, "YouTube")
+        self.tabs.addTab(self._lazy_video_tabs["bilibili"], "bilibili.com")
+        self.tabs.addTab(self._lazy_video_tabs["youtube"], "YouTube")
         self.tabs.addTab(self.page_other, "其它视频")
         self._pre_dl_badge_host = self._install_pre_dl_tab_badges()
         self._refresh_platform_tabs()
-        self.tabs.currentChanged.connect(lambda _i: self._refresh_platform_tabs())
+        self.tabs.currentChanged.connect(self._open_platform_tab)
         self._install_other_record_skip_slot()
 
         # 子页解析/下载进度 → 统一侧栏线（不在哪个 Tab 都能看到）
@@ -495,17 +499,59 @@ class PageVideo(QWidget):
             self.page_douyin.nav_progress.connect(
                 lambda a, p, c: self._on_child_nav_progress("douyin", a, p, c)
             )
-            self.page_bilibili.nav_progress.connect(
-                lambda a, p, c: self._on_child_nav_progress("bilibili", a, p, c)
-            )
-            self.page_youtube.nav_progress.connect(
-                lambda a, p, c: self._on_child_nav_progress("youtube", a, p, c)
-            )
             self.page_other.nav_progress.connect(self._on_other_nav_progress)
         except Exception:
             log.exception("连接视频子页侧栏进度线失败")
 
         theme.changed.connect(self.refresh_theme)
+
+    def _open_platform_tab(self, index):
+        if 0 <= index < len(self._pre_dl_tab_specs):
+            key = self._pre_dl_tab_specs[index][0]
+            try:
+                self.platform_page(key, create=True)
+            except Exception:
+                log.exception("无法创建视频子页 platform=%s", key)
+                host = self._lazy_video_tabs.get(key)
+                if host is not None and not host.layout().count():
+                    host.layout().addWidget(QLabel("无法加载此平台，请查看日志后重试。"))
+        self._refresh_platform_tabs()
+
+    def platform_page(self, platform, *, create=False):
+        key = platform if platform in ("douyin", "bilibili", "youtube") else "other"
+        attribute = "page_" + key
+        page = getattr(self, attribute)
+        if page is not None or not create:
+            return page
+        if key == "bilibili":
+            from pages.page_bilibili import PageBilibili
+            page = PageBilibili()
+            _apply_tab_page_bg(page, "TabBilibili")
+        else:
+            from pages.page_youtube import PageYoutube
+            page = PageYoutube()
+            _apply_tab_page_bg(page, "TabYoutube")
+        host = self._lazy_video_tabs[key]
+        page.setParent(host)
+        try:
+            page.apply_settings(self._video_prefs.get(key) or {})
+        except Exception:
+            page.deleteLater()
+            raise
+        page.nav_progress.connect(lambda active, pct, color: self._on_child_nav_progress(key, active, pct, color))
+        layout = host.layout()
+        if layout.count():
+            layout.takeAt(0).widget().deleteLater()
+        layout.addWidget(page)
+        setattr(self, attribute, page)
+        self.platform_ready.emit(page)
+        return page
+
+    def _visible_platform_page(self):
+        index = self.tabs.currentIndex()
+        if 0 <= index < len(self._pre_dl_tab_specs):
+            return self.platform_page(self._pre_dl_tab_specs[index][0])
+        return None
 
     def _on_other_nav_progress(self, active: bool, pct: int, color: str):
         plat = (getattr(self.page_other, "_current_platform", None) or "other").strip()
@@ -740,7 +786,6 @@ class PageVideo(QWidget):
         self.tabs.setTabIcon(1, _paint_bilibili_icon(22, selected=(idx == 1), dark=dark))
         self.tabs.setTabIcon(2, _paint_youtube_icon(22, selected=(idx == 2), dark=dark))
         self.tabs.setTabIcon(3, _paint_jimeng_icon(22, selected=(idx == 3), dark=dark))
-        self.tabs.setTabIcon(4, _paint_liblib_icon(22, selected=(idx == 4), dark=dark))
 
         # firstSelected → VIDEO_TAB_QSS 控制 pane 左上是否圆角
         # 选中第一张：左上直角（页卡左边承接）；否则顶边线左端圆角
@@ -1528,7 +1573,7 @@ class PageVideo(QWidget):
                 except Exception:
                     pass
                 return
-        cur = self.tabs.currentWidget()
+        cur = self._visible_platform_page()
         if cur is not None and hasattr(cur, "_log"):
             try:
                 cur._log(msg, level)
@@ -1557,7 +1602,7 @@ class PageVideo(QWidget):
                 "hitomi": hitomi,
             }.get(plat)
         if page is None:
-            page = self.tabs.currentWidget() if hasattr(self, "tabs") else None
+            page = self._visible_platform_page()
         if page is None:
             return
         try:
@@ -1609,12 +1654,13 @@ class PageVideo(QWidget):
 
     def handoff_to_youtube(self, link_text: str, auto_start: bool = True):
         """把链接交给 YouTube 页。"""
-        self.tabs.setCurrentWidget(self.page_youtube)
+        page = self.platform_page("youtube", create=True)
+        self.tabs.setCurrentWidget(self._lazy_video_tabs["youtube"])
         text = (link_text or "").strip()
         if text:
-            self.page_youtube.url_edit.setText(text)
+            page.url_edit.setText(text)
         if auto_start and text:
-            QTimer.singleShot(0, lambda: self.page_youtube._start_flow(False))
+            QTimer.singleShot(0, lambda: page._start_flow(False))
 
     def handoff_to_douyin(self, link_text: str, auto_start: bool = True):
         """把链接交给抖音页。"""
@@ -1627,12 +1673,13 @@ class PageVideo(QWidget):
 
     def handoff_to_bilibili(self, link_text: str, auto_start: bool = True):
         """把链接交给 B站 页。"""
-        self.tabs.setCurrentWidget(self.page_bilibili)
+        page = self.platform_page("bilibili", create=True)
+        self.tabs.setCurrentWidget(self._lazy_video_tabs["bilibili"])
         text = (link_text or "").strip()
         if text:
-            self.page_bilibili.url_edit.setText(text)
+            page.url_edit.setText(text)
         if auto_start and text:
-            QTimer.singleShot(0, lambda: self.page_bilibili._start_flow(False))
+            QTimer.singleShot(0, lambda: page._start_flow(False))
 
     def handoff_to_other(self, link_text: str, auto_start: bool = True):
         """把链接交给「其它视频」页（即梦 / LibTV / 汽水音乐 / XVideos）。"""
@@ -1664,8 +1711,10 @@ class PageVideo(QWidget):
         if hasattr(self.page_other, "refresh_theme"):
             self.page_other.refresh_theme()
         _apply_tab_page_bg(self.page_douyin, "TabDouyin")
-        _apply_tab_page_bg(self.page_bilibili, "TabBilibili")
-        _apply_tab_page_bg(self.page_youtube, "TabYoutube")
+        if self.page_bilibili is not None:
+            _apply_tab_page_bg(self.page_bilibili, "TabBilibili")
+        if self.page_youtube is not None:
+            _apply_tab_page_bg(self.page_youtube, "TabYoutube")
         _apply_tab_page_bg(self.page_other, "TabOtherVideo")
         self._refresh_platform_tabs()
         host = getattr(self, "_pre_dl_badge_host", None)
@@ -1675,7 +1724,7 @@ class PageVideo(QWidget):
     # ── 用户习惯（records/user.txt · video 段）─────────────────────────────
     def export_settings(self) -> dict:
         """导出各子页设置，供 user_prefs 落盘。"""
-        result = {}
+        result = dict(self._video_prefs)
         for key, page in (
             ("douyin", getattr(self, "page_douyin", None)),
             ("bilibili", getattr(self, "page_bilibili", None)),
@@ -1686,13 +1735,14 @@ class PageVideo(QWidget):
                 try:
                     result[key] = page.export_settings()
                 except Exception:
-                    result[key] = {"save_path": "", "cookie_path": ""}
+                    log.exception("导出视频子页设置失败 platform=%s", key)
         return result
 
     def apply_settings(self, d: dict):
         """从 user.txt 恢复各子页设置。未知/空字段保持现状。"""
         if not isinstance(d, dict):
             return
+        self._video_prefs = dict(d)
         for key, page in (
             ("douyin", getattr(self, "page_douyin", None)),
             ("bilibili", getattr(self, "page_bilibili", None)),

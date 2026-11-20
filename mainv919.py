@@ -160,6 +160,42 @@ QLoggingCategory.setFilterRules(
 )
 
 
+def _record_qt_fatal(message):
+    """pythonw 丢掉 stderr。Qt 致命信息先落盘，再让 qFatal 结束进程。"""
+    import traceback
+    parts = [message or ""]
+    try:
+        limit = sys.getrecursionlimit()
+        sys.setrecursionlimit(limit + 50)
+        try:
+            last = getattr(sys, "last_traceback", None)
+            if last is not None:
+                parts.append("".join(traceback.format_exception(
+                    sys.last_type, sys.last_value, last)))
+        finally:
+            sys.setrecursionlimit(limit)
+    except Exception:
+        pass
+    blob = "\n".join(parts).rstrip() + "\n"
+    targets = []
+    try:
+        targets.append(_crash_log.name)
+    except Exception:
+        pass
+    try:
+        from utils.app_paths import log_dir
+        targets.append(os.path.join(log_dir(), "app.log"))
+    except Exception:
+        pass
+    for target in targets:
+        try:
+            with open(target, "a", encoding="utf-8") as handle:
+                handle.write(blob)
+                handle.flush()
+        except Exception:
+            pass
+
+
 def _qt_quiet_font_warnings(mode, context, message):
     """高 DPI 下 DirectWrite / 中文字体缺 OpenType 表会刷屏，不影响运行。"""
     msg = message or ""
@@ -169,6 +205,8 @@ def _qt_quiet_font_warnings(mode, context, message):
         or msg.startswith("DirectWrite:")
     ):
         return
+    if mode == QtMsgType.QtFatalMsg:
+        _record_qt_fatal(msg)
     try:
         sys.stderr.write(msg + "\n")
     except Exception:

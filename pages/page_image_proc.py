@@ -20,6 +20,7 @@ import os
 import re
 import subprocess
 import sys
+from collections import deque
 from datetime import datetime
 from typing import List, Optional, Tuple
 
@@ -52,6 +53,7 @@ from styles.style_all import (
     LIVE_BUTTON_H,
     sp,
 )
+from styles.file_drop import file_drop_pixmap, file_drop_style
 from utils.flow_layout import FlowLayout
 from utils.logger import get_logger
 from utils.file_utils import ensure_dir
@@ -87,7 +89,6 @@ _UPSCAYL_SCALE_MIN = 2
 _UPSCAYL_SCALE_MAX = 6
 _UPSCAYL_SCALE_DEFAULT = 4
 _OP_KEYS = ("scale", "upscale", "split", "matting", "more")
-_EMPTY_HINT = "拖拽图片到这里，或 Ctrl+V"
 _OP_STATUS_NAMES = {
     "scale": "缩小",
     "upscale": "放大",
@@ -327,6 +328,16 @@ def _read_image_meta(path: str) -> tuple:
     except Exception:
         pass
     return w, h, size
+
+
+def _read_output_thumb(path, width, height):
+    reader = QImageReader(path)
+    reader.setAutoTransform(True)
+    size = reader.size()
+    if size.isValid() and size.width() > 0 and size.height() > 0:
+        scale = min(width / size.width(), height / size.height())
+        reader.setScaledSize(QSize(max(1, int(size.width() * scale)), max(1, int(size.height() * scale))))
+    return reader.read(), size
 
 
 def _pil_to_qpixmap(img) -> QPixmap:
@@ -686,7 +697,7 @@ class OutputImageCard(QFrame):
     THUMB_H = 90
     LINE_H = 16
     # 卡宽略大于缩略图，保证「3840×2160 · 12.34 MB」一行能放下
-    CARD_W = 140
+    CARD_W = 136
     CARD_H = THUMB_H + 4 + LINE_H * 2 + 6
     BADGE_W = 33
     BADGE_H = 16
@@ -696,7 +707,7 @@ class OutputImageCard(QFrame):
     edit_requested = pyqtSignal(str)  # 把输出图送回左边再编辑
     delete_requested = pyqtSignal(str)  # 删除对应文件
 
-    def __init__(self, path: str, parent=None):
+    def __init__(self, path: str, parent=None, *, preview=None):
         super().__init__(parent)
         self.path = path
         self.setFixedSize(self.CARD_W, self.CARD_H)
@@ -754,7 +765,12 @@ class OutputImageCard(QFrame):
         lay.addWidget(self.thumb_host, 0, Qt.AlignHCenter)
 
         name = os.path.basename(path)
-        w, h, nbytes = _read_image_meta(path)
+        if preview is None:
+            w, h, nbytes = _read_image_meta(path)
+            image, _ = _read_output_thumb(path, self.THUMB_W, self.THUMB_H)
+        else:
+            image, size, nbytes = preview
+            w, h = size.width(), size.height()
         res = f"{w}×{h}" if w and h else "—×—"
         size_s = _fmt_size(nbytes)
 
@@ -771,7 +787,7 @@ class OutputImageCard(QFrame):
 
         self._selected = False
         self.refresh_theme()
-        self._load_thumb(path)
+        self._set_thumbnail(image)
 
     def set_selected(self, on: bool):
         on = bool(on)
@@ -913,18 +929,7 @@ class OutputImageCard(QFrame):
             f"border-radius:3px;padding:0;}}"
         )
 
-    def _load_thumb(self, path: str):
-        reader = QImageReader(path)
-        reader.setAutoTransform(True)
-        sz = reader.size()
-        tw, th = self.THUMB_W, self.THUMB_H
-        if sz.isValid() and sz.width() > 0 and sz.height() > 0:
-            scale = min(tw / sz.width(), th / sz.height())
-            reader.setScaledSize(QSize(
-                max(1, int(sz.width() * scale)),
-                max(1, int(sz.height() * scale)),
-            ))
-        img = reader.read()
+    def _set_thumbnail(self, img):
         if img.isNull():
             return
         src = QPixmap.fromImage(img)
@@ -940,7 +945,6 @@ class OutputImageCard(QFrame):
         painter.drawPixmap(x, y, scaled)
         painter.end()
         self.thumb.setPixmap(canvas)
-        self.thumb.setText("")
         if getattr(self, "btn_edit", None) is not None:
             self.btn_edit.raise_()
         if getattr(self, "lbl_fmt", None) is not None:
@@ -1031,6 +1035,46 @@ class _ClearPreviewBtn(QToolButton):
         p.end()
 
 
+class _OutputPreviewWorker(QThread):
+    batch_ready = pyqtSignal(list)
+    BATCH_SIZE = 6
+
+    def __init__(self, folder, parent=None):
+        super().__init__(parent)
+        self.folder = folder
+
+    def run(self):
+        files = []
+        try:
+            with os.scandir(self.folder) as entries:
+                for entry in entries:
+                    if self.isInterruptionRequested():
+                        return
+                    name = entry.name.lower()
+                    if name.startswith((".", "_upscale_in", "_matting_in")) or os.path.splitext(name)[1] not in _IMG_EXTS:
+                        continue
+                    try:
+                        if entry.is_file():
+                            info = entry.stat()
+                            files.append((info.st_mtime, entry.path, info.st_size))
+                    except OSError:
+                        continue
+        except OSError:
+            return
+        files.sort(key=lambda item: (item[0], item[1].lower()))
+        batch = []
+        for _, path, nbytes in files:
+            if self.isInterruptionRequested():
+                return
+            image, size = _read_output_thumb(path, OutputImageCard.THUMB_W, OutputImageCard.THUMB_H)
+            batch.append((path, (image, size, nbytes)))
+            if len(batch) == self.BATCH_SIZE:
+                self.batch_ready.emit(batch)
+                batch = []
+        if batch and not self.isInterruptionRequested():
+            self.batch_ready.emit(batch)
+
+
 class _ImagePreview(QLabel):
     paths_dropped = pyqtSignal(str)
 
@@ -1038,12 +1082,12 @@ class _ImagePreview(QLabel):
         super().__init__(parent)
         self._src: Optional[QPixmap] = None
         self._checker = False  # PNG / 透明图：灰白格衬底，便于看抠图效果
+        self._drop_hover = False
         self.setAlignment(Qt.AlignCenter)
         self.setMinimumSize(120, 120)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setAcceptDrops(True)
-        self.setWordWrap(True)
-        self._apply_style()
+        self.setToolTip("拖入图片，或按 Ctrl+V 粘贴")
         self.show_empty()
 
     def hasHeightForWidth(self):
@@ -1057,19 +1101,18 @@ class _ImagePreview(QLabel):
 
     def refresh_theme(self, *_):
         self._apply_style()
-        if self._src is None:
-            self.show_empty()
 
     def _apply_style(self):
-        self.setStyleSheet(
-            "QLabel{background:transparent;border:none;padding:0;}"
-        )
+        style = "background:transparent;border:none;"
+        if self._src is None or self._drop_hover:
+            style = file_drop_style("img_proc", active=self._drop_hover)
+        self.setStyleSheet(f"QLabel{{{style}padding:0;}}")
 
     def show_empty(self):
         self._src = None
         self._checker = False
-        self.clear()
-        self.setText("")
+        self._apply_style()
+        self.setPixmap(file_drop_pixmap(self))
 
     @staticmethod
     def _checkerboard(w: int, h: int, cell: int = 10) -> QPixmap:
@@ -1097,7 +1140,10 @@ class _ImagePreview(QLabel):
         if pm is None or pm.isNull():
             self.show_empty()
             return False
+        was_empty = self._src is None
         self._src = pm
+        if was_empty:
+            self._apply_style()
         if checker is None:
             # 无路径时：有透明通道则同样加衬底（如内存里的工作预览）
             try:
@@ -1132,11 +1178,20 @@ class _ImagePreview(QLabel):
 
     def dragEnterEvent(self, e: QDragEnterEvent):
         if e.mimeData() and (e.mimeData().hasUrls() or e.mimeData().hasImage()):
+            self._drop_hover = True
+            self._apply_style()
             e.acceptProposedAction()
         else:
             e.ignore()
 
+    def dragLeaveEvent(self, e):
+        self._drop_hover = False
+        self._apply_style()
+        super().dragLeaveEvent(e)
+
     def dropEvent(self, e: QDropEvent):
+        self._drop_hover = False
+        self._apply_style()
         md = e.mimeData()
         if md is None:
             return
@@ -1776,29 +1831,20 @@ class PageImageProc(QWidget):
         self._op_cards = {}
         self._active_op = "scale"
         self._output_preview_pending = False
+        self._output_worker = None
+        self._output_workers = set()
+        self._output_queue = deque()
+        self._output_live_cards = []
+        self._output_loading = False
+        self._output_timer = QTimer(self)
+        self._output_timer.setSingleShot(True)
+        self._output_timer.setInterval(16)
+        self._output_timer.timeout.connect(self._insert_output_batch)
         # 剪贴板载入时界面改选 JPG，但不把这次自动选择写进偏好。
         self._clip_fmt_held = False
         self._fmt_before_clip = "jpg"
         self._clip_jpg_after_matting = False
         self._fmt_quiet = False
-
-        app = QApplication.instance()
-        if app is not None:
-            app.installEventFilter(self)
-            import weakref
-            ref = weakref.ref(self)
-
-            def _detach_paste_filter(*_args, _ref=ref):
-                page = _ref()
-                host = QApplication.instance()
-                if page is None or host is None:
-                    return
-                try:
-                    host.removeEventFilter(page)
-                except Exception:
-                    pass
-
-            self.destroyed.connect(_detach_paste_filter)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -1866,7 +1912,7 @@ class PageImageProc(QWidget):
         foot_row = QHBoxLayout()
         foot_row.setContentsMargins(0, 0, 0, 0)
         foot_row.setSpacing(8)
-        self.lbl_meta = _ElideLabel(_EMPTY_HINT)
+        self.lbl_meta = _ElideLabel("")
         self.lbl_meta.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.lbl_meta.setStyleSheet(
             f"color:{tk('text_mut')};background:transparent;border:none;"
@@ -2396,7 +2442,9 @@ class PageImageProc(QWidget):
             new = sp.replace("\\", "/")
             path_changed = new != (self._save_path or "")
             self._save_path = new
-            if path_changed or not self._out_cards:
+            if path_changed:
+                self._cancel_output_preview()
+            if path_changed or (not self._out_cards and not self._output_loading):
                 self._output_preview_pending = True
 
         try:
@@ -2440,12 +2488,12 @@ class PageImageProc(QWidget):
         # 每次启动都从「图片缩小」开始，其余功能区默认盖冻结层
         self._active_op = "scale"
         self._update_actions_enabled()
-        if (self._save_path or "").strip() and not self._out_cards:
-            self._output_preview_pending = True
+        if self.isVisible():
+            self.ensure_output_preview()
 
     def ensure_output_preview(self):
-        """第一次打开本页时再做缩略图。启动阶段不解码输出目录里的大图。"""
-        if not getattr(self, "_output_preview_pending", False):
+        """首次进入时启动后台扫描和解码。"""
+        if not self._output_preview_pending:
             return
         self._output_preview_pending = False
         if (self._save_path or "").strip():
@@ -2490,7 +2538,7 @@ class PageImageProc(QWidget):
         p = self._src_path
         info = getattr(self, "lbl_meta_info", None)
         if not p:
-            self.lbl_meta.setFullText(_EMPTY_HINT)
+            self.lbl_meta.setFullText("")
             if info is not None:
                 info.clear()
                 info.hide()
@@ -2505,7 +2553,7 @@ class PageImageProc(QWidget):
             if w <= 0 or h <= 0:
                 w, h = fw, fh
         elif w <= 0:
-            self.lbl_meta.setFullText(_EMPTY_HINT)
+            self.lbl_meta.setFullText("")
             if info is not None:
                 info.clear()
                 info.hide()
@@ -2605,6 +2653,14 @@ class PageImageProc(QWidget):
             _en(r, active == "scale" and ok)
 
     # ── 拖放 / 粘贴 ─────────────────────────────────────────
+    def showEvent(self, event):
+        super().showEvent(event)
+        QApplication.instance().installEventFilter(self)
+
+    def hideEvent(self, event):
+        QApplication.instance().removeEventFilter(self)
+        super().hideEvent(event)
+
     def dragEnterEvent(self, e: QDragEnterEvent):
         if e.mimeData() and e.mimeData().hasUrls():
             e.acceptProposedAction()
@@ -2784,7 +2840,7 @@ class PageImageProc(QWidget):
             QDesktopServices.openUrl(QUrl.fromLocalFile(os.path.abspath(folder)))
 
     # ── 输出预览卡 ──────────────────────────────────────────
-    def _add_output_cards(self, paths: List[str], *, scroll: bool = True, silent: bool = False):
+    def _add_output_cards(self, paths, *, scroll: bool = True, silent: bool = False, previews=None):
         """追加输出卡（流式换行），并滚到最底。"""
         existing = set()
         for c in self._out_cards:
@@ -2796,7 +2852,7 @@ class PageImageProc(QWidget):
                     existing.add(os.path.normcase(p))
         added = False
         for path in paths or []:
-            if not path or not os.path.isfile(path):
+            if not path or (previews is None and not os.path.isfile(path)):
                 continue
             try:
                 key = os.path.normcase(os.path.abspath(path))
@@ -2804,12 +2860,14 @@ class PageImageProc(QWidget):
                 key = os.path.normcase(path)
             if key in existing:
                 continue
-            card = OutputImageCard(path)
+            card = OutputImageCard(path, preview=previews.get(path) if previews is not None else None)
             card.clicked_open.connect(self._open_path_dir)
             card.edit_requested.connect(self._load_image)
             card.delete_requested.connect(self._delete_output)
             self._out_lay.addWidget(card)
             self._out_cards.append(card)
+            if previews is None and self._output_loading:
+                self._output_live_cards.append(card)
             existing.add(key)
             added = True
             if not silent:
@@ -2835,40 +2893,65 @@ class PageImageProc(QWidget):
         self._out_cards = []
 
     def _reload_output_cards(self):
-        """用 ImageProc 目录里已有图片填满输出预览（按修改时间从旧到新）。"""
-        if getattr(self, "_out_lay", None) is None:
-            return
+        self._cancel_output_preview()
         self._clear_output_cards()
-        d = (self._save_path or "").strip()
-        if not d or not os.path.isdir(d):
-            self._relayout_out_cards()
+        self._relayout_out_cards()
+        worker = _OutputPreviewWorker(self._save_path, self)
+        self._output_worker = worker
+        self._output_workers.add(worker)
+        self._output_loading = True
+        worker.batch_ready.connect(self._queue_output_previews)
+        worker.finished.connect(self._output_scan_finished)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _cancel_output_preview(self):
+        if self._output_worker is not None:
+            self._output_worker.requestInterruption()
+            self._output_worker = None
+        self._output_timer.stop()
+        self._output_queue.clear()
+        self._output_live_cards.clear()
+        self._output_loading = False
+
+    def _queue_output_previews(self, batch):
+        if self.sender() is not self._output_worker:
             return
-        files = []
-        try:
-            names = os.listdir(d)
-        except OSError:
-            names = []
-        for name in names:
-            low = name.lower()
-            if name.startswith(".") or low.startswith("_upscale_in") or low.startswith("_matting_in"):
-                continue
-            ext = os.path.splitext(name)[1].lower()
-            if ext not in _IMG_EXTS:
-                continue
-            path = os.path.join(d, name)
-            if not os.path.isfile(path):
-                continue
-            try:
-                mtime = os.path.getmtime(path)
-            except OSError:
-                mtime = 0.0
-            files.append((mtime, path))
-        files.sort(key=lambda x: (x[0], x[1].lower()))
-        if files:
-            self._add_output_cards([p for _t, p in files], scroll=True, silent=True)
-            log.info("输出预览已从目录恢复 %s 张：%s", len(files), d)
-        else:
+        self._output_queue.extend(batch)
+        if not self._output_timer.isActive():
+            self._output_timer.start()
+
+    def _insert_output_batch(self):
+        count = min(_OutputPreviewWorker.BATCH_SIZE, len(self._output_queue))
+        previews = dict(self._output_queue.popleft() for _ in range(count))
+        if previews:
+            self._add_output_cards(previews, scroll=False, silent=True, previews=previews)
+        if self._output_queue:
+            self._output_timer.start()
+        elif self._output_worker is None:
+            self._complete_output_preview()
+
+    def _output_scan_finished(self):
+        worker = self.sender()
+        self._output_workers.discard(worker)
+        if worker is not self._output_worker:
+            return
+        self._output_worker = None
+        if not self._output_queue:
+            self._complete_output_preview()
+
+    def _complete_output_preview(self):
+        live = [card for card in self._output_live_cards if card in self._out_cards]
+        if live:
+            for card in live:
+                self._out_lay.removeWidget(card)
+                self._out_lay.addWidget(card)
+            self._out_cards = [card for card in self._out_cards if card not in live] + live
             self._relayout_out_cards()
+        self._output_live_cards.clear()
+        self._output_loading = False
+        if self._out_cards:
+            QTimer.singleShot(0, self._scroll_out_to_end)
 
     def _delete_output(self, path: str):
         path = (path or "").strip()
@@ -2920,33 +3003,13 @@ class PageImageProc(QWidget):
         self._set_op_status("已删除")
 
     def _relayout_out_cards(self):
-        """FlowLayout 需按 width 算高，否则滚动区内容高度不够。"""
-        sc = getattr(self, "out_scroll", None)
-        lay = getattr(self, "_out_lay", None)
-        if sc is None or lay is None:
-            return
-        inner = sc.widget()
-        if inner is None:
-            return
-        try:
-            lay.invalidate()
-        except Exception:
-            pass
-        for _ in range(2):
-            w = max(1, sc.viewport().width() or sc.width() or inner.width() or 1)
-            need_h = max(0, int(lay.heightForWidth(w)))
-            if inner.minimumHeight() != need_h:
-                inner.setMinimumHeight(need_h)
-            inner.updateGeometry()
+        """卡片增删后通知滚动区，内容高度由当前宽度的 heightForWidth 决定。"""
+        self._out_lay.invalidate()
+        self._out_host.updateGeometry()
 
     def _scroll_out_to_end(self):
-        try:
-            self._relayout_out_cards()
-            bar = self.out_scroll.verticalScrollBar()
-            if bar is not None:
-                bar.setValue(bar.maximum())
-        except Exception:
-            pass
+        bar = self.out_scroll.verticalScrollBar()
+        bar.setValue(bar.maximum())
 
     def _style_op_status(self) -> None:
         lbl = getattr(self, "lbl_op_status", None)
@@ -3377,6 +3440,10 @@ class PageImageProc(QWidget):
 
     def shutdown(self):
         """主窗关闭：停掉放大子进程，避免 QThread 残留。"""
+        from utils.qthread_util import stop_qthreads
+
+        self._cancel_output_preview()
+        stop_qthreads(list(self._output_workers))
         w = self._upscale_worker
         self._upscale_worker = None
         self._upscale_busy = False

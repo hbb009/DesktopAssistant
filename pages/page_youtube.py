@@ -46,66 +46,7 @@ from utils.download_watchdog import (
     DownloadWatchdog, StalledDownloadError, find_socket,
 )
 
-# ── yt-dlp 探测 ──────────────────────────────────────────────────────────────
-try:
-    import yt_dlp
-    HAS_YTDLP = True
-    YTDLP_VER = getattr(getattr(yt_dlp, "version", None), "__version__", "?")
-except ImportError:
-    yt_dlp = None
-    HAS_YTDLP = False
-    YTDLP_VER = ""
-
-# EJS 挑战脚本包（可选；没有也能靠 remote_components 拉取）
-try:
-    import yt_dlp_ejs  # noqa: F401
-    HAS_YTDLP_EJS = True
-except ImportError:
-    HAS_YTDLP_EJS = False
-
-
-def _silence_ytdlp_python_deprecation():
-    """屏蔽 yt-dlp 的「Python 3.10 deprecated」刷屏。
-
-    注意：YoutubeDL.deprecated_feature() 会无条件 to_stderr，
-    设 quiet / no_warnings / logger 都挡不住，只能从源头让
-    _get_system_deprecation() 对「仅版本建议」返回 None。
-    真正的不兼容（版本过低）提示仍会保留。
-
-    另：`import yt_dlp.YoutubeDL` 在包已加载后可能拿到的是 **类**
-    而不是子模块，所以必须用 importlib 取真正的模块对象。
-    """
-    if not HAS_YTDLP:
-        return
-    try:
-        import importlib
-        import yt_dlp.update as _upd
-        _ydl_mod = importlib.import_module("yt_dlp.YoutubeDL")
-    except Exception:
-        return
-    orig = getattr(_upd, "_get_system_deprecation", None)
-    if not callable(orig) or getattr(orig, "_desktop_assistant_patched", False):
-        return
-
-    def _wrapped():
-        msg = orig()
-        if not msg:
-            return None
-        # 仅吞掉「Support for Python version x.y has been deprecated」这类建议
-        if "Python version" in msg and "has been deprecated" in msg:
-            return None
-        return msg
-
-    _wrapped._desktop_assistant_patched = True  # type: ignore[attr-defined]
-    _upd._get_system_deprecation = _wrapped
-    # YoutubeDL.py 里是 from .update import _get_system_deprecation，需改模块命名空间
-    try:
-        _ydl_mod._get_system_deprecation = _wrapped
-    except Exception:
-        pass
-
-
-_silence_ytdlp_python_deprecation()
+from utils.ytdlp_runtime import HAS_YTDLP, HAS_YTDLP_EJS, YTDLP_VER, load_ytdlp
 
 
 # 自动扫描 Cookie 时优先匹配的文件名（用户导出扩展默认名）
@@ -879,7 +820,7 @@ def _probe_media_url(url: str, headers=None, timeout=8) -> bool:
     headers["Range"] = "bytes=0-1023"
     try:
         import requests as req_lib
-        r = req_lib.get(url, headers=headers, timeout=timeout, stream=True, verify=False)
+        r = req_lib.get(url, headers=headers, timeout=timeout, stream=True)
         code = r.status_code
         try:
             chunk = next(r.iter_content(1024), b"")
@@ -981,7 +922,7 @@ def _run_one_extract_strategy(url: str, cookie_path: str, strat: dict, log=None)
         extractor_args=strat.get("extractor_args"),
     )
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
+        with load_ytdlp().YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
         if not info:
             if log:
@@ -1479,7 +1420,7 @@ def _http_download(url: str, dest: str, headers=None, cancel_flag=None, progress
             try:
                 if use_req:
                     with req_lib.get(
-                        url, headers=headers, stream=True, timeout=60, verify=False
+                        url, headers=headers, stream=True, timeout=60
                     ) as r:
                         if done and r.status_code == 200:
                             # 服务端不支持 Range，只能整段重来
@@ -2089,7 +2030,7 @@ class YtDownloadWorker(QThread):
                                 "warn",
                             )
                         try:
-                            with yt_dlp.YoutubeDL(opts) as ydl:
+                            with load_ytdlp().YoutubeDL(opts) as ydl:
                                 info = ydl.extract_info(self.url, download=True)
                             path = self._last_path
                             if info:
@@ -2103,7 +2044,7 @@ class YtDownloadWorker(QThread):
                                             f"  yt-dlp 选定：{rid or '?'} · {rw}x{rh}",
                                             "info",
                                         )
-                                    path = yt_dlp.YoutubeDL(opts).prepare_filename(info)
+                                    path = load_ytdlp().YoutubeDL(opts).prepare_filename(info)
                                     if audio_only:
                                         base, _ = os.path.splitext(path)
                                         for ext in (".mp3", ".m4a", ".webm", ".opus"):
@@ -2175,12 +2116,12 @@ class YtDownloadWorker(QThread):
                                 opts["prefer_ffmpeg"] = True
                             if ffmpeg:
                                 opts["ffmpeg_location"] = os.path.dirname(ffmpeg)
-                            with yt_dlp.YoutubeDL(opts) as ydl:
+                            with load_ytdlp().YoutubeDL(opts) as ydl:
                                 info = ydl.extract_info(self.url, download=True)
                             path = self._last_path
                             if info:
                                 try:
-                                    path = yt_dlp.YoutubeDL(opts).prepare_filename(info)
+                                    path = load_ytdlp().YoutubeDL(opts).prepare_filename(info)
                                     if audio_only:
                                         base, _ = os.path.splitext(path)
                                         for ext in (".mp3", ".m4a", ".webm", ".opus"):

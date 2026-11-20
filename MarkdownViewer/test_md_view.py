@@ -652,8 +652,7 @@ class AutoScrollTest(unittest.TestCase):
         reader = _reader()
 
         class Btn:
-            def __init__(self):
-                self.on = False
+            on = False
 
             def set_on(self, on):
                 self.on = bool(on)
@@ -664,62 +663,61 @@ class AutoScrollTest(unittest.TestCase):
             btn_voice_m = Btn()
             btn_voice_f = Btn()
             restarted = False
-
-            def _paint_voice(self):
-                reader.Reader._paint_voice(self)
+            _paint_voice_btns = reader.Reader._paint_voice_btns
 
             def _begin_speak(self, restart=False):
                 self.restarted = bool(restart)
 
         app = App()
-        app._paint_voice()
+        app._paint_voice_btns()
+        self.assertFalse(app.btn_voice_m.on)
+        self.assertFalse(app.btn_voice_f.on)
+        app._speak_on = True
+        app._paint_voice_btns()
         self.assertTrue(app.btn_voice_m.on)
         self.assertFalse(app.btn_voice_f.on)
-        reader.Reader._pick_voice(app, '男')
-        self.assertFalse(app.restarted)
-        self.assertEqual(app._voice, '男')
-        self.assertTrue(app.btn_voice_m.on)
         reader.Reader._pick_voice(app, '女')
-        self.assertEqual(app._voice, '女')
+        self.assertTrue(app.restarted)
         self.assertFalse(app.btn_voice_m.on)
         self.assertTrue(app.btn_voice_f.on)
-        self.assertFalse(app.restarted)
-        app._speak_on = True
-        reader.Reader._pick_voice(app, '男')
-        self.assertEqual(app._voice, '男')
-        self.assertTrue(app.btn_voice_m.on)
-        self.assertFalse(app.btn_voice_f.on)
-        self.assertTrue(app.restarted)
         app.restarted = False
-        reader.Reader._pick_voice(app, '男')
+        reader.Reader._pick_voice(app, '女')
         self.assertFalse(app.restarted)
-        self.assertEqual(app._voice, '男')
 
     def test_wav_play_can_pause(self):
-        import os
-        import tempfile
-        import time
+        from unittest.mock import patch
         import cosy_speak
-        fd, path = tempfile.mkstemp(suffix='.wav')
-        os.close(fd)
-        try:
-            _write_silence(path, 1.2)
+
+        commands = []
+        state = 'stopped'
+
+        def send(command):
+            nonlocal state
+            action = command.split()[0]
+            commands.append(action)
+            if action in ('play', 'resume'):
+                state = 'playing'
+            elif action == 'pause':
+                state = 'paused'
+            elif action == 'close':
+                state = 'stopped'
+            return 0, state if action == 'status' else ''
+
+        with patch.object(cosy_speak, '_mci', side_effect=send):
             play = cosy_speak._WavPlay()
-            play.start(path)
-            time.sleep(0.15)
+            play.start('sample.wav')
             play.sync(True)
             self.assertTrue(play.held)
-            time.sleep(0.12)
+            self.assertEqual(state, 'paused')
             self.assertFalse(play.finished())
             play.sync(False)
             self.assertFalse(play.held)
+            self.assertEqual(state, 'playing')
             play.close()
             self.assertFalse(play.open)
-        finally:
-            try:
-                os.remove(path)
-            except OSError:
-                pass
+        self.assertEqual(commands[:2], ['open', 'play'])
+        self.assertIn('pause', commands)
+        self.assertIn('resume', commands)
 
     def test_speakable_text_skips_empty(self):
         import tkinter as tk

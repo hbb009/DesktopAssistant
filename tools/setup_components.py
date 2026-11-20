@@ -87,7 +87,10 @@ def run(cmd, check=True, **kw):
 
 def pip(*args) -> bool:
     # 默认超时较短，遇到慢源（比如 paddlepaddle.org.cn）容易连续 ReadTimeout。
-    return run([PY, "-m", "pip", "install", "--default-timeout=120", *args])
+    return run([
+        PY, "-m", "pip", "install", "--default-timeout=120",
+        "-c", str(ROOT / "constraints-models.txt"), *args,
+    ])
 
 
 def ask(prompt: str, default: bool = True) -> bool:
@@ -276,13 +279,27 @@ def do_git() -> bool:
 
 
 def do_deps() -> bool:
-    """requirements-models.txt：sounddevice / faster-whisper / paddleocr[doc-parser] / onnxruntime-gpu"""
+    """Install model dependencies and prepare the isolated Whisper interpreter."""
     hr("② 模型相关 pip 依赖（语音转写等）")
     req = ROOT / "requirements-models.txt"
     if not req.is_file():
         print("  ! 找不到", req)
         return False
-    return pip("-r", str(req))
+    model_deps = pip("-r", str(req))
+    runtime = ROOT / "runtime" / "whisper"
+    interpreter = runtime / ("Scripts/python.exe" if IS_WIN else "bin/python")
+    if not interpreter.is_file() and not run([PY, "-m", "venv", str(runtime)]):
+        return False
+    worker = ROOT / "utils" / "whisper_job.py"
+    if worker.is_file():
+        shutil.copy2(worker, runtime / "whisper_job.py")
+    whisper_deps = run([
+        str(interpreter), "-m", "pip", "install", "--default-timeout=120",
+        "-r", str(ROOT / "requirements-whisper.txt"),
+    ])
+    if whisper_deps:
+        whisper_deps = run([str(interpreter), "-m", "pip", "check"])
+    return model_deps and whisper_deps
 
 
 def do_torch(cuda: float | None) -> bool:
@@ -627,7 +644,7 @@ def do_cosyvoice_deps() -> bool:
     # 统一装 1.26.0（CUDA 12 + cuDNN 9）。1.27+ 是按 CUDA 13 编的，不装。
     print("  安装 onnxruntime-gpu==1.26.0（CUDA 12 + cuDNN 9；不与 CPU 版 onnxruntime 同时装）")
     run([PY, "-m", "pip", "uninstall", "-y", "onnxruntime"], check=False)
-    if not pip("onnxruntime-gpu==1.26.0"):
+    if not pip("--force-reinstall", "--no-deps", "onnxruntime-gpu==1.26.0"):
         failed.append("onnxruntime-gpu==1.26.0")
 
     if failed:

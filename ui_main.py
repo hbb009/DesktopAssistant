@@ -2029,8 +2029,7 @@ class MainWindow(QWidget):
         content_wrap.setAttribute(Qt.WA_StyledBackground, True)
 
         content_layout = QVBoxLayout(content_wrap)
-        # 配合最小窗：内边距略收，stack 区约 700×600
-        content_layout.setContentsMargins(8, 8, 8, 8)
+        content_layout.setContentsMargins(14, 10, 14, 10)
         content_layout.setSpacing(8)
 
         # 顶栏：页面标题 + 搜索提示 + 外链
@@ -2116,6 +2115,7 @@ class MainWindow(QWidget):
 
         content_layout.addWidget(self.theme_bar, 0)
         content_layout.addWidget(self.stack, 1)
+        self.stack.currentChanged.connect(self._update_content_bottom_margin)
 
         # 兼容旧代码引用（隐藏顶栏）
         self.topbar = QWidget()
@@ -2221,8 +2221,7 @@ class MainWindow(QWidget):
         self.stack.addWidget(page)
         self._wire_page(key, page)
         self._apply_page_settings(key, page)
-        # 速存恢复会挡住子开关信号，侧栏开关不会跟着 toggled 亮起来。
-        # 截图开关在页面建好前是关的，这里按恢复后的勾选再对一次。
+        # 页面就绪后，按恢复后的实际状态同步侧栏开关。
         if key == "fast":
             self._sync_fast_led()
         elif key == "shot":
@@ -2246,10 +2245,7 @@ class MainWindow(QWidget):
                 page.set_main_window(self)
                 self.page_about = getattr(page, "about_section", None)
             elif key == "fast":
-                page.chk_imgonly.toggled.connect(self._sync_fast_led)
-                page.chk_manual.toggled.connect(self._sync_fast_led)
-                page.chk_mkdir.toggled.connect(self._sync_fast_led)
-                page.chk_enable_all.toggled.connect(self._sync_fast_led)
+                page.background_enabled_changed.connect(self._sync_fast_led)
                 page.request_show.connect(
                     lambda: self._auto_switch(
                         self.stack.indexOf(self.page_fast), self.btn_fast))
@@ -2526,8 +2522,7 @@ class MainWindow(QWidget):
         # 切页后 currentWidget() 变了，_CurrentOnlyStack 的 sizeHint 也该跟着变——
         # 主动 invalidate 一下，逼 Qt 立刻重新问一遍尺寸，不等下次窗口事件才生效。
         self.stack.updateGeometry()
-        # 选中态 polish / 点击焦点会把菜单按钮抬到 LED 上面 → 勾选框“消失”
-        self._raise_side_leds()
+        # 焦点更新后再抬一次，避免菜单按钮盖住 LED。
         QTimer.singleShot(0, self._raise_side_leds)
         try:
             idle = getattr(self, "_clock_idle", None)
@@ -2660,7 +2655,10 @@ class MainWindow(QWidget):
         if btn is None:
             return
         try:
-            btn.setProperty("clockOn", "true" if active else "false")
+            state = "true" if active else "false"
+            if btn.property("clockOn") == state:
+                return
+            btn.setProperty("clockOn", state)
             btn.style().unpolish(btn)
             btn.style().polish(btn)
             self._refresh_clock_header_icon()
@@ -2733,26 +2731,23 @@ class MainWindow(QWidget):
         return "桌面助手"
 
     def _sync_fast_led(self, _=None):
-        """任意速存子功能变化时，LED 亮起条件：至少一个功能开启"""
+        """侧栏开关显示后台下载的实际启用状态。"""
         if not hasattr(self, "page_fast") or not hasattr(self, "led_fast"):
             return
-        self.led_fast.setChecked(self.page_fast.is_any_active())
+        enabled = self.page_fast.is_img_active()
+        if self.led_fast.isChecked() != enabled:
+            self.led_fast.setChecked(enabled)
 
     def _on_record_mode_toggled(self, action: str):
         """F6 记录模式：与预下载并存，不再联动已移除的侧栏自动下载开关。"""
         del action
 
     def _toggle_fast_led(self):
-        """点击 LED：全部一键开 / 全部一键关"""
-        if self._ensure_page("fast") is None or not hasattr(self, "led_fast"):
-            return
-        currently_any = self.page_fast.is_any_active()
-        self.page_fast.set_all_features(not currently_any)
-        self.led_fast.setChecked(not currently_any)
-        # 同步页面内总开关显示
-        self.page_fast._sync_enable_all_display()
-        # set_all_features 会挡住子开关信号，自动保存接不到，这里直接落盘
-        self._schedule_save_user_prefs()
+        requested = self.led_fast.isChecked()
+        page = self._ensure_page("fast")
+        if page is not None:
+            page.chk_background_image.setChecked(requested)
+            self._sync_fast_led()
 
     def _toggle_fast_txt_led(self):
         if hasattr(self, "page_fast"):
@@ -2923,6 +2918,9 @@ class MainWindow(QWidget):
 
         无论当前是否正在跑预下载/其它下载，都应能入队并气泡提示。
         """
+        if getattr(self, "_data_backup_worker", None) is not None or getattr(self, "_data_restore_pending", False):
+            self._clipboard_auto_pending_text = ""
+            return
         text = (getattr(self, "_clipboard_auto_pending_text", "") or "").strip()
         self._clipboard_auto_pending_text = ""
         if not text or "https://" not in text.lower():
@@ -3400,17 +3398,7 @@ class MainWindow(QWidget):
             pv = getattr(self, "page_douyin", None)
             if pv is None:
                 return None
-            return {
-                "douyin": getattr(pv, "page_douyin", None),
-                "bilibili": getattr(pv, "page_bilibili", None),
-                "youtube": getattr(pv, "page_youtube", None),
-                "jimeng": getattr(pv, "page_other", None),
-                "liblib": getattr(pv, "page_other", None),
-                "xvideos": getattr(pv, "page_other", None),
-                "pornhub": getattr(pv, "page_other", None),
-                "missav": getattr(pv, "page_other", None),
-                "xcom": getattr(pv, "page_other", None),
-            }.get(plat)
+            return pv.platform_page(plat, create=create)
         if plat in ("ehentai", "pixiv", "hitomi"):
             if create:
                 self._ensure_page("gallery")
@@ -3997,6 +3985,8 @@ class MainWindow(QWidget):
 
     def _pre_dl_try_schedule(self):
         """空闲 + 开关开 + 冷却结束 → 看队头并自动处理（不提前出队）。"""
+        if getattr(self, "_data_backup_worker", None) is not None or getattr(self, "_data_restore_pending", False):
+            return
         if getattr(self, "_pre_dl_running", False):
             return
         # 批处理是用户手动开的，优先级最高：暂停期间不抢下载页
@@ -4118,22 +4108,23 @@ class MainWindow(QWidget):
 
     def _highlight(self, active_btn):
         self._set_clock_btn_active(False)
-        for b in self.side_btns:
-            b.setProperty("kind", "side")
-            b.setProperty("active", b is active_btn)
-            b.style().unpolish(b)
-            b.style().polish(b)
-        # 底栏「系统总览」选中态
         btn_about = getattr(self, "btn_overview", None) or getattr(self, "btn_settings", None)
+        for b in self.side_btns:
+            self._set_nav_active(b, b is active_btn)
+        # 底栏「系统总览」选中态
         if btn_about is not None:
-            try:
-                btn_about.setProperty("active", active_btn is btn_about)
-                btn_about.style().unpolish(btn_about)
-                btn_about.style().polish(btn_about)
-            except Exception:
-                pass
+            self._set_nav_active(btn_about, active_btn is btn_about)
         # polish 会打乱叠放顺序，立刻把 LED 抬回最上
         self._raise_side_leds()
+
+    @staticmethod
+    def _set_nav_active(button, active):
+        if button.property("active") == active:
+            return
+        button.setProperty("active", active)
+        style = button.style()
+        style.unpolish(button)
+        style.polish(button)
 
     def _raise_side_leds(self):
         """保证侧栏 LED / 预下载角标画在对应菜单按钮之上。"""
@@ -4877,6 +4868,9 @@ class MainWindow(QWidget):
 
         若有下载任务进行中：弹窗确认一次，取消则忽略关窗。
         """
+        if getattr(self, "_data_backup_worker", None) is not None:
+            event.ignore()
+            return
         # 截图编辑等：关闭按钮已冻结，Alt+F4 / 任务栏关闭也一律拦住
         if getattr(self, "_close_button_frozen", False):
             event.ignore()
@@ -5197,8 +5191,10 @@ class MainWindow(QWidget):
             prefs = self._collect_user_prefs()
             if save_user_prefs(prefs):
                 self._sync_auto_fit_after_save(prefs)
+                return True
         except Exception:
             log.exception("保存 user.txt 失败")
+        return False
 
     def _sync_auto_fit_after_save(self, prefs):
         """保存时若采用了看图窗口写下的自适应，勾选和内存一起改。"""
@@ -5222,10 +5218,19 @@ class MainWindow(QWidget):
 
     def _schedule_save_user_prefs(self, *_args):
         """设置变更后 500ms 防抖写盘，避免拖动路径时狂写文件。"""
+        if getattr(self, "_data_backup_worker", None) is not None:
+            return
         try:
             self._prefs_timer.start(500)
         except Exception:
             self._save_user_prefs()
+
+    def _wire_video_platform(self, page):
+        for name in ("save_edit", "ck_path"):
+            control = getattr(page, name, None)
+            if control is not None:
+                control.textChanged.connect(self._schedule_save_user_prefs)
+        self._wire_pre_dl_cancel_buttons()
 
     def _wire_user_prefs_autosave(self):
         """把会影响习惯的控件变更接到防抖保存。"""
@@ -5237,8 +5242,7 @@ class MainWindow(QWidget):
             pf = self.page_fast
             wired.add("fast")
             for sig in (
-                pf.chk_enable_all.toggled,
-                pf.chk_imgonly.toggled,
+                pf.chk_background_image.toggled,
                 pf.chk_manual.toggled,
                 pf.chk_mkdir.toggled,
                 pf.save_path.textChanged,
@@ -5370,24 +5374,15 @@ class MainWindow(QWidget):
             except Exception:
                 log.exception("接线 Pixiv 图集偏好自动保存失败")
 
-        # 视频下载：抖音 / B站 / YouTube 保存路径与 Cookie
-        if self._page_enabled("video") and "video" not in wired and getattr(self, "page_douyin", None) is not None:
+        # 视频平台可能在首次切换页签或后台任务开始时才创建。
+        video = getattr(self, "page_douyin", None)
+        if video is not None and "video" not in wired:
             wired.add("video")
-            try:
-                pv = self.page_douyin  # PageVideo 容器
-                for sub in ("page_douyin", "page_bilibili", "page_youtube"):
-                    sp = getattr(pv, sub, None)
-                    if sp is None:
-                        continue
-                    for attr in ("save_edit", "ck_path"):
-                        w = getattr(sp, attr, None)
-                        if w is not None:
-                            try:
-                                w.textChanged.connect(self._schedule_save_user_prefs)
-                            except Exception:
-                                pass
-            except Exception:
-                log.exception("接线视频下载偏好自动保存失败")
+            video.platform_ready.connect(self._wire_video_platform)
+            for platform in ("douyin", "bilibili", "youtube"):
+                child = video.platform_page(platform)
+                if child is not None:
+                    self._wire_video_platform(child)
 
         if self._page_enabled("audio") and "audio" not in wired and getattr(self, "page_audio", None) is not None:
             wired.add("audio")
@@ -5443,7 +5438,7 @@ class MainWindow(QWidget):
             led = getattr(self, "led_fast", None)
             if led is not None:
                 fs = prefs.get("fast_save") if isinstance(prefs.get("fast_save"), dict) else {}
-                led.setChecked(bool((fs or {}).get("enabled", False)))
+                led.setChecked(bool(fs.get("images_enabled")))
             led_shot = getattr(self, "led_shot", None)
             if led_shot is not None:
                 sh = prefs.get("screenshot") if isinstance(prefs.get("screenshot"), dict) else {}
@@ -5860,15 +5855,15 @@ class MainWindow(QWidget):
             self._refresh_clock_header_icon()
         except Exception:
             pass
-        try:
-            cw = self.findChild(QWidget, "ContentRoot")
-            if cw is not None and cw.layout() is not None:
-                cw.layout().setContentsMargins(14, 10, 14, 10)
-                cw.layout().setSpacing(8)
-        except Exception:
-            pass
         self.setMinimumSize(_WIN_MIN_W, _WIN_MIN_H)
         self._style_sidebar_extras()
+
+    def _update_content_bottom_margin(self):
+        layout = self.stack.parentWidget().layout()
+        left, top, right, _ = layout.getContentsMargins()
+        text_page = getattr(self, "page_text_editor", None)
+        bottom = 4 if text_page is not None and self.stack.currentWidget() is text_page else 10
+        layout.setContentsMargins(left, top, right, bottom)
 
     @staticmethod
     def _read_active_qt_scale() -> float:
@@ -6933,32 +6928,6 @@ class MainWindow(QWidget):
             errors.extend(e)
         return cleared, errors
 
-    def _copy_tree_merge(self, src_dir: str, dst_dir: str, skip=()) -> int:
-        """把 src_dir 下内容复制到 dst_dir（覆盖同名）。返回复制条目数。
-
-        skip：跳过的顶层名（不区分大小写），如知识库目录另行处理。
-        """
-        import shutil
-
-        if not os.path.isdir(src_dir):
-            return 0
-        os.makedirs(dst_dir, exist_ok=True)
-        skip_l = {str(x).lower() for x in (skip or ())}
-        n = 0
-        for name in os.listdir(src_dir):
-            if name.lower() in skip_l:
-                continue
-            s = os.path.join(src_dir, name)
-            d = os.path.join(dst_dir, name)
-            if os.path.isdir(s):
-                if os.path.exists(d):
-                    shutil.rmtree(d, ignore_errors=True)
-                shutil.copytree(s, d)
-            else:
-                shutil.copy2(s, d)
-            n += 1
-        return n
-
     def _apply_prefs_to_all_pages(self, prefs: dict, *, allow_scale_restart: bool = False) -> bool:
         """把 prefs 刷到全部业务页与壳层控件。
 
@@ -7106,10 +7075,10 @@ class MainWindow(QWidget):
         # 自动下载侧栏开关 + 白名单（关于页）
         try:
             ca = prefs.get("clipboard_auto") or {}
-            if hasattr(self, "led_video_auto"):
-                self.led_video_auto.setChecked(bool(ca.get("video", False)))
-            if hasattr(self, "led_gallery_auto"):
-                self.led_gallery_auto.setChecked(bool(ca.get("gallery", False)))
+            for key in ("video", "gallery"):
+                button = getattr(self, f"led_{key}_auto", None)
+                if button is not None:
+                    button.setChecked(bool(ca.get(key, False)))
         except Exception:
             log.exception("恢复自动下载开关失败")
 
@@ -7192,369 +7161,145 @@ class MainWindow(QWidget):
         except Exception:
             log.exception("重置后应用默认缩放失败")
 
+    def _run_data_backup(self, parent, title, progress_text, work, completed):
+        from PyQt5.QtWidgets import QProgressDialog
+        from utils.qthread_util import ResultWorker
+
+        progress = QProgressDialog(progress_text, "", 0, 0, parent)
+        progress.setWindowTitle(title)
+        progress.setWindowModality(Qt.ApplicationModal)
+        progress.setCancelButton(None)
+        progress.setWindowFlag(Qt.WindowCloseButtonHint, False)
+        progress.setMinimumDuration(0)
+
+        def execute():
+            try:
+                return work(), None
+            except Exception as exc:
+                log.exception("%s失败", title)
+                return None, str(exc)
+
+        def finish(outcome):
+            self._data_backup_worker = None
+            progress.close()
+            progress.deleteLater()
+            result, error = outcome
+            if error is not None:
+                message_box_critical(parent, title + "失败", error)
+            else:
+                completed(result)
+            self._pre_dl_try_schedule()
+
+        worker = ResultWorker(execute, self)
+        self._data_backup_worker = worker
+        worker.ready.connect(finish)
+        worker.finished.connect(worker.deleteLater)
+        progress.show()
+        worker.start()
+
     def _on_export_records(self, parent=None):
-        """数据管理「导出」：打包 data/（含卡片与图集去重记录）。"""
         from datetime import datetime
-        from PyQt5.QtWidgets import QFileDialog, QMessageBox
-        import zipfile
+        from PyQt5.QtWidgets import QFileDialog
+        from utils.data_backup import export_backup
 
-        parent = parent or self
-        try:
-            self._save_user_prefs()
-        except Exception:
-            log.exception("导出前保存偏好失败")
-
-        roots = self._local_data_roots()
-        has_any = False
-        for _label, d in roots:
-            if os.path.isdir(d) and os.listdir(d):
-                has_any = True
-                break
-        if not has_any:
-            message_box_info(parent, "导出", "没有可导出的本地数据。")
+        if getattr(self, "_data_backup_worker", None) is not None:
             return
-
+        parent = parent or self
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        default_name = f"桌面助手_数据备份_{stamp}.zip"
         path, _ = QFileDialog.getSaveFileName(
-            parent,
-            "导出本地数据",
-            default_name,
-            "ZIP 文件 (*.zip)",
+            parent, "导出本地数据", f"桌面助手_数据备份_{stamp}.zip", "ZIP 文件 (*.zip)"
         )
         if not path:
             return
         if not path.lower().endswith(".zip"):
             path += ".zip"
-
-        try:
-            n_files = 0
-            bundles = []
-            with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for label, dir_path in roots:
-                    if not os.path.isdir(dir_path):
-                        continue
-                    count_here = 0
-                    for root, _dirs, files in os.walk(dir_path):
-                        for name in files:
-                            if name.endswith(".tmp"):
-                                continue
-                            full = os.path.join(root, name)
-                            rel = os.path.relpath(full, dir_path).replace("\\", "/")
-                            arc = f"{label}/{rel}"
-                            try:
-                                zf.write(full, arcname=arc)
-                                n_files += 1
-                                count_here += 1
-                            except Exception:
-                                log.exception("导出跳过文件 path=%s", full)
-                    if count_here:
-                        bundles.append(f"{label}({count_here})")
-            log.info("导出本地数据 → %s files=%s bundles=%s", path, n_files, bundles)
-            message_box_info(
-                parent,
-                "导出完成",
-                f"已导出 {n_files} 个文件到：\n{path}\n\n"
-                f"包含：{', '.join(bundles) if bundles else '（空）'}\n"
-                "· data：偏好 / 粘贴仓库 / 积分历史 / 时区城市 / 日志\n"
-                "· data（card_*.txt）：速存记录模式卡片\n"
-                "· 已下记录（downloaded.txt：图集 / 其它视频 / 汽水音乐）\n"
-                "· 知识库：游戏助手 gameassist/、游戏大脑 gamebrain/",
-            )
-        except Exception as e:
-            log.exception("导出本地数据失败")
-            message_box_critical(parent, "导出失败", f"无法写入 ZIP：\n{e}")
+        if not self._save_user_prefs():
+            message_box_critical(parent, "导出失败", "无法保存当前设置。")
+            return
+        roots = self._local_data_roots()
+        self._run_data_backup(
+            parent, "导出", "正在创建数据备份…",
+            lambda: export_backup(path, roots),
+            lambda count: message_box_info(
+                parent, "导出完成", f"已导出 {count} 个文件到：\n{path}\n\n备份已排除 API 密钥。"
+            ),
+        )
 
     def _on_import_records(self, parent=None):
-        """数据管理「导入」：从 ZIP 恢复本地数据并刷新全部界面。"""
         from PyQt5.QtWidgets import QFileDialog, QMessageBox
-        import shutil
-        import tempfile
-        import zipfile
-        from utils.app_paths import log_dir, data_dir, records_dir, userdata_dir, flatten_data_subdirs, _migrate_user_records_split_once
+        from utils.data_backup import restore_backup
+        from utils.logger import get_logger
 
+        if getattr(self, "_data_backup_worker", None) is not None:
+            return
         parent = parent or self
+        ollama = getattr(self, "page_ollama", None)
+        agent = getattr(ollama, "agent_panel", None)
+        meeting = getattr(self, "page_gamemeet", None)
+        if (self._is_any_download_busy() or (agent and (agent.busy or agent.after))
+                or getattr(meeting, "_role", None)):
+            message_box_warn(parent, "导入本地数据", "请先停止下载、Agent 任务或当前会议，再导入备份。")
+            return
         path, _ = QFileDialog.getOpenFileName(
-            parent,
-            "导入本地数据",
-            "",
-            "ZIP 文件 (*.zip);;所有文件 (*.*)",
+            parent, "导入本地数据", "", "ZIP 文件 (*.zip);;所有文件 (*.*)"
         )
         if not path:
             return
-        if not os.path.isfile(path):
-            message_box_warn(parent, "导入", "所选文件不存在。")
-            return
-
-        reply = QMessageBox.warning(
-            parent,
-            "导入本地数据",
-            "导入将覆盖 data/ 下的本地数据：\n"
-            "· 偏好 / 粘贴 / 积分 / 时区城市 / 日志\n"
-            "· 已下记录（downloaded.txt，或旧的四份去重文件）\n"
-            "· 速存记录卡片\n"
-            "· 知识库（游戏助手 / 游戏大脑；备份里没有则保留本机）\n\n"
-            "旧版 records / gallery / cards 备份仍可导入。\n"
-            "建议先点「导出」备份当前数据。\n\n是否继续导入？",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if reply != QMessageBox.Yes:
-            return
-
-        # 先记下本机知识库的来源 / 分类：ZIP 不含对应知识库目录时要保持本机这一份
-        keep_kb_prefs = {}
+        self._data_restore_pending = True
         try:
-            import copy as _copy
-            cur = self._collect_user_prefs()
-            for sec in ("gameassist", "gamebrain"):
-                sd = cur.get(sec) if isinstance(cur.get(sec), dict) else {}
-                keep_kb_prefs[sec] = {
-                    k: _copy.deepcopy(sd[k]) for k in ("sources", "groups") if k in sd
-                }
-        except Exception:
-            log.exception("导入前记录本机知识库来源失败")
-
-        try:
-            self._close_app_log_handlers()
-        except Exception:
-            log.exception("导入前关闭日志句柄失败")
-
-        try:
-            with tempfile.TemporaryDirectory(prefix="deskassist_import_") as td:
-                with zipfile.ZipFile(path, "r") as zf:
-                    for info in zf.infolist():
-                        name = info.filename.replace("\\", "/")
-                        if name.startswith("/") or name.startswith("../") or "/../" in f"/{name}/":
-                            continue
-                        if name.endswith("/"):
-                            continue
-                        target = os.path.normpath(os.path.join(td, name))
-                        if not target.startswith(os.path.normpath(td) + os.sep):
-                            continue
-                        os.makedirs(os.path.dirname(target), exist_ok=True)
-                        with zf.open(info, "r") as src, open(target, "wb") as dst:
-                            shutil.copyfileobj(src, dst)
-
-                # 兼容 ZIP 根下多包一层 deskassist_data / 桌面助手_xxx
-                scan_root = td
-                entries = [e for e in os.listdir(td) if e not in (".", "..")]
-                known = {"log", "data", "userdata", "records", "gallery", "cards"}
-                if len(entries) == 1:
-                    only = os.path.join(td, entries[0])
-                    if os.path.isdir(only):
-                        inner = set(os.listdir(only))
-                        if known & {x.lower() for x in inner} or entries[0].lower() in known:
-                            scan_root = only
-
-                # 新：data/；中：records + gallery + cards；旧：扁平 user.txt 等
-                top = set(os.listdir(scan_root)) if os.path.isdir(scan_root) else set()
-                top_l = {x.lower(): x for x in top}
-                markers = {
-                    "user.txt", "paste_helper.txt", "points_calc.txt",
-                    "app.log", "world_clock_cities.txt",
-                    "pre_download.txt", "gamemeet_history.txt", "prompts_editor.txt",
-                    "downloaded.txt",
-                    "gallery_eh.txt", "gallery_hitomi.txt",
-                    "other_video.txt", "qishui.txt",
-                }
-                has_log = "log" in top_l and os.path.isdir(
-                    os.path.join(scan_root, top_l["log"])
-                )
-                has_data = has_log or (
-                    "data" in top_l and os.path.isdir(
-                        os.path.join(scan_root, top_l["data"])
-                    )
-                )
-                has_legacy_roots = bool({"records", "gallery", "cards"} & set(top_l.keys()))
-                flat_records = bool(markers & top) and not has_data and not has_legacy_roots
-
-                if not has_data and not has_legacy_roots and not flat_records:
-                    if "records" in top_l:
-                        only = os.path.join(scan_root, top_l["records"])
-                        if os.path.isdir(only) and os.listdir(only):
-                            has_legacy_roots = True
-                        else:
-                            raise RuntimeError("ZIP 内没有可用文件")
-                    else:
-                        raise RuntimeError(
-                            "ZIP 内没有可识别的数据（需要 data/、records/ 或 user.txt）"
-                        )
-
-                dest_data = log_dir()  # runtime logs (legacy zip key: data)
-                dest_rec = records_dir()
-                dest_user = userdata_dir()
-                cleared, wipe_errs, copied = [], [], 0
-                c, e = self._wipe_dir_contents(dest_data, "log")
-                cleared.extend(c)
-                wipe_errs.extend(e)
-                c, e = self._wipe_dir_contents(dest_rec, "records")
-                cleared.extend(c)
-                wipe_errs.extend(e)
-                c, e = self._wipe_dir_contents(dest_user, "userdata")
-                cleared.extend(c)
-                wipe_errs.extend(e)
-
-                if has_data:
-                    copied += self._copy_tree_merge(
-                        os.path.join(scan_root, top_l.get("log") or top_l["data"]), dest_data
-                    )
-                    # 新备份若同时带 records/
-                    ud_key = top_l.get("userdata")
-                    if ud_key:
-                        src = os.path.join(scan_root, ud_key)
-                        if os.path.isdir(src):
-                            copied += self._copy_tree_merge(src, dest_user)
-                    rec_key = top_l.get("records")
-                    if rec_key:
-                        src = os.path.join(scan_root, rec_key)
-                        if os.path.isdir(src):
-                            copied += self._copy_tree_merge(src, dest_rec)
-                elif has_legacy_roots:
-                    rec_key = top_l.get("records")
-                    if rec_key:
-                        src = os.path.join(scan_root, rec_key)
-                        if os.path.isdir(src):
-                            # 旧 zip 的 records/ 可能含 user.txt：先落 data，再拆分
-                            copied += self._copy_tree_merge(src, dest_data)
-                    gal_key = top_l.get("gallery")
-                    if gal_key:
-                        src = os.path.join(scan_root, gal_key)
-                        if os.path.isdir(src):
-                            copied += self._copy_tree_merge(src, dest_data)
-                    cards_key = top_l.get("cards")
-                    if cards_key:
-                        src = os.path.join(scan_root, cards_key)
-                        if os.path.isdir(src):
-                            copied += self._copy_tree_merge(
-                                src, os.path.join(dest_data, "cards")
-                            )
-                else:
-                    copied += self._copy_tree_merge(
-                        scan_root, dest_data, skip=("gameassist", "gamebrain")
-                    )
-
-                # 知识库：ZIP 顶层有 gameassist/ / gamebrain/ 才整目录替换；旧备份没有则保留本机
-                kb_restored = []
-                try:
-                    from utils.app_paths import kb_data_roots
-                    kb_roots = kb_data_roots()
-                except Exception:
-                    log.exception("取知识库目录失败")
-                    kb_roots = []
-                for kb_label, kb_dest in kb_roots:
-                    kb_key = top_l.get(kb_label.lower())
-                    kb_src = os.path.join(scan_root, kb_key) if kb_key else ""
-                    if not kb_src or not os.path.isdir(kb_src):
-                        continue
-                    c, e = self._wipe_dir_contents(kb_dest, kb_label)
-                    cleared.extend(c)
-                    wipe_errs.extend(e)
-                    try:
-                        copied += self._copy_tree_merge(kb_src, kb_dest)
-                        kb_restored.append(kb_label)
-                    except Exception as kb_err:
-                        log.exception("导入知识库失败 %s", kb_label)
-                        wipe_errs.append(f"{kb_label}: {kb_err}")
-
-                # 旧子目录平铺 + 用户数据迁入 records/
-                try:
-                    flatten_data_subdirs()
-                except Exception:
-                    log.exception("导入后平铺子目录失败")
-                try:
-                    import utils.app_paths as _ap
-                    _ap._MIGRATED_RECORDS_SPLIT = False
-                    _migrate_user_records_split_once()
-                except Exception:
-                    log.exception("导入后拆分 records 失败")
-                try:
-                    from utils.downloaded_records import migrate_legacy_download_records
-                    migrate_legacy_download_records()
-                except Exception:
-                    log.exception("导入后合并已下记录失败")
-
-                # 旧备份没带知识库目录：本机知识库文件已保留，来源 / 分类也写回本机值
-                try:
-                    keep_now = {
-                        sec: v for sec, v in keep_kb_prefs.items()
-                        if v and sec not in kb_restored
-                    }
-                    if keep_now:
-                        self._write_back_kb_prefs(keep_now)
-                except Exception:
-                    log.exception("导入后保留本机知识库来源失败")
-
-            log.info(
-                "导入本地数据 ← %s copied=%s cleared=%s wipe_errs=%s "
-                "has_data=%s has_legacy=%s flat=%s kb=%s",
-                path, copied, cleared, wipe_errs,
-                has_data, has_legacy_roots, flat_records, kb_restored,
+            reply = QMessageBox.warning(
+                parent, "导入本地数据",
+                "导入会替换备份中包含的本地数据。建议先导出当前数据。\n\n是否继续？",
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No,
             )
-        except Exception as e:
-            log.exception("导入本地数据失败")
-            try:
-                from utils.logger import get_logger as _gl
-                _gl(__name__)
-            except Exception:
-                pass
-            message_box_critical(parent, "导入失败", f"无法导入：\n{e}")
-            return
+            if reply != QMessageBox.Yes:
+                return
+            if self._is_any_download_busy() or (agent and (agent.busy or agent.after)) or getattr(meeting, "_role", None):
+                message_box_warn(parent, "导入本地数据", "后台任务仍在运行，请停止后重试。")
+                return
+            self._prefs_timer.stop()
+            self._save_user_prefs()
+            local = self._collect_user_prefs()
+            roots = self._local_data_roots()
 
-        try:
-            from utils.logger import get_logger as _gl
-            _gl(__name__).info("导入后日志已重新打开")
-        except Exception:
-            pass
+            def restore():
+                return restore_backup(
+                    path, roots, local,
+                    before_replace=self._close_app_log_handlers,
+                    after_replace=lambda: get_logger(__name__),
+                )
 
-        try:
-            self._apply_records_from_disk()
-        except Exception:
-            log.exception("导入后应用配置失败")
+            def completed(_result):
+                try:
+                    self._apply_records_from_disk()
+                except Exception:
+                    log.exception("导入后应用配置失败")
+                    message_box_warn(parent, "导入完成", "数据已恢复，请重新启动以刷新界面。")
+                    return
+                message_box_info(parent, "导入完成", "本地数据已从备份恢复。")
 
-        message_box_info(
-            parent,
-            "导入完成",
-            "本地数据已从备份恢复，界面设置已刷新。",
-        )
-
-    def _write_back_kb_prefs(self, keep: dict):
-        """把 {段名: {sources, groups}} 写回 userdata/user.txt（导入旧备份时保留本机知识库）。"""
-        import json as _json
-        from utils.user_prefs import user_file_path
-
-        path = user_file_path()
-        if not os.path.isfile(path):
-            return
-        with open(path, "r", encoding="utf-8") as f:
-            data = _json.load(f)
-        if not isinstance(data, dict):
-            return
-        for sec, vals in (keep or {}).items():
-            if not isinstance(vals, dict) or not vals:
-                continue
-            sd = data.get(sec)
-            if not isinstance(sd, dict):
-                sd = {}
-                data[sec] = sd
-            sd.update(vals)
-        tmp = path + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            _json.dump(data, f, ensure_ascii=False, indent=2)
-            f.write("\n")
-        os.replace(tmp, path)
-        log.info("导入：保留本机知识库来源 sections=%s", list((keep or {}).keys()))
+            self._run_data_backup(parent, "导入", "正在验证并恢复备份…", restore, completed)
+        finally:
+            self._data_restore_pending = False
 
     def _apply_records_from_disk(self):
         """从磁盘重载偏好与各页数据（导入后用）。"""
+        from utils.pre_download import PreDownloadStore
+
         prefs, _created = load_user_prefs()
-        # 缩放不一致会重启，由 allow_scale_restart 处理
+        self._pre_dl_store = PreDownloadStore()
+        self._refresh_pre_dl_panels()
         self._apply_prefs_to_all_pages(prefs, allow_scale_restart=True)
+        agent = getattr(getattr(self, "page_ollama", None), "agent_panel", None)
+        if agent is not None:
+            agent.reload_from_disk()
 
     def _on_reset_records(self, parent=None):
         """数据管理「重置」：清空全部本地数据目录并恢复出厂设置。"""
         from PyQt5.QtWidgets import QMessageBox
 
+        if getattr(self, "_data_backup_worker", None) is not None:
+            return
         parent = parent or self
         reply = QMessageBox.warning(
             parent,

@@ -9,7 +9,21 @@
 # 移植自 Qt 官方 C++ "Flow Layout" 示例，精简为项目里实际会用到的部分。
 
 from PyQt5.QtCore import Qt, QPoint, QRect, QSize
-from PyQt5.QtWidgets import QLayout
+from PyQt5.QtWidgets import QLayout, QWidget
+
+
+class FlowLayoutHost(QWidget):
+    """让 QScrollArea 按实际宽度计算换行后的内容高度。"""
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        layout = self.layout()
+        return layout.heightForWidth(width) if layout is not None else 0
+
+    def minimumSizeHint(self):
+        return QSize(0, 0)
 
 
 class FlowLayout(QLayout):
@@ -73,6 +87,20 @@ class FlowLayout(QLayout):
         left, top, right, bottom = self.getContentsMargins()
         size += QSize(left + right, top + bottom)
         return size
+
+    def drop_location(self, position):
+        """返回最近一行中的插入位置和指示线坐标。"""
+        items = [(i, item.geometry()) for i, item in enumerate(self._items) if not item.isEmpty()]
+        if not items:
+            return None
+        _, nearest = min(items, key=lambda pair: abs(pair[1].center().y() - position.y()))
+        row = [(i, rect) for i, rect in items if rect.top() == nearest.top()]
+        half_spacing = self.horizontalSpacing() // 2
+        for i, rect in row:
+            if position.x() <= rect.center().x():
+                return i, QPoint(rect.left() - half_spacing, rect.top())
+        i, rect = row[-1]
+        return i + 1, QPoint(rect.right() + 1 + half_spacing, rect.top())
 
     def _do_layout(self, rect, test_only):
         """从左到右排布；同一行内高度不同的控件垂直居中（避免 checkbox/标签/下拉顶对齐参差）。

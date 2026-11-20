@@ -5,10 +5,11 @@
 # 2) pip install -r requirements-models.txt
 # 3) python tools/download_models.py   (downloads weights into model/)
 #
-# ---- Speech-to-text (faster-whisper) ----
+-c constraints-models.txt
+
+# ---- Speech recording (transcription runs in runtime/whisper) ----
 sounddevice>=0.4.6
 soundfile>=0.12.1
-faster-whisper>=1.0.0
 huggingface_hub>=0.23.0
 #
 # ---- Screenshot OCR (PaddleOCR-VL-1.6) ----

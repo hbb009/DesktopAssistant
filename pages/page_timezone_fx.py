@@ -266,7 +266,6 @@ class _ClockGridHost(QWidget):
 
 # ══════════════════════════ 单个城市块 ══════════════════════════
 _GRID_CLOCK_D = 140
-# 最小窗 960 时世界时钟内宽 ≈509；一行 3 个 + 间距 8×2 → 每格最多 ≈164
 _GRID_CLOCK_W = 164
 # 本页城市下拉高度；5 个按钮再矮 4px
 _TZ_CTRL_H = 32
@@ -649,7 +648,8 @@ class PageTimezoneFx(QWidget):
         self.grid_host.setObjectName("TzClockGridHost")
         self.grid_host.setAttribute(Qt.WA_StyledBackground, True)
         self.grid_host.setStyleSheet("#TzClockGridHost{background:transparent;border:none;}")
-        self.grid = FlowLayout(self.grid_host, h_spacing=8, v_spacing=12)
+        # 最小窗 960 时视口宽 501px，三个 164px 小钟加两处 4px 间距共占 500px。
+        self.grid = FlowLayout(self.grid_host, h_spacing=4, v_spacing=12)
         self.clock_scroll.setWidget(self.grid_host)
         box.addWidget(self.clock_scroll, 1)
 

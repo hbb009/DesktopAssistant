@@ -21,6 +21,7 @@ import hashlib
 
 from PIL import Image
 
+from styles.file_drop import file_drop_pixmap, paint_file_drop_outline
 from styles.style_all import TAB_QSS, VIDEO_TAB_QSS, apply_std_button, build_std_button_qss, fmt, theme, tk
 from utils.logger import get_logger
 from utils.pixel_project import (
@@ -151,6 +152,7 @@ class _SpriteView(QWidget):
         self._show_zoom = False
         self._hint = ""
         self._force_hint = False
+        self._drop_icon = None
         self.setAcceptDrops(True)
         self.setMinimumSize(72, 72)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
@@ -229,6 +231,30 @@ class _SpriteView(QWidget):
             self.clicked.emit()
         super().mousePressEvent(event)
 
+    def _paint_border_and_hint(self, painter, empty):
+        show_hint = empty or self._force_hint
+        if show_hint and self.acceptDrops():
+            paint_file_drop_outline(painter, self.rect(), "pixel_board", active=self._selected)
+            if self._drop_icon is None:
+                self._drop_icon = file_drop_pixmap(self)
+            icon = self._drop_icon
+            dpr = icon.devicePixelRatioF()
+            left = int((self.width() - icon.width() / dpr) / 2)
+            top = int((self.height() - icon.height() / dpr) / 2)
+            painter.drawPixmap(left, top, icon)
+            return
+
+        color = QColor(tk("accent") if self._selected else tk("border"))
+        painter.setPen(QPen(color, 2 if self._selected else 1))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRect(self.rect().adjusted(1, 1, -2, -2))
+        if self._hint and show_hint:
+            font = QFont("等线")
+            font.setPixelSize(13)
+            painter.setFont(font)
+            painter.setPen(QColor(tk("text_mut")))
+            painter.drawText(self.rect(), int(Qt.AlignCenter), self._hint)
+
     def paintEvent(self, event):
         del event
         p = QPainter(self)
@@ -247,26 +273,13 @@ class _SpriteView(QWidget):
             box = QRect(x, y, dw, dh)
             _paint_checker(p, box)
             p.drawImage(box, self._img)
-        color = QColor(tk("accent") if self._selected else tk("border"))
-        pen = QPen(color)
-        pen.setWidth(2 if self._selected else 1)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
-        inset = 1
-        p.drawRect(self.rect().adjusted(inset, inset, -inset - 1, -inset - 1))
+        self._paint_border_and_hint(p, self._img is None or self._img.isNull())
         if self._locked:
             p.setPen(QColor(tk("accent")))
             font = QFont("等线")
             font.setPixelSize(11)
             p.setFont(font)
             p.drawText(8, 16, "改")
-        empty = self._img is None or self._img.isNull()
-        if self._hint and (empty or self._force_hint):
-            p.setPen(QColor(tk("text_mut")))
-            font = QFont("等线")
-            font.setPixelSize(13)
-            p.setFont(font)
-            p.drawText(self.rect(), int(Qt.AlignCenter), self._hint)
         if self._show_zoom and self._img is not None and not self._img.isNull():
             p.setPen(QColor(tk("text_dim")))
             font = QFont("等线")
@@ -548,19 +561,7 @@ class _PixelCanvas(_SpriteView):
                 p.setBrush(Qt.NoBrush)
                 p.drawRect(ox + hx * zoom, oy + hy * zoom, zoom - 1, zoom - 1)
             p.restore()
-        color = QColor(tk("accent") if self._selected else tk("border"))
-        pen = QPen(color)
-        pen.setWidth(2 if self._selected else 1)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
-        p.drawRect(self.rect().adjusted(1, 1, -2, -2))
-        empty = not has_img
-        if self._hint and (empty or self._force_hint):
-            p.setPen(QColor(tk("text_mut")))
-            font = QFont("等线")
-            font.setPixelSize(13)
-            p.setFont(font)
-            p.drawText(self.rect(), int(Qt.AlignCenter), self._hint)
+        self._paint_border_and_hint(p, not has_img)
         if has_img and self._show_info:
             font = QFont("等线")
             font.setPixelSize(11)
@@ -1140,7 +1141,7 @@ class _DirCell(QWidget):
         lay.setSpacing(2)
         self.view = _DirView(direction)
         self.view.setMinimumSize(64, 64)
-        self.view.set_hint("拖入")
+        self.view.setToolTip("拖入图片到这个方向")
         self.view.clicked.connect(lambda: self.clicked.emit(self.direction))
         self.view.dropped.connect(lambda path: self.dropped.emit(self.direction, path))
         # 第九阶段：方向名和保存图标叠在缩略图角上，不再单占一行
@@ -1354,7 +1355,7 @@ class _FrameCell(QWidget):
         lay.setContentsMargins(0, 0, 0, 0)
         self.view = _FrameView(index)
         self.view.setMinimumSize(self.SIDE, self.SIDE)
-        self.view.set_hint("拖入")
+        self.view.setToolTip("拖入图片到这一帧")
         self.view.clicked.connect(lambda: self.clicked.emit(self.index))
         self.view.dropped.connect(lambda path: self.dropped.emit(self.index, path))
         self.view.reorder.connect(lambda src: self.reorder.emit(src, self.index))
@@ -1797,7 +1798,7 @@ class PagePixelBoard(QWidget):
         mid.setSpacing(8)
         self.art_canvas = _PixelCanvas()
         self.art_canvas.setMinimumSize(160, 160)
-        self.art_canvas.set_hint("拖入或直接画")
+        self.art_canvas.setToolTip("拖入图片或直接绘制")
         self.art_canvas.dropped.connect(lambda path: self._ingest_art(self._art_dir, path))
         self.art_canvas.press_px.connect(lambda x, y, bg: self._canvas_press(("art", self._art_dir), x, y, bg))
         self.art_canvas.move_px.connect(lambda x, y: self._canvas_move(("art", self._art_dir), x, y))
@@ -1923,8 +1924,7 @@ class PagePixelBoard(QWidget):
         mid.setSpacing(8)
         self.editor = _PixelCanvas()
         self.editor.setMinimumSize(160, 160)
-        self.editor.set_hint("绘制")
-        self.editor.setToolTip("")
+        self.editor.setToolTip("拖入图片或直接绘制当前帧")
         self.editor.press_px.connect(lambda x, y, bg: self._canvas_press(('frame',), x, y, bg))
         self.editor.move_px.connect(lambda x, y: self._canvas_move(('frame',), x, y))
         self.editor.release_px.connect(lambda x, y: self._canvas_release(('frame',), x, y))
@@ -2039,7 +2039,6 @@ class PagePixelBoard(QWidget):
         self.base_view = _PixelCanvas()
         self.base_view.setFixedSize(_FrameCell.SIDE, _FrameCell.SIDE)
         self.base_view._show_info = False
-        self.base_view.set_hint("底图")
         self.base_view.setToolTip("底图（参考）：拖入图片；可直接在上面改；复制到帧用左边的图标")
         self.base_view.dropped.connect(self._ingest_base)
         self.base_view.single_drop = True

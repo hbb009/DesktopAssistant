@@ -1635,6 +1635,7 @@ class _GrowEdit(QPlainTextEdit):
         self._meas = QTextDocument(self)
         self._pair = None
         self._fitting = False
+        self._fit_width = None
         self.normalize_paste = False
         self.textChanged.connect(self._fit_height)
         self._fit_height()
@@ -1705,6 +1706,7 @@ class _GrowEdit(QPlainTextEdit):
     def _fit_height(self, *_):
         if self._fitting:
             return
+        self._fit_width = self.viewport().width()
         self._sync_pair()
         cb = getattr(self, "_after_fit", None)
         if callable(cb):
@@ -1717,7 +1719,8 @@ class _GrowEdit(QPlainTextEdit):
 
     def showEvent(self, e):
         super().showEvent(e)
-        self._fit_height()
+        if self._fit_width != self.viewport().width():
+            self._fit_height()
 
     def wheelEvent(self, e):
         e.ignore()
@@ -2686,6 +2689,7 @@ class _PromptSheet(QWidget):
 
     def __init__(self):
         super().__init__()
+        self._defer_preset_chips = True
         self.setObjectName("PageRoot")
         self.setAttribute(Qt.WA_StyledBackground, True)
         self._page_id = ""
@@ -3076,6 +3080,8 @@ class _PromptSheet(QWidget):
         self._rebuild_field_chips(key)
 
     def _rebuild_field_chips(self, key: str):
+        if self._defer_preset_chips:
+            return
         flow = self._preset_flows.get(key)
         if flow is None:
             return
@@ -4713,18 +4719,25 @@ class _PromptSheet(QWidget):
             gap = 6
             col_w = max(1, (total - gap) // 2)
             for ed in (edit_zh, edit_en):
-                ed.setMaximumWidth(16777215)
-                ed.setMinimumWidth(0)
-                ed.setFixedWidth(col_w)
+                if ed.minimumWidth() != col_w or ed.maximumWidth() != col_w:
+                    ed.setFixedWidth(col_w)
             # 宽度落定后再读 viewport；仍不可靠则用列宽减 chrome
             vw = int(edit_zh.viewport().width())
             if vw <= 8:
                 vw = max(1, col_w - 2 * int(edit_zh.frameWidth()) - 2 * _EDIT_PAD_H)
             parts_zh = self._preview_parts_for_lang("zh")
             parts_en = self._preview_parts_for_lang("en")
-            h_zh = int(self._full_prompt_needed_h(edit_zh, vw, parts_zh))
-            h_en = int(self._full_prompt_needed_h(edit_en, vw, parts_en))
-            h = max(h_zh, h_en)
+            metrics = tuple((edit.font().toString(), edit._chrome()) for edit in (edit_zh, edit_en))
+            signature = (vw, metrics, tuple(parts_zh), tuple(parts_en))
+            cached = getattr(self, "_full_height_cache", None)
+            if cached is not None and cached[0] == signature:
+                h = cached[1]
+            else:
+                h = max(
+                    self._full_prompt_needed_h(edit_zh, vw, parts_zh),
+                    self._full_prompt_needed_h(edit_en, vw, parts_en),
+                )
+                self._full_height_cache = (signature, h)
             edit_zh.apply_height(h)
             edit_en.apply_height(h)
             cols = getattr(self, "_full_cols", None)
@@ -6427,10 +6440,8 @@ class _PromptSheet(QWidget):
         self._sync_translate_enable_chk()
         self._reload_translate_model_combo()
         self._update_tr_status_label()
-        self._refresh_full_prompt()
         QTimer.singleShot(0, self._fit_all_edits)
         QTimer.singleShot(0, self._sync_foot_align)
-        QTimer.singleShot(0, self._sync_full_prompt_layout)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -7601,7 +7612,6 @@ class _PromptSheet(QWidget):
     def _fit_all_edits(self):
         for key in list(self._left.keys()):
             self._apply_section_widths(key)
-            self._sync_section_row(key)
         # 立即刷新一次（跳过输入防抖），内部已 sync 高度
         timer = getattr(self, "_full_prompt_timer", None)
         if timer is not None:
@@ -7857,6 +7867,7 @@ class PagePromptEditor(QWidget):
         sheet._preset_host = self
         sheet._custom_presets = self._shared_presets
         sheet._h3_expanded = self._h3_expanded
+        sheet._defer_preset_chips = False
         sheet.set_prefs_dirty_callback(self._schedule_persist)
         pid = str(getattr(sheet, "_page_id", "") or "page")
         apply_transparent_surface(sheet, "PromptSheet_" + pid)

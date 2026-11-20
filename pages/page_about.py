@@ -30,6 +30,7 @@ from utils.user_prefs import (
     other_whitelist_patterns,
 )
 from utils.logger import get_logger
+from utils.qthread_util import ResultWorker, stop_qthread
 
 log = get_logger(__name__)
 
@@ -343,6 +344,8 @@ class _WhitelistRow(QFrame):
             if n and n not in seen:
                 seen.add(n)
                 cleaned.append(n)
+        if cleaned == self._domains and self.chip_lay.count():
+            return
         self._domains = cleaned
         self._rebuild_chips()
 
@@ -471,6 +474,65 @@ def _pkg_spec(name: str) -> bool:
         return importlib.util.find_spec(name) is not None
     except Exception:
         return False
+
+
+_COMPONENT_KEYS = ("ocr", "record", "voice", "clone", "matting", "ytdlp", "deno", "git")
+
+
+def _inspect_component(key):
+    if key == "ocr":
+        from utils.ocr_util import has_paddleocr_runtime, local_ocr_status
+
+        if not has_paddleocr_runtime():
+            return False, "未安装"
+        probe = local_ocr_status().get("probe_ok")
+        if probe is None:
+            return True, "已安装"
+        return (True, "可用") if probe else (False, "不可用")
+    if key == "record":
+        from utils.region_recorder import find_ffmpeg
+
+        ready = bool(find_ffmpeg())
+    elif key == "voice":
+        from utils.voice_input import voice_deps_ok
+
+        ready, _ = voice_deps_ok()
+    elif key == "clone":
+        if not (_pkg_spec("torch") and _pkg_spec("torchaudio")):
+            return False, "未安装"
+        return (True, "已安装") if _pkg_spec("hyperpyyaml") else (False, "缺依赖")
+    elif key == "matting":
+        if not _pkg_spec("onnxruntime"):
+            return False, "未安装"
+        return (True, "可用") if _pkg_spec("PIL") else (False, "缺 Pillow")
+    elif key == "ytdlp":
+        if not _pkg_spec("yt_dlp"):
+            return False, "未安装"
+        return (True, "可用") if _pkg_spec("yt_dlp_ejs") else (False, "缺 ejs")
+    elif key == "deno":
+        ready = bool(_find_deno() or _find_node())
+    else:
+        ready = bool(_find_git())
+    return (True, "可用") if ready else (False, "未安装")
+
+
+def _component_state(key):
+    try:
+        return _inspect_component(key)
+    except Exception as exc:
+        return False, f"状态检测失败：{exc}"
+
+
+def _collect_component_states():
+    states = {}
+    for key, _title, _folder in _MODEL_ROWS:
+        try:
+            ok, status, _detail = _model_state(key)
+            states[f"mdl_{key}"] = bool(ok), status
+        except Exception as exc:
+            states[f"mdl_{key}"] = False, f"状态检测失败：{exc}"
+    states.update((key, _component_state(key)) for key in _COMPONENT_KEYS)
+    return states
 
 
 def _guide_download(only: str) -> str:
@@ -1101,6 +1163,7 @@ class PageAbout(QWidget):
         self._category_seps: List[QFrame] = []  # 白名单/组件分类分隔线
         self._comp_busy = set()   # 正在检测：按钮冻结
         self._comp_ready = set()  # 状态为「可用」：检测/安装教程都冻结
+        self._component_worker = None
         self._loading = False
         self._prefs_loaded = False
 
@@ -1241,10 +1304,9 @@ class PageAbout(QWidget):
         # cookie_alert 参数保留兼容旧调用
         del cookie_alert
         self.reload_from_prefs()
-        QTimer.singleShot(0, self._refresh_all_component_status)
+        self._refresh_all_component_status()
         # 只刷新清单；重挂改由热键页就绪后异步轻量执行，避免启动卡死
         self._refresh_hotkey_card()
-        QTimer.singleShot(0, self._refresh_hotkey_card)
 
     def restyle_theme(self):
         """主题切换后重刷本页内联样式。"""
@@ -1269,15 +1331,30 @@ class PageAbout(QWidget):
         self._refresh_hotkey_card()
 
     def _refresh_all_component_status(self):
-        self._refresh_model_rows()
-        self._refresh_ocr_status()
-        self._refresh_record_status()
-        self._refresh_voice_status()
-        self._refresh_clone_status()
-        self._refresh_matting_runtime_status()
-        self._refresh_ytdlp_status()
-        self._refresh_deno_status()
-        self._refresh_git_status()
+        if self._component_worker is not None:
+            return
+        worker = ResultWorker(_collect_component_states, self)
+        self._component_worker = worker
+        worker.ready.connect(self._apply_component_states)
+        worker.finished.connect(self._finish_component_refresh)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _apply_component_states(self, states):
+        for key, (ok, status) in states.items():
+            if key not in self._comp_busy:
+                self._show_component_state(key, ok, status)
+
+    def _show_component_state(self, key, ok, status):
+        label = getattr(self, f"lbl_{key}_status", None)
+        if label is not None:
+            self._set_comp_status(label, ok, status)
+
+    def _finish_component_refresh(self):
+        self._component_worker = None
+
+    def shutdown(self):
+        stop_qthread(self._component_worker, name="component_status")
 
     def reload_from_prefs(self):
         """从主窗口内存偏好刷新控件（软件信息；界面缩放和保存目录在系统总览）。"""
@@ -1540,23 +1617,7 @@ class PageAbout(QWidget):
         self._set_comp_btns("ocr", enabled)
 
     def _refresh_ocr_status(self):
-        lbl = getattr(self, "lbl_ocr_status", None)
-        if lbl is None:
-            return
-        try:
-            from utils.ocr_util import has_paddleocr_runtime, local_ocr_status
-            if not has_paddleocr_runtime():
-                self._set_comp_status(lbl, False, "未安装")
-                return
-            probe = local_ocr_status().get("probe_ok")
-            if probe is True:
-                self._set_comp_status(lbl, True, "可用")
-            elif probe is False:
-                self._set_comp_status(lbl, False, "不可用")
-            else:
-                self._set_comp_status(lbl, True, "已安装")
-        except Exception as e:
-            self._set_comp_status(lbl, False, f"状态检测失败：{e}")
+        self._show_component_state("ocr", *_component_state("ocr"))
 
     def _on_ocr_check(self):
         self._set_ocr_btns(False)
@@ -1639,17 +1700,7 @@ class PageAbout(QWidget):
         )
 
     def _refresh_record_status(self):
-        lbl = getattr(self, "lbl_record_status", None)
-        if lbl is None:
-            return
-        try:
-            from utils.region_recorder import find_ffmpeg
-            if find_ffmpeg():
-                self._set_comp_status(lbl, True, "可用")
-            else:
-                self._set_comp_status(lbl, False, "未安装")
-        except Exception as e:
-            self._set_comp_status(lbl, False, f"状态检测失败：{e}")
+        self._show_component_state("record", *_component_state("record"))
 
     def _on_record_check(self):
         self._refresh_record_status()
@@ -1683,18 +1734,7 @@ class PageAbout(QWidget):
         self._set_comp_btns("voice", enabled)
 
     def _refresh_voice_status(self):
-        lbl = getattr(self, "lbl_voice_status", None)
-        if lbl is None:
-            return
-        try:
-            from utils.voice_input import voice_deps_ok
-            ok, _missing = voice_deps_ok()
-            if ok:
-                self._set_comp_status(lbl, True, "可用")
-            else:
-                self._set_comp_status(lbl, False, "未安装")
-        except Exception as e:
-            self._set_comp_status(lbl, False, f"状态检测失败：{e}")
+        self._show_component_state("voice", *_component_state("voice"))
 
     def _on_voice_check(self):
         self._set_voice_btns(False)
@@ -1733,20 +1773,7 @@ class PageAbout(QWidget):
         )
 
     def _refresh_clone_status(self):
-        lbl = getattr(self, "lbl_clone_status", None)
-        if lbl is None:
-            return
-        try:
-            torch_ok = _pkg_spec("torch") and _pkg_spec("torchaudio")
-            deps_ok = _pkg_spec("hyperpyyaml")
-            if torch_ok and deps_ok:
-                self._set_comp_status(lbl, True, "已安装")
-            elif not torch_ok:
-                self._set_comp_status(lbl, False, "未安装")
-            else:
-                self._set_comp_status(lbl, False, "缺依赖")
-        except Exception as e:
-            self._set_comp_status(lbl, False, f"状态检测失败：{e}")
+        self._show_component_state("clone", *_component_state("clone"))
 
     def _on_clone_check(self):
         self._clone_probe_worker = None
@@ -1855,18 +1882,7 @@ class PageAbout(QWidget):
         )
 
     def _refresh_matting_runtime_status(self):
-        lbl = getattr(self, "lbl_matting_status", None)
-        if lbl is None:
-            return
-        try:
-            if _pkg_spec("onnxruntime") and _pkg_spec("PIL"):
-                self._set_comp_status(lbl, True, "可用")
-            elif not _pkg_spec("onnxruntime"):
-                self._set_comp_status(lbl, False, "未安装")
-            else:
-                self._set_comp_status(lbl, False, "缺 Pillow")
-        except Exception as e:
-            self._set_comp_status(lbl, False, f"状态检测失败：{e}")
+        self._show_component_state("matting", *_component_state("matting"))
 
     def _on_matting_runtime_check(self):
         self._refresh_matting_runtime_status()
@@ -1894,18 +1910,7 @@ class PageAbout(QWidget):
         )
 
     def _refresh_ytdlp_status(self):
-        lbl = getattr(self, "lbl_ytdlp_status", None)
-        if lbl is None:
-            return
-        try:
-            if _pkg_spec("yt_dlp") and _pkg_spec("yt_dlp_ejs"):
-                self._set_comp_status(lbl, True, "可用")
-            elif _pkg_spec("yt_dlp"):
-                self._set_comp_status(lbl, False, "缺 ejs")
-            else:
-                self._set_comp_status(lbl, False, "未安装")
-        except Exception as e:
-            self._set_comp_status(lbl, False, f"状态检测失败：{e}")
+        self._show_component_state("ytdlp", *_component_state("ytdlp"))
 
     def _on_ytdlp_check(self):
         self._refresh_ytdlp_status()
@@ -1937,16 +1942,7 @@ class PageAbout(QWidget):
         )
 
     def _refresh_deno_status(self):
-        lbl = getattr(self, "lbl_deno_status", None)
-        if lbl is None:
-            return
-        try:
-            if _find_deno() or _find_node():
-                self._set_comp_status(lbl, True, "可用")
-            else:
-                self._set_comp_status(lbl, False, "未安装")
-        except Exception as e:
-            self._set_comp_status(lbl, False, f"状态检测失败：{e}")
+        self._show_component_state("deno", *_component_state("deno"))
 
     def _on_deno_check(self):
         self._refresh_deno_status()
@@ -1975,16 +1971,7 @@ class PageAbout(QWidget):
         )
 
     def _refresh_git_status(self):
-        lbl = getattr(self, "lbl_git_status", None)
-        if lbl is None:
-            return
-        try:
-            if _find_git():
-                self._set_comp_status(lbl, True, "可用")
-            else:
-                self._set_comp_status(lbl, False, "未安装")
-        except Exception as e:
-            self._set_comp_status(lbl, False, f"状态检测失败：{e}")
+        self._show_component_state("git", *_component_state("git"))
 
     def _on_git_check(self):
         self._refresh_git_status()

@@ -2,12 +2,12 @@
 import json,re,sys,time
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from agent_core.engine import Engine
-from agent_core.errors import Cancelled
-from agent_core.models import ModelConfig
-from agent_core.llm_client import OllamaClient
-from agent_core.store import atomic_json
-from agent_core.workflows.planner import create_task
+from Agent.agent_core.engine import Engine
+from Agent.agent_core.errors import Cancelled
+from Agent.agent_core.models import ModelConfig
+from Agent.agent_core.llm_client import OllamaClient
+from Agent.agent_core.store import atomic_json
+from Agent.agent_core.workflows.planner import create_task
 
 root=Path(sys.argv[1]).resolve();root.mkdir(parents=True,exist_ok=True)
 source=root/'设备维护记录.txt'

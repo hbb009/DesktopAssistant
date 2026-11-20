@@ -4,8 +4,8 @@ from __future__ import annotations
 import os
 import uuid
 
-from PyQt5.QtCore import Qt, QEvent, QSize, QUrl, QFileInfo, QPoint, QRect, QMimeData, QTimer
-from PyQt5.QtGui import QDesktopServices, QFont, QFontMetrics, QPixmap, QDrag, QPainter, QColor, QCursor
+from PyQt5.QtCore import Qt, QEvent, QSize, QUrl, QFileInfo, QPoint, QRect, QRectF, QMimeData, QTimer
+from PyQt5.QtGui import QDesktopServices, QFont, QFontMetrics, QPixmap, QDrag, QPainter, QColor, QCursor, QPen
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QScrollArea, QSizePolicy, QFrame, QFileDialog, QInputDialog,
@@ -19,6 +19,7 @@ from styles.style_all import (
     CARD_TITLE_BODY_GAP, CARD_BOTTOM_GAP,
     message_box_warn,
 )
+from styles.file_drop import FileDropPlaceholder
 from utils.flow_layout import FlowLayout
 from utils.logger import get_logger
 from utils import boot_desk
@@ -26,6 +27,8 @@ from utils import boot_desk
 log = get_logger(__name__)
 
 _CARD_H = 46
+_ITEM_RADIUS = 8
+_PICK_BORDER_COLOR = "#f0a542"
 _DIR_CARD_H = _CARD_H // 2 + 6
 _LIST_GAP = 4
 _APP_W = 72
@@ -34,7 +37,7 @@ _APP_NAME_PX = 12
 _DIR_ICON = 22
 _FOLDER_ICON = 16
 _SITE_ICON = max(12, int(round(_DIR_ICON * 0.7)))
-_HINT = "单击加选，再点减选，双击打开，拖动可调整顺序。目录和程序可以直接拖进来。"
+_HINT = "双击直接打开/运行，单击加选，再点减选，目录/程序可拖拽到对应区域，网站手动录入"
 MIME_BOOT_CARD = "application/x-boot-card"
 DRAG_THRESHOLD = 8
 _MONOGRAM = (
@@ -231,10 +234,10 @@ class _BootItem(QFrame):
         self.setCursor(Qt.OpenHandCursor)
 
     def set_frozen(self, frozen: bool):
-        """这台电脑上没有对应目录或程序时，卡片不响应点击和拖动。"""
+        """目标缺失时禁用打开和拖动，单击仍可选中。"""
         self._frozen = bool(frozen)
         self.setProperty("bootFrozen", self._frozen)
-        self.setCursor(Qt.ArrowCursor if self._frozen else Qt.OpenHandCursor)
+        self.setCursor(Qt.PointingHandCursor if self._frozen else Qt.OpenHandCursor)
         if self._frozen:
             effect = QGraphicsOpacityEffect(self)
             effect.setOpacity(0.4)
@@ -249,14 +252,26 @@ class _BootItem(QFrame):
         key = (self._kind, str(self._item_id or ""))
         return key in getattr(page, "_sel", [])
 
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.property("bootPicked"):
+            # 在原有边框内侧描边，保持卡片尺寸和内容位置。
+            width = 3
+            inset = width / 2
+            rect = QRectF(self.rect()).adjusted(inset, inset, -inset, -inset)
+            radius = _ITEM_RADIUS - inset
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setPen(QPen(QColor(_PICK_BORDER_COLOR), width))
+            painter.drawRoundedRect(rect, radius, radius)
+            painter.end()
+
     def mousePressEvent(self, event):
-        if self._frozen:
-            event.accept()
-            return
         if event.button() == Qt.LeftButton:
             self._press_pos = event.pos()
             self._dragging = False
-            self.setCursor(Qt.ClosedHandCursor)
+            if not self._frozen:
+                self.setCursor(Qt.ClosedHandCursor)
             # 已选中的卡等松开再减选，避免按住拖动排序时把选中弄掉。
             self._toggle_off_on_release = self._selected_now()
             if not self._toggle_off_on_release and callable(self._on_pick):
@@ -276,11 +291,9 @@ class _BootItem(QFrame):
         self._start_drag()
 
     def mouseReleaseEvent(self, event):
-        if self._frozen:
-            event.accept()
-            return
-        self.setCursor(Qt.OpenHandCursor)
-        toggle = self._toggle_off_on_release and not self._dragging
+        if not self._frozen:
+            self.setCursor(Qt.OpenHandCursor)
+        toggle = event.button() == Qt.LeftButton and self._toggle_off_on_release and not self._dragging
         self._press_pos = None
         self._toggle_off_on_release = False
         if toggle and callable(self._on_pick):
@@ -382,7 +395,7 @@ class PageBoot(QWidget):
         bar.addWidget(self.btn_rename, 0)
         bar.addWidget(self.btn_delete, 0)
         self.lbl_status = _ElideLabel(_HINT)
-        self.lbl_status.set_full(_HINT)
+        self.lbl_status.setToolTip(_HINT)
         bar.addWidget(self.lbl_status, 1)
         bar.addWidget(self.btn_startup, 0)
         lay.addLayout(bar)
@@ -407,9 +420,6 @@ class PageBoot(QWidget):
 
         theme.changed.connect(self.restyle_theme)
         self.restyle_theme()
-        self._rebuild_dirs()
-        self._rebuild_sites()
-        self._rebuild_apps()
         self._watch_clicks(self)
         self._apply_pick_style()
 
@@ -556,24 +566,26 @@ class PageBoot(QWidget):
             box.setSpacing(_LIST_GAP)
         host.setProperty("bootFlow", bool(flow))
         scroll.setWidget(host)
+        drop = None
+        if kind in ("dirs", "apps"):
+            description = "拖入文件夹" if kind == "dirs" else "拖入程序或快捷方式"
+            drop = FileDropPlaceholder("boot", description)
+            lay.addWidget(drop, 1)
         lay.addWidget(scroll, 1)
-        return {"card": card, "box": box, "host": host}
+        return {"card": card, "box": box, "host": host, "scroll": scroll, "drop": drop}
 
     @staticmethod
     def _label_qss(color: str) -> str:
         return "background: transparent; border: none; color: %s;" % color
 
     def _item_qss(self, object_name: str, picked: bool = False, frozen: bool = False) -> str:
-        if frozen:
-            border = tk("border")
-            hover = border
-        else:
-            border = tk("accent") if picked else tk("border")
-            hover = tk("accent")
+        border = _PICK_BORDER_COLOR if picked else tk("border")
+        hover = border if picked or frozen else tk("accent")
         return (
-            "QFrame#%s{background:%s;border:1px solid %s;border-radius:8px;}"
-            "QFrame#%s:hover{border:1px solid %s;}"
-        ) % (object_name, tk("panel_2"), border, object_name, hover)
+            f"QFrame#{object_name}{{background:{tk('panel_2')};"
+            f"border:1px solid {border};border-radius:{_ITEM_RADIUS}px;}}"
+            f"QFrame#{object_name}:hover{{border:1px solid {hover};}}"
+        )
 
     def _item_ready(self, kind: str, item: dict) -> bool:
         """网站不依赖这台电脑。目录和程序对不上时，卡片冻结。"""
@@ -637,13 +649,13 @@ class PageBoot(QWidget):
         return lbl
 
     def _rebuild_dirs(self):
-        box = self.card_dirs["box"]
+        section = self.card_dirs
+        box = section["box"]
         self._clear(box)
-        if not self._dirs:
-            box.addWidget(self._empty_label("还没有目录。点「添加」，或把文件夹拖进来。"))
-        else:
-            for item in self._dirs:
-                box.addWidget(self._dir_card(item))
+        section["drop"].setVisible(not self._dirs)
+        section["scroll"].setVisible(bool(self._dirs))
+        for item in self._dirs:
+            box.addWidget(self._dir_card(item))
         box.addStretch(1)
         self._arm_drop_tree(self.card_dirs["card"], "dirs")
         self._apply_pick_style()
@@ -661,18 +673,14 @@ class PageBoot(QWidget):
         self._apply_pick_style()
 
     def _rebuild_apps(self):
-        box = self.card_apps["box"]
+        section = self.card_apps
+        box = section["box"]
         self._clear(box)
-        host = self.card_apps["host"]
-        if not self._apps:
-            box.addWidget(self._empty_label("还没有程序。点「添加」，或把 exe、快捷方式拖进来。"))
-            host.updateGeometry()
-            self._arm_drop_tree(self.card_apps["card"], "apps")
-            self._apply_pick_style()
-            return
+        section["drop"].setVisible(not self._apps)
+        section["scroll"].setVisible(bool(self._apps))
         for item in self._apps:
             box.addWidget(self._app_tile(item))
-        host.updateGeometry()
+        section["host"].updateGeometry()
         self._arm_drop_tree(self.card_apps["card"], "apps")
         self._apply_pick_style()
 
@@ -840,7 +848,7 @@ class PageBoot(QWidget):
 
     def _pick(self, kind: str, item: dict):
         iid = str(item.get("id") or "")
-        if not iid or not self._item_ready(kind, item):
+        if not iid:
             return
         # 已经去点新卡，误清掉的那一组就不再恢复。
         if self._sel_undo:
@@ -866,21 +874,25 @@ class PageBoot(QWidget):
         self._sel = kept
         return out
 
-    def _sel_key_ready(self, key) -> bool:
-        kind, iid = key
-        pool = {"dirs": self._dirs, "sites": self._sites, "apps": self._apps}.get(kind) or []
-        item = next((x for x in pool if str(x.get("id") or "") == str(iid)), None)
-        return item is not None and self._item_ready(kind, item)
-
     def _apply_pick_style(self):
-        self._sel = [key for key in self._sel if self._sel_key_ready(key)]
-        self._sel_undo = [key for key in self._sel_undo if self._sel_key_ready(key)]
+        available = {
+            (kind, item.get("id"))
+            for kind, items in (("dirs", self._dirs), ("sites", self._sites), ("apps", self._apps))
+            for item in items
+        }
+        self._sel = [key for key in self._sel if key in available]
+        self._sel_undo = [key for key in self._sel_undo if key in available]
         chosen = set(self._sel)
         for name in ("BootDirCard", "BootSiteCard", "BootAppTile"):
             for card in self.findChildren(QFrame, name):
                 key = (str(card.property("bootKind") or ""), str(card.property("bootId") or ""))
                 frozen = bool(card.property("bootFrozen"))
-                card.setStyleSheet(self._item_qss(name, key in chosen and not frozen, frozen))
+                picked = key in chosen
+                if card.property("bootPicked") != picked:
+                    card.setProperty("bootPicked", picked)
+                    card.setStyleSheet(self._item_qss(name, picked, frozen))
+                    if frozen:
+                        card.graphicsEffect().setOpacity(0.7 if picked else 0.4)
         items = self._selected_items()
         if hasattr(self, "btn_rename"):
             one = len(items) == 1
@@ -900,6 +912,7 @@ class PageBoot(QWidget):
         if getattr(self.lbl_status, "_full", "") != "选中已取消，可点「恢复选中」。":
             return
         self.lbl_status.set_full(_HINT)
+        self.lbl_status.setToolTip(_HINT)
         self.lbl_status.setStyleSheet(self._label_qss(tk("text")))
 
     def _clear_selection(self):
@@ -1419,6 +1432,7 @@ class PageBoot(QWidget):
         else:
             color = tk("ok") if ok else tk("err")
         self.lbl_status.set_full(text)
+        self.lbl_status.setToolTip(text)
         self.lbl_status.setStyleSheet(self._label_qss(color))
 
     def _open_dir(self, item: dict) -> bool:

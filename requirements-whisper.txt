@@ -1,0 +1,4 @@
+# Install into runtime/whisper, separate from the GPU ONNX Runtime.
+numpy>=1.24,<2
+faster-whisper>=1.2.1,<2
+zhconv>=1.4.2

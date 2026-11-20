@@ -2,13 +2,13 @@
 import json,sys,time
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from agent_core.conversation import inventory,interpret
-from agent_core.models import ModelConfig,Cancellation
-from agent_core.llm_client import OllamaClient
-from agent_core.workflows.planner import create_task
-from agent_core.engine import Engine
-from agent_core.lengths import prose_chars
-from agent_core.store import atomic_json
+from Agent.agent_core.conversation import inventory,interpret
+from Agent.agent_core.models import ModelConfig,Cancellation
+from Agent.agent_core.llm_client import OllamaClient
+from Agent.agent_core.workflows.planner import create_task
+from Agent.agent_core.engine import Engine
+from Agent.agent_core.lengths import prose_chars
+from Agent.agent_core.store import atomic_json
 root=Path(sys.argv[1]).resolve(); root.mkdir(parents=True,exist_ok=True)
 material=root/'materials'; material.mkdir(exist_ok=True)
 for i in range(30): (material/f'无关材料{i:02d}.txt').write_text('这份材料与当前任务无关，不需要读取。',encoding='utf-8')

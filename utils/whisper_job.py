@@ -32,10 +32,10 @@ def _base_dir() -> str:
         return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
-def _local_model_dir(model_size: str) -> str:
+def _local_model_dir(model_size: str, model_root=None) -> str:
     """本地模型：优先 exe 旁 model/，其次包内 resource。"""
     name = f"faster-whisper-{model_size}"
-    beside = os.path.join(_base_dir(), "model", name)
+    beside = os.path.join(model_root or _base_dir(), "model", name)
     if os.path.isdir(beside):
         return beside
     try:
@@ -119,7 +119,7 @@ def transcribe_from_meta(meta_path: str) -> int:
         language = meta.get("language")  # may be null
         force_cpu = bool(meta.get("force_cpu", True))
 
-        local_dir = _local_model_dir(model_size)
+        local_dir = _local_model_dir(model_size, meta.get("model_root"))
         has_local = os.path.isdir(local_dir) and bool(os.listdir(local_dir))
         path_or_name = local_dir if has_local else model_size
 

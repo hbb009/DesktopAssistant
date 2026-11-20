@@ -5,9 +5,30 @@ from __future__ import annotations
 
 from typing import Any, Iterable
 
+from PyQt5.QtCore import QThread, pyqtSignal
+
 from utils.logger import get_logger
 
 log = get_logger("utils.qthread_util")
+
+
+class ResultWorker(QThread):
+    """在后台运行一次非界面操作，将结果传回调用者。"""
+
+    ready = pyqtSignal(object)
+
+    def __init__(self, work, parent=None):
+        super().__init__(parent)
+        self._work = work
+
+    def run(self):
+        try:
+            result = self._work()
+        except Exception:
+            log.exception("后台操作失败")
+            return
+        if not self.isInterruptionRequested():
+            self.ready.emit(result)
 
 
 def stop_qthread(

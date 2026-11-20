@@ -92,17 +92,19 @@ def _is_sep(line: str) -> bool:
     return bool(s) and set(s) <= {"-"} and len(s) >= 3
 
 
-def _read_text(path: str) -> str:
-    if not path or not os.path.isfile(path):
-        return ""
+def _read_text(path: str, *, missing_ok: bool = False) -> str:
     try:
         with open(path, "rb") as f:
             raw = f.read()
-    except Exception:
-        log.exception("读取已下记录失败 path=%s", path)
-        return ""
+    except FileNotFoundError:
+        if missing_ok:
+            return ""
+        raise
     from utils.gallery_records import _decode_record_bytes
-    return _decode_record_bytes(raw) or ""
+    text = _decode_record_bytes(raw)
+    if raw and not text:
+        raise ValueError(f"无法解码已下记录：{path}")
+    return text or ""
 
 
 def _atomic_write(path: str, text: str) -> None:
@@ -202,10 +204,10 @@ def _order(blocks) -> list:
 
 
 def _legacy_roots() -> list:
-    from utils.app_paths import _data_root_dir, _records_root_dir, _userdata_root_dir
+    from utils.app_paths import _data_root_dir, _log_root_dir, _records_root_dir, _userdata_root_dir
     found = []
     seen = set()
-    for d in (_userdata_root_dir(), _records_root_dir(), _data_root_dir()):
+    for d in (_userdata_root_dir(), _records_root_dir(), _data_root_dir(), _log_root_dir()):
         if not d or not os.path.isdir(d):
             continue
         key = os.path.normcase(os.path.abspath(d))
@@ -216,16 +218,13 @@ def _legacy_roots() -> list:
     return found
 
 
-def _legacy_paths() -> list:
-    """[(绝对路径, 无标题时归入的段或 None)]。不含总表自己。"""
-    dest = os.path.normcase(os.path.abspath(downloaded_path()))
+def _legacy_paths(roots) -> list:
+    """扫描旧分区文件。"""
     out = []
-    for root in _legacy_roots():
+    for root in roots:
         for name, forced in _LEGACY_FILES:
             path = os.path.join(root, name)
             if not os.path.isfile(path):
-                continue
-            if os.path.normcase(os.path.abspath(path)) == dest:
                 continue
             out.append((path, forced))
     return out
@@ -399,13 +398,13 @@ def _compose(existing_text: str, legacies) -> str:
     return render_blocks(_order(blocks))
 
 
-def _locked(mutator):
-    """mutator(text) -> (new_text, result)。整文件锁内读写。"""
-    path = downloaded_path()
+def _locked(mutator, *, path=None):
+    """锁内读取并更新总表，读取失败时保留原文件。"""
+    path = path or downloaded_path()
     from utils.photo_viewer_cfg import prefs_file_lock
     with _THREAD_LOCK:
         with prefs_file_lock(path):
-            current = _read_text(path)
+            current = _read_text(path, missing_ok=True)
             new_text, result = mutator(current)
             if new_text is None:
                 new_text = current
@@ -414,36 +413,51 @@ def _locked(mutator):
             return result
 
 
+def merge_legacy_download_records(destination, roots) -> bool:
+    """合并旧分区。所有源成功读取且总表落盘之后才清理。"""
+    destination = os.fspath(destination)
+    removed = False
+    from utils.photo_viewer_cfg import prefs_file_lock
+
+    with _THREAD_LOCK, prefs_file_lock(destination):
+        legacies = _legacy_paths(roots)
+        if not legacies:
+            return False
+        current = _read_text(destination, missing_ok=True)
+        merged = _compose(current, legacies)
+        if merged != current:
+            _atomic_write(destination, merged)
+        for path, _forced in legacies:
+            try:
+                os.remove(path)
+                removed = True
+            except OSError:
+                log.exception("清理已合并的旧记录失败 path=%s", path)
+    if removed:
+        log.info("已下记录已并入 %s", destination)
+    return removed
+
+
 def migrate_legacy_download_records() -> bool:
-    """把旧的四份防重文件并入 downloaded.txt，成功后删除旧文件。"""
-    legacies = _legacy_paths()
-    if not legacies:
-        return False
     try:
-        def mutator(current):
-            merged = _compose(current, legacies)
-            return merged, True
-        _locked(mutator)
-    except Exception:
+        roots = _legacy_roots()
+        if not _legacy_paths(roots):
+            return False
+        return merge_legacy_download_records(downloaded_path(), roots)
+    except (OSError, ValueError):
         log.exception("合并已下记录失败")
         return False
-    removed = False
-    for path, _forced in legacies:
-        try:
-            os.remove(path)
-            removed = True
-        except OSError:
-            log.exception("删除旧已下记录失败 path=%s", path)
-    if removed:
-        log.info("已下记录已并入 %s", downloaded_path())
-    return removed
 
 
 def read_sections_text(names) -> str:
     """读出这些段，拼回带 # 标题的文本。"""
     migrate_legacy_download_records()
     wanted = set(names or [])
-    text = _read_text(downloaded_path())
+    try:
+        text = _read_text(downloaded_path(), missing_ok=True)
+    except (OSError, ValueError):
+        log.exception("读取已下记录失败")
+        return ""
     blocks = [(name, body) for name, body in parse_blocks(text) if name in wanted]
     return render_blocks(blocks)
 

@@ -14,6 +14,8 @@ Thumbs.db
 Desktop.ini
 .DS_Store
 # Personal data / large (kept locally, not in git)
+/runtime/
+/.deskassist-restore-*/
 temp/
 log/
 logs/

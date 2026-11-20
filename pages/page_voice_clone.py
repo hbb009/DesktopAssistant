@@ -10,6 +10,7 @@ import os
 import random
 import re
 import time
+from collections import deque
 from datetime import datetime
 
 from PyQt5.QtCore import Qt, QTimer, QSize, QUrl, QRect, QRectF, QPoint, QPointF, QEvent, pyqtSignal
@@ -54,6 +55,7 @@ from utils.cosyvoice_clone import (
     prepare_reference_audio,
     work_dir,
 )
+from styles.file_drop import file_drop_pixmap, file_drop_style
 from utils.flow_layout import FlowLayout
 from utils.logger import get_logger
 
@@ -877,18 +879,20 @@ class _VoiceBoard(QFrame):
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.setAcceptDrops(True)
         self.setCursor(Qt.ArrowCursor)
+        self.setToolTip("拖入音频文件")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.setMinimumHeight(_VOICE_CARD_H)
+        self.setMinimumHeight(_VOICE_CARD_H + 12)
         self._hover = False
 
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setContentsMargins(6, 6, 6, 6)
         lay.setSpacing(0)
 
-        self.empty = QLabel("")
+        self.empty = QLabel()
         self.empty.setObjectName("VoiceCloneBoardEmpty")
         self.empty.setAlignment(Qt.AlignCenter)
         self.empty.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.empty.setPixmap(file_drop_pixmap(self.empty))
         lay.addWidget(self.empty, 1)
 
         self.host = _FlowHost()
@@ -1006,25 +1010,18 @@ class _VoiceBoard(QFrame):
         self.fit_host()
 
     def refresh_theme(self, *_):
-        try:
-            dim = tk("text_dim")
-        except Exception:
-            dim = "#94a3b8"
-        # 虚线框改 paintEvent 叠画，stylesheet 永远 border:none，避免拖入时挤布局
+        style = file_drop_style("auk", active=self._hover)
         self.setStyleSheet(
-            f"QFrame#VoiceCloneBoard{{background:transparent;color:{dim};"
-            f"border:none;}}"
-            f"QLabel#VoiceCloneBoardEmpty{{background:transparent;color:{dim};"
-            f"border:none;font-size:14px;}}"
+            f"QFrame#VoiceCloneBoard{{{style}}}"
+            "QLabel#VoiceCloneBoardEmpty{background:transparent;border:none;}"
         )
-        self.update()
 
     def _set_drop_hover(self, on: bool):
         on = bool(on)
         if self._hover == on:
             return
         self._hover = on
-        self.update()
+        self.refresh_theme()
 
     def _drop_cursor_inside(self) -> bool:
         """子控件之间切换也会冒 DragLeave，用光标判断是否还在板内。"""
@@ -1032,26 +1029,6 @@ class _VoiceBoard(QFrame):
             return self.rect().contains(self.mapFromGlobal(QCursor.pos()))
         except Exception:
             return False
-
-    def paintEvent(self, e):
-        super().paintEvent(e)
-        if not self._hover:
-            return
-        try:
-            acc = QColor(tk("accent"))
-        except Exception:
-            acc = QColor("#3b82f6")
-        if not acc.isValid():
-            acc = QColor("#3b82f6")
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        pen = QPen(acc, 1, Qt.DashLine)
-        pen.setDashPattern([4, 3])
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
-        r = QRectF(self.rect()).adjusted(0.5, 0.5, -0.5, -0.5)
-        p.drawRoundedRect(r, 8, 8)
-        p.end()
 
     def dragEnterEvent(self, e: QDragEnterEvent):
         md = e.mimeData() if e is not None else None
@@ -1594,6 +1571,13 @@ class PageVoiceClone(QWidget):
         self._elapsed = 0
         self._loading = False
         self._voice_cards = []
+        self._history_signature = None
+        self._history_queue = deque()
+        self._history_selected_path = ""
+        self._history_timer = QTimer(self)
+        self._history_timer.setSingleShot(True)
+        self._history_timer.setInterval(16)
+        self._history_timer.timeout.connect(self._append_history_batch)
         self._play_click_at = 0.0
         self._voice_drag = None
         self._voice_drag_ghost = None
@@ -3351,11 +3335,12 @@ class PageVoiceClone(QWidget):
         if recs is None:
             return
         w = self._hist_row_width()
+        size = QSize(w, _ROW_H)
         for i in range(recs.count()):
             it = recs.item(i)
-            if it is None:
+            if it is None or it.sizeHint() == size:
                 continue
-            it.setSizeHint(QSize(w, _ROW_H))
+            it.setSizeHint(size)
             row = recs.itemWidget(it)
             if row is not None:
                 try:
@@ -3369,11 +3354,20 @@ class PageVoiceClone(QWidget):
         AUK 页签跑出来的成品也落在这个目录，靠 utils.auk_client 的任务索引
         把「任务名 + 素材名」还原成行首文字；索引里没有就退回文件名。
         """
-        self.records.clear()
         folder = self._resolve_save_dir()
         try:
-            names = os.listdir(folder)
-        except Exception:
+            with os.scandir(folder) as entries:
+                files = []
+                for entry in entries:
+                    if not _is_clone_output_name(entry.name):
+                        continue
+                    try:
+                        if entry.is_file():
+                            st = entry.stat()
+                            files.append((st.st_mtime_ns, st.st_size, entry.name))
+                    except OSError:
+                        continue
+        except OSError:
             log.exception("扫描 VoiceClone 失败 dir=%s", folder)
             return
         try:
@@ -3381,31 +3375,46 @@ class PageVoiceClone(QWidget):
             titles = task_titles()
         except Exception:
             titles = {}
-        rows = []
-        for name in names:
-            if not _is_clone_output_name(name):
-                continue
-            fp = os.path.normpath(os.path.join(folder, name))
-            if not os.path.isfile(fp):
-                continue
-            try:
-                st = os.stat(fp)
-            except Exception:
-                continue
-            stem = os.path.splitext(name)[0]
+        files.sort(key=lambda file: (file[0], file[2].casefold()))
+        files = files[-_HIST_MAX:]
+        signature = (
+            folder, tuple(files), tuple(titles.get(name.lower()) for _, _, name in files),
+            tuple((_display_name(card.rec or {}), card.color()) for card in self._voice_cards),
+        )
+        if signature == self._history_signature:
+            return
+        self._history_signature = signature
+
+        selected = self.records.currentItem()
+        selected_rec = selected.data(Qt.UserRole) if selected is not None else None
+        path = selected_rec.get("path") if isinstance(selected_rec, dict) else ""
+        self._history_selected_path = _norm_path(path)
+        self.records.clear()
+        self._history_queue = deque(
+            (modified_ns, nbytes, os.path.join(folder, name), titles.get(name.lower()))
+            for modified_ns, nbytes, name in files
+        )
+        self._history_timer.start()
+
+    def _append_history_batch(self):
+        for _ in range(min(5, len(self._history_queue))):
+            modified_ns, nbytes, filename, title = self._history_queue.popleft()
+            fp = os.path.normpath(filename)
+            stem = os.path.splitext(os.path.basename(fp))[0]
             rec = {
                 "path": fp,
-                "text": titles.get(name.lower()) or stem,
-                "ts": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
-                "size": int(st.st_size),
+                "text": title or stem,
+                "ts": datetime.fromtimestamp(modified_ns / 1_000_000_000).strftime("%Y-%m-%d %H:%M:%S"),
+                "size": nbytes,
                 "dur": _wav_header_dur(fp),
                 "voice_color": self._guess_output_voice_color(stem),
             }
-            rows.append((st.st_mtime, rec))
-        rows.sort(key=lambda x: x[0])
-        for _, rec in rows[-_HIST_MAX:]:
-            self._add_record(rec, select=False)
-        if self.records.count():
+            restore = self._history_selected_path == _norm_path(fp) and self.records.currentItem() is None
+            self._add_record(rec, select=restore)
+        if self._history_queue:
+            self._history_timer.start()
+            return
+        if self.records.count() and self.records.currentItem() is None:
             self.records.scrollToBottom()
         QTimer.singleShot(0, self._relayout_history_rows)
 
@@ -3959,6 +3968,8 @@ class PageVoiceClone(QWidget):
         self._refresh_synth_enabled()
 
     def shutdown(self):
+        self._history_timer.stop()
+        self._history_queue.clear()
         try:
             self._elapsed_timer.stop()
         except Exception:

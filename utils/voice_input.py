@@ -33,7 +33,9 @@ def _refresh_pkg_finders() -> None:
 
 # 轻量探测：find_spec 几乎瞬时；真正 import 推迟到录音/转写时
 HAS_SOUNDDEVICE = _pkg_available("sounddevice") and _pkg_available("numpy")
-HAS_FASTER_WHISPER = _pkg_available("faster_whisper")
+from utils.whisper_runtime import isolated_whisper_command, whisper_available
+
+HAS_FASTER_WHISPER = whisper_available()
 
 SAMPLE_RATE = 16000  # whisper 原生 16k 单声道
 
@@ -528,7 +530,7 @@ def voice_deps_ok() -> tuple:
     global HAS_SOUNDDEVICE, HAS_FASTER_WHISPER
     _refresh_pkg_finders()
     HAS_SOUNDDEVICE = _pkg_available("sounddevice") and _pkg_available("numpy")
-    HAS_FASTER_WHISPER = _pkg_available("faster_whisper")
+    HAS_FASTER_WHISPER = whisper_available()
     missing = []
     if not HAS_SOUNDDEVICE:
         missing.append("sounddevice")
@@ -687,6 +689,7 @@ def _run_whisper_job(
         meta = dict(build_meta(td) or {})
         meta["out"] = out_path
         meta["err"] = err_path
+        meta["model_root"] = base_dir()
         meta_path = os.path.join(td, "meta.json")
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False)
@@ -698,7 +701,10 @@ def _run_whisper_job(
             frozen = is_frozen()
         except Exception:
             frozen = bool(getattr(sys, "frozen", False)) or hasattr(sys, "_MEIPASS")
-        if frozen:
+        isolated = isolated_whisper_command()
+        if isolated:
+            cmd = [*isolated, meta_path]
+        elif frozen:
             cmd = [sys.executable, "--whisper-job", meta_path]
         else:
             cmd = [sys.executable, "-m", "utils.whisper_job", meta_path]

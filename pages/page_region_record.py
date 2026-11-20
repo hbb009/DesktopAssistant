@@ -52,6 +52,7 @@ from utils.region_recorder import (
 )
 from utils.logger import get_logger
 from utils.file_utils import ensure_dir
+from utils.qthread_util import ResultWorker, stop_qthread
 
 log = get_logger(__name__)
 
@@ -1090,6 +1091,8 @@ class PageRegionRecord(QWidget):
         self._thumb_cache = {}  # video -> thumb path
         self._meta_worker = None
         self._meta_cache = {}  # video -> (mtime, w, h, duration)
+        self._ffmpeg_worker = None
+        self._last_list_signature = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -1267,7 +1270,20 @@ class PageRegionRecord(QWidget):
             self.btn_clear_region.setEnabled(True)
 
     def _update_ffmpeg_label(self):
-        if find_ffmpeg():
+        if self._ffmpeg_worker is not None:
+            return
+        worker = ResultWorker(find_ffmpeg, self)
+        self._ffmpeg_worker = worker
+        worker.ready.connect(self._show_ffmpeg_status)
+        worker.finished.connect(self._finish_ffmpeg_check)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _finish_ffmpeg_check(self):
+        self._ffmpeg_worker = None
+
+    def _show_ffmpeg_status(self, path):
+        if path:
             self.lbl_ffmpeg.setText("依赖：ffmpeg 已就绪")
             self.lbl_ffmpeg.setStyleSheet(TEXT_STYLE_T + f" color:{tk('ok')};")
         else:
@@ -1833,35 +1849,38 @@ class PageRegionRecord(QWidget):
         worker.ready.connect(_ok)
         worker.start()
 
-    def refresh_list(self):
+    def refresh_list(self, *, force=False):
+        folder = self._resolve_save_dir()
+        files = []
+        try:
+            with os.scandir(folder or "") as entries:
+                for entry in entries:
+                    if not entry.name.lower().endswith((".mp4", ".mkv", ".webm", ".avi")):
+                        continue
+                    try:
+                        if entry.is_file():
+                            info = entry.stat()
+                            files.append((info.st_mtime, info.st_size, entry.path, entry.name))
+                    except OSError:
+                        continue
+        except FileNotFoundError:
+            pass
+        except OSError:
+            log.exception("扫描录像目录失败")
+        files.sort(key=lambda record: (record[0], record[3].casefold()), reverse=True)
+        files = files[:80]
+        signature = (folder, tuple(files))
+        if not force and signature == self._last_list_signature:
+            return
+        self._last_list_signature = signature
         cur_path = self._selected_path()
         self._stop_thumb_worker()
         self._stop_meta_worker()
         self.list_files.clear()
-        folder = self._resolve_save_dir()
-        if not folder or not os.path.isdir(folder):
-            return
-        files = []
-        try:
-            for name in os.listdir(folder):
-                if not name.lower().endswith((".mp4", ".mkv", ".webm", ".avi")):
-                    continue
-                fp = os.path.join(folder, name)
-                if os.path.isfile(fp):
-                    try:
-                        mtime = os.path.getmtime(fp)
-                        size = os.path.getsize(fp)
-                    except Exception:
-                        mtime, size = 0, 0
-                    files.append((mtime, size, fp, name))
-        except Exception:
-            log.exception("扫描录像目录失败")
-            return
-        files.sort(key=lambda t: t[0], reverse=True)
         restore = None
         pending_thumbs = []
         pending_meta = []
-        for mtime, size, fp, name in files[:80]:
+        for mtime, size, fp, name in files:
             sz = _fmt_size(size)
             item = QListWidgetItem()
             item.setData(Qt.UserRole, fp)
@@ -2012,7 +2031,7 @@ class PageRegionRecord(QWidget):
             pass
         # 主题切换：行内文案 + 占位图底色（真实缩略图比例不变，整表刷新最稳）
         try:
-            self.refresh_list()
+            self.refresh_list(force=True)
         except Exception:
             pass
 
@@ -2023,6 +2042,7 @@ class PageRegionRecord(QWidget):
         self.refresh_list()
 
     def shutdown(self):
+        stop_qthread(self._ffmpeg_worker, name="ffmpeg_check")
         self._tick.stop()
         self._unbind_hotkeys()
         if self._recorder.is_recording:

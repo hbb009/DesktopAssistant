@@ -104,6 +104,10 @@ _NAV_COLORS = {
 }
 
 
+def side_nav_colors(key: str):
+    return _NAV_COLORS.get(key, ("#64748B", "#475569"))
+
+
 def _fill_badge(p: QPainter, s: float, c0: str, c1: str):
     m = s * 0.06
     body = QRectF(m, m, s - 2 * m, s - 2 * m)
@@ -587,7 +591,7 @@ def _raster_nav(key: str, px: int) -> QPixmap:
     pm.fill(Qt.transparent)
     p = _new_painter(pm)
     s = float(px)
-    c0, c1 = _NAV_COLORS.get(key, ("#64748B", "#475569"))
+    c0, c1 = side_nav_colors(key)
     _fill_badge(p, s, c0, c1)
     drawer = _DRAWERS.get(key)
     if drawer:

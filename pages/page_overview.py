@@ -746,6 +746,8 @@ class PageOverview(QWidget):
 
     def shutdown(self):
         """主窗口关窗：停资源监控定时器。"""
+        if self.about_section is not None:
+            self.about_section.shutdown()
         ov = getattr(self, "_color_overlay", None)
         if ov is not None:
             try:

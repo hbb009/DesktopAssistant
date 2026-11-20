@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import sys
@@ -73,7 +74,6 @@ _MIGRATED_GA = False
 _MIGRATED_VC = False
 _MIGRATED_VE = False
 _MIGRATED_FLAT = False
-_MIGRATED_RECORDS_SPLIT = False
 _MIGRATED_USERDATA = False
 
 
@@ -115,12 +115,7 @@ def _move_entry(src: str, dst: str) -> None:
             return
         _rmdir_if_empty(src)
         return
-    # 目标已有同名文件：保留新位置，尽量清掉旧文件
-    try:
-        if os.path.isfile(src):
-            os.remove(src)
-    except Exception:
-        pass
+    # 同名目标已存在时保留源文件，便于找回不同版本。
 
 
 def _migrate_legacy_data_once() -> None:
@@ -140,15 +135,6 @@ def _migrate_legacy_data_once() -> None:
         os.makedirs(dest, exist_ok=True)
     except Exception:
         return
-
-    old_records = os.path.join(root, "records")
-    if os.path.isdir(old_records) and _norm(old_records) != _norm(dest):
-        try:
-            for name in os.listdir(old_records):
-                _move_entry(os.path.join(old_records, name), os.path.join(dest, name))
-        except Exception:
-            pass
-        _rmdir_if_empty(old_records)
 
     old_gallery = os.path.join(root, "gallery")
     if os.path.isdir(old_gallery) and _norm(old_gallery) != _norm(dest):
@@ -810,8 +796,7 @@ def flatten_data_subdirs() -> None:
       guides   → guide_*
       prompts  → prompts_editor.txt / prompts_history.txt
       voice_clone → voice_clone_history.txt
-    同时兼容旧备份仍把这些子目录落在 data/ 的情况：先平铺到 data，再由
-    _migrate_user_records_split_once 挪进 records/。
+    旧目录中的记录在平铺后统一迁入 userdata/。
     """
     for root in (_records_root_dir(), _data_root_dir(), _log_root_dir()):
         if not os.path.isdir(root):
@@ -883,39 +868,6 @@ def _is_user_record_filename(name: str) -> bool:
     if name.startswith("prompts_"):
         return True
     return False
-
-
-def _migrate_user_records_split_once() -> None:
-    """把 data/ 里的用户创造数据迁到 records/（只跑一次）。
-
-    data/ 仅保留程序运行数据：user.txt、app.log、crash_*.log 等。
-    """
-    global _MIGRATED_RECORDS_SPLIT
-    if _MIGRATED_RECORDS_SPLIT:
-        return
-    _MIGRATED_RECORDS_SPLIT = True
-
-    data = _data_root_dir()
-    rec = _records_root_dir()
-    if not os.path.isdir(data):
-        return
-    try:
-        names = list(os.listdir(data))
-    except Exception:
-        return
-    # Only move into records/ if it already exists OR we still need a staging dir.
-    # Prefer moving straight to userdata via later _migrate_userdata_once; here keep
-    # legacy split only when records/ already present (do not create new records/).
-    if not os.path.isdir(rec):
-        return
-    for name in names:
-        if not _is_user_record_filename(name):
-            continue
-        src = os.path.join(data, name)
-        if not os.path.isfile(src):
-            continue
-        _move_entry(src, os.path.join(rec, name))
-
 
 
 _MIGRATED_DATA_TO_LOG = False
@@ -1086,7 +1038,6 @@ def ensure_data_layout() -> str:
     _migrate_voice_clone_once()
     _migrate_voice_edit_once()
     _flatten_data_subdirs_once()
-    _migrate_user_records_split_once()
     _migrate_userdata_once()
     _migrate_data_to_log_once()
     _remove_empty_records_dir()
@@ -1116,22 +1067,6 @@ def ensure_data_layout() -> str:
 def _userdata_root_dir() -> str:
     """userdata/ absolute path (no ensure; avoid recursion)."""
     return os.path.join(app_root(), "userdata")
-
-
-def _copy_file_if_needed(src: str, dst: str) -> bool:
-    """Copy src -> dst when dst missing. Returns True if copied."""
-    try:
-        if not os.path.isfile(src):
-            return False
-        if os.path.exists(dst):
-            return False
-        parent = os.path.dirname(dst)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        shutil.copy2(src, dst)
-        return True
-    except Exception:
-        return False
 
 
 def _convert_pre_download_json_to_txt(src: str, dst_txt: str) -> bool:
@@ -1198,62 +1133,106 @@ def _convert_pre_download_json_to_txt(src: str, dst_txt: str) -> bool:
         return False
 
 
-def _migrate_userdata_once() -> None:
-    """Copy records/ + selected data/ files into userdata/ with .txt renames.
+_LEGACY_USERDATA_RENAMES = {
+    "gamemeet_history.json": "gamemeet_history.txt",
+    "prompts_editor.json": "prompts_editor.txt",
+    "prompts_history.jsonl": "prompts_history.txt",
+    "voice_clone_history.jsonl": "voice_clone_history.txt",
+}
 
-    Safer than move: old paths stay for read fallbacks. Idempotent.
-    """
+
+def legacy_userdata_entries(source):
+    """Yield source file and canonical relative names for legacy user data."""
+    from pathlib import Path
+
+    source = Path(source)
+    if not source.is_dir():
+        return
+    items = sorted(source.iterdir(), key=lambda item: item.name.casefold())
+    for item in items:
+        name = item.name.casefold()
+        if item.is_file() and (
+            name in ("user.txt", "downloaded.txt", "gamemeet_history.txt")
+            or name in _LEGACY_USERDATA_RENAMES
+            or _is_user_record_filename(name)
+        ):
+            if name == "pre_download.json":
+                yield item, Path("pre_download.txt")
+            else:
+                yield item, Path(_LEGACY_USERDATA_RENAMES.get(name, name if name in _USER_RECORD_EXACT else item.name))
+
+    for subdir, prefix in (("cards", "card_"), ("gallery", ""), ("guides", "guide_"),
+                           ("prompts", "prompts_"), ("voice_clone", ""), ("auk", "")):
+        folder = source / subdir
+        if not folder.is_dir():
+            continue
+        for item in folder.iterdir():
+            if not item.is_file():
+                continue
+            if subdir == "voice_clone":
+                if item.name.casefold() == "history.jsonl":
+                    yield item, Path("voice_clone_history.txt")
+            elif subdir == "auk":
+                yield item, Path("auk", item.name)
+            elif subdir == "prompts":
+                yield item, Path(_prompts_flat_name(item.name))
+            elif subdir != "gallery" or item.name.casefold() in {
+                "downloaded.txt", "gallery_eh.txt", "gallery_hitomi.txt", "other_video.txt", "qishui.txt"
+            }:
+                name = item.name if item.name.startswith(prefix) else prefix + item.name
+                yield item, Path(name)
+
+
+def copy_legacy_userdata_file(source, destination):
+    """Copy a single legacy record atomically, converting the old queue if needed."""
+    from pathlib import Path
+    from tempfile import NamedTemporaryFile
+
+    destination = Path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if source.name.casefold() == "pre_download.json":
+        if not _convert_pre_download_json_to_txt(os.fspath(source), os.fspath(destination)):
+            raise ValueError(f"无法转换旧预下载队列：{source}")
+        return
+    with NamedTemporaryFile(dir=destination.parent, suffix=".tmp", delete=False) as temp:
+        staged = Path(temp.name)
+    try:
+        shutil.copy2(source, staged)
+        os.replace(staged, destination)
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+def _migrate_userdata_once() -> None:
+    """Recover user records from legacy startup layouts and older faulty imports."""
+    from pathlib import Path
+
     global _MIGRATED_USERDATA
     if _MIGRATED_USERDATA:
         return
-
-    ud = _userdata_root_dir()
-    try:
-        os.makedirs(ud, exist_ok=True)
-    except Exception:
-        return
-
-    rec = _records_root_dir()
-    data = _data_root_dir()
-
-    if os.path.isdir(rec) and os.path.normcase(os.path.abspath(rec)) != os.path.normcase(os.path.abspath(ud)):
+    target = Path(_userdata_root_dir())
+    roots = (Path(_records_root_dir()), Path(_data_root_dir()), Path(_log_root_dir()))
+    logger = logging.getLogger("deskassist.utils.app_paths")
+    for root in roots:
+        marker = root / ".userdata-migrated"
+        if marker.exists():
+            continue
         try:
-            for name in os.listdir(rec):
-                src = os.path.join(rec, name)
-                if not os.path.isfile(src):
-                    continue
-                new_name = _USERDATA_RENAME.get(name, name)
-                if name == "pre_download.json":
-                    dst_txt = os.path.join(ud, "pre_download.txt")
-                    if not _convert_pre_download_json_to_txt(src, dst_txt):
-                        pass  # leave conversion failure; do not keep json in userdata
-                    continue
-                _copy_file_if_needed(src, os.path.join(ud, new_name))
-        except Exception:
-            pass
-
-    _copy_file_if_needed(os.path.join(data, "user.txt"), os.path.join(ud, "user.txt"))
-
-    gsrc = os.path.join(data, "gamemeet_history.json")
-    gdst = os.path.join(ud, "gamemeet_history.txt")
-    if os.path.isfile(gsrc) and not os.path.exists(gdst):
-        try:
-            shutil.copy2(gsrc, gdst)
-        except Exception:
-            pass
-
-    auk_src = os.path.join(data, "auk")
-    auk_dst = os.path.join(ud, "auk")
-    if os.path.isdir(auk_src):
-        try:
-            os.makedirs(auk_dst, exist_ok=True)
-            for name in os.listdir(auk_src):
-                s = os.path.join(auk_src, name)
-                if os.path.isfile(s):
-                    _copy_file_if_needed(s, os.path.join(auk_dst, name))
-        except Exception:
-            pass
-
+            entries = [
+                (source, relative) for source, relative in legacy_userdata_entries(root)
+                if relative.name not in {"gallery_eh.txt", "gallery_hitomi.txt", "other_video.txt", "qishui.txt"}
+            ]
+            # Prefer an existing canonical-format source to an older variant.
+            entries.sort(key=lambda entry: entry[0].name.casefold() != entry[1].name.casefold())
+            for source, relative in entries:
+                destination = target / relative
+                if not destination.exists():
+                    copy_legacy_userdata_file(source, destination)
+            if entries:
+                marker.touch()
+        except (OSError, ValueError):
+            logger.exception("迁移旧用户记录失败 path=%s", root)
+            return
     _MIGRATED_USERDATA = True
 
 

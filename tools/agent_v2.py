@@ -9,11 +9,11 @@ ROOT=Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0,str(ROOT))
 
-from agent_core.engine import Engine
-from agent_core.llm_client import OllamaClient
-from agent_core.models import Cancellation, ModelConfig
-from agent_core.store import TaskStore
-from agent_core.workflows.documents import create_document_task
+from Agent.agent_core.engine import Engine
+from Agent.agent_core.llm_client import OllamaClient
+from Agent.agent_core.models import Cancellation, ModelConfig
+from Agent.agent_core.store import TaskStore
+from Agent.agent_core.workflows.documents import create_document_task
 
 
 def main():

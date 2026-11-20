@@ -42,6 +42,7 @@ from utils.gameassist import (
     source_group,
     index_subset_for_groups,
 )
+from styles.file_drop import FileDropPlaceholder, paint_file_drop_outline
 from utils.flow_layout import FlowLayout
 from utils.logger import get_logger
 from utils.qthread_util import stop_qthread
@@ -482,7 +483,7 @@ def _local_file_urls(md) -> list:
 
 
 class _KbFileDropOverlay(QWidget):
-    """整张「知识库」卡的拖放高亮浮层：圆角淡色填充 + 虚线描边。
+    """整张「知识库」卡的拖放虚线描边。
 
     置顶、鼠标穿透，不拦截底下交互；文件拖入知识库区域时显示，
     松开/移出后隐藏。作为 card 的子控件自动跟随 card 尺寸。
@@ -515,16 +516,7 @@ class _KbFileDropOverlay(QWidget):
 
     def paintEvent(self, _e):
         p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing, True)
-        try:
-            accent = QColor(tk("accent"))
-        except Exception:
-            accent = QColor("#3a8ee0")
-        pen = QPen(accent, 2.0)
-        pen.setStyle(Qt.DashLine)
-        p.setPen(pen)
-        p.setBrush(Qt.NoBrush)
-        p.drawRoundedRect(self.rect().adjusted(1, 1, -1, -1), 8.0, 8.0)
+        paint_file_drop_outline(p, self.rect(), "gameassist", active=True)
         p.end()
 
     def showEvent(self, event):
@@ -1849,12 +1841,12 @@ class PageGameAssist(QWidget):
                 flow.addWidget(card)
                 sec["cards"].append(card)
             outer.addWidget(flow_host)
+        elif uncat:
+            drop = FileDropPlaceholder("gameassist", "拖入文本文件，导入后放到「未分类」")
+            drop.setMinimumHeight(max(drop.minimumHeight(), _KB_CARD_H))
+            outer.addWidget(drop)
         else:
-            # 空分类也要保留“一张卡高”的放置区，方便直接拖进
-            if uncat:
-                hint = "暂无内容 · 新添加的文件夹/文件会落在这里（不参与回答）"
-            else:
-                hint = "还没有卡片 · 把卡片拖到这里即放入本分类"
+            # 空分类也要保留一张卡的高度，便于移动已有知识卡。
             flow_host = QWidget()
             flow_host.setObjectName("GameAssistKbFlow")
             flow_host.setAttribute(Qt.WA_StyledBackground, True)
@@ -1864,7 +1856,7 @@ class PageGameAssist(QWidget):
             vb = QVBoxLayout(flow_host)
             vb.setContentsMargins(0, 0, 0, 0)
             vb.addStretch(1)
-            empty = QLabel(hint)
+            empty = QLabel("还没有卡片 · 把卡片拖到这里即放入本分类")
             empty.setAlignment(Qt.AlignCenter)
             empty.setWordWrap(True)
             empty.setStyleSheet(

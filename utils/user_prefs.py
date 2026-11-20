@@ -21,6 +21,7 @@ from copy import deepcopy
 from typing import Any, Dict, Optional, Tuple
 
 from utils.logger import get_logger
+from utils.prefs_secrets import protect_api_keys, unlock_api_keys
 
 log = get_logger(__name__)
 
@@ -289,7 +290,9 @@ def default_prefs() -> Dict[str, Any]:
     return {
         "version": _PREFS_VERSION,
         "fast_save": {
-            "enabled": False,
+            "images_enabled": False,
+            "text_enabled": False,
+            "mkdir_enabled": False,
             "save_path": "",
             "txt_hotkey": "F4",
             "mkdir_hotkey": "F8",
@@ -557,6 +560,20 @@ def _migrate_gameassist_prefs(data: Dict[str, Any]) -> Dict[str, Any]:
     return data
 
 
+def _migrate_fast_save_prefs(data: Dict[str, Any]) -> None:
+    fast = data.get("fast_save")
+    if not isinstance(fast, dict):
+        return
+    if "enabled" in fast:
+        enabled = bool(fast.pop("enabled"))
+        fast["images_enabled"] = enabled and bool(fast.get("images_enabled", True))
+        other_enabled = enabled and not bool(fast.get("images_only"))
+        fast.setdefault("text_enabled", other_enabled)
+        fast.setdefault("mkdir_enabled", other_enabled)
+    for key in ("images_only", "image_mode", "new_image_save"):
+        fast.pop(key, None)
+
+
 def _deep_merge(base: Dict[str, Any], overlay: Dict[str, Any]) -> Dict[str, Any]:
     """用 overlay 覆盖 base（嵌套 dict 递归合并，其它类型整段替换）。"""
     out = deepcopy(base)
@@ -696,6 +713,8 @@ def load_user_prefs() -> Tuple[Dict[str, Any], bool]:
             return default_prefs(), True
         log.debug("user.txt 读取成功 path=%s", path)
         data = _migrate_gameassist_prefs(data)
+        _migrate_fast_save_prefs(data)
+        unlock_api_keys(data)
         merged = _deep_merge(default_prefs(), data)
         try:
             from utils.app_paths import rebase_public_save_prefs
@@ -792,6 +811,7 @@ def save_user_prefs(prefs: Dict[str, Any]) -> bool:
                             box["auto_fit"] = bool(adopted)
             except Exception:
                 log.exception("合并看图自适应失败")
+            protect_api_keys(payload)
             tmp = path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(payload, f, ensure_ascii=False, indent=2)

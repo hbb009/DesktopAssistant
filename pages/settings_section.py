@@ -1306,7 +1306,14 @@ class SettingsSection(QWidget):
         box = QVBoxLayout(card)
         box.setContentsMargins(CARD_LEFT_GAP, CARD_TOP_GAP, CARD_RIGHT_GAP, CARD_BOTTOM_GAP)
         box.setSpacing(6)
-        self._theme_titles.append(install_card_title(card, box, "阅读器"))
+        title_row = QHBoxLayout()
+        title_row.setSpacing(8)
+        self._theme_titles.append(install_card_title(card, title_row, "阅读器", gap=0))
+        title_row.addStretch(1)
+        self.btn_md_open = apply_mini_button(QPushButton("打开文件"))
+        self.btn_md_open.clicked.connect(self._open_md_reader)
+        title_row.addWidget(self.btn_md_open, 0, Qt.AlignVCenter)
+        box.addLayout(title_row)
 
         self._md_labels: List[QLabel] = []
         self._md_names: List[QLabel] = []
@@ -1384,19 +1391,28 @@ class SettingsSection(QWidget):
         lab.setText(text or "")
         lab.setVisible(bool(text))
 
+    def _open_md_reader(self):
+        from utils.md_reader_cfg import launch_reader
+
+        try:
+            launch_reader()
+        except OSError as exc:
+            log.exception("打开阅读器失败")
+            self._set_md_status(f"打开阅读器失败（{exc}）")
+
     def _load_md_reader(self, prefs: dict):
-        from utils.md_reader_cfg import section_from_prefs
+        from utils.md_reader_cfg import DEFAULT_EXTS, is_ours, section_from_prefs
 
         sec = section_from_prefs(prefs if isinstance(prefs, dict) else {})
         self._md_prev = dict(sec.get("prev_prog") or {})
-        self._md_blocked = list(sec.get("assoc_blocked") or [])
         chosen = set(sec.get("exts") or [])
         for label, exts in self._md_group_exts.items():
             sw = self._md_switches[label]
             sw.setChecked(any(ext in chosen for ext in exts))
-        # 启动时只恢复开关；关联只在用户切换开关时写，不自动重试。
-        blocked = [e for e in self._md_blocked if e in self._checked_md_exts()]
-        self._set_md_status("系统保护拦截，关联未生效" if blocked else "")
+        # 恢复用户的选择，同时检查 Windows 是否仍将这些文件交给阅读器。
+        self._md_blocked = [ext for ext in DEFAULT_EXTS if ext in chosen and not is_ours(ext)]
+        missing = "、".join(self._md_blocked)
+        self._set_md_status(f"关联尚未生效（{missing}）" if missing else "")
 
     def _checked_md_exts(self) -> List[str]:
         out: List[str] = []

@@ -2,14 +2,14 @@
 import json,sys,time
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from agent_core.models import ModelConfig,Cancellation
-from agent_core.store import atomic_json
-from agent_core.workflows.planner import create_task
-from agent_core.engine import Engine
-from agent_core.approvals import revise_chapter,confirm_chapter
-from agent_core.llm_client import OllamaClient
-from agent_core.summary_steps import summarize_in_steps
-from agent_core.errors import Cancelled,NeedsInput
+from Agent.agent_core.models import ModelConfig,Cancellation
+from Agent.agent_core.store import atomic_json
+from Agent.agent_core.workflows.planner import create_task
+from Agent.agent_core.engine import Engine
+from Agent.agent_core.approvals import revise_chapter,confirm_chapter
+from Agent.agent_core.llm_client import OllamaClient
+from Agent.agent_core.summary_steps import summarize_in_steps
+from Agent.agent_core.errors import Cancelled,NeedsInput
 
 root=Path(sys.argv[1]).resolve();root.mkdir(parents=True,exist_ok=True)
 source=root/'普通悬疑大纲.txt'

@@ -54,6 +54,7 @@ from utils.voice_input import (
     delete_voice_edit_record,
     ve_op_msg,
 )
+from utils.qthread_util import ResultWorker, stop_qthread
 
 
 def _record_kind(audio_path: str = "", txt_path: str = "") -> str:
@@ -388,6 +389,8 @@ class PageVoiceInput(QWidget):
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
 
         self._state = "idle"  # idle | recording | transcribing
+        self._capture_deps_ready = False
+        self._deps_worker = None
         self._recorder = None
         self._transcriber = None
         self._elapsed = 0
@@ -786,7 +789,21 @@ class PageVoiceInput(QWidget):
 
     def refresh_deps(self):
         """重新检测 sounddevice / faster-whisper，更新红字提示与录音按钮。"""
-        ok, missing = voice_deps_ok()
+        if self._deps_worker is not None:
+            return
+        worker = ResultWorker(voice_deps_ok, self)
+        self._deps_worker = worker
+        worker.ready.connect(self._show_deps)
+        worker.finished.connect(self._finish_deps_check)
+        worker.finished.connect(worker.deleteLater)
+        worker.start()
+
+    def _finish_deps_check(self):
+        self._deps_worker = None
+
+    def _show_deps(self, result):
+        ok, missing = result
+        self._capture_deps_ready = ok
         lbl = getattr(self, "lbl_deps", None)
         if lbl is not None:
             if ok:
@@ -981,7 +998,7 @@ class PageVoiceInput(QWidget):
 
     # ── 录音状态机 ────────────────────────────────────────────────────
     def _refresh_record_btn(self):
-        ok, _ = voice_deps_ok()
+        ok = self._capture_deps_ready
         mode = self._record_mode()
         mode_enabled = self._state == "idle"
         btn_file = getattr(self, "btn_file", None)
@@ -1447,6 +1464,7 @@ class PageVoiceInput(QWidget):
         self._goto_paste_cb = fn
 
     def shutdown(self):
+        stop_qthread(self._deps_worker, name="voice_dependencies")
         try:
             self._elapsed_timer.stop()
         except Exception:
@@ -1469,7 +1487,6 @@ class PageVoiceInput(QWidget):
         tr = self._transcriber
         if tr is not None:
             try:
-                from utils.qthread_util import stop_qthread
                 stop_qthread(tr, name="voice-transcribe")
             except Exception:
                 pass

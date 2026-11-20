@@ -1,10 +1,10 @@
 import sys,json,time
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
-from agent_core.conversation import interpret,inventory
-from agent_core.models import ModelConfig,Cancellation
-from agent_core.llm_client import OllamaClient
-from agent_core.store import atomic_json
+from Agent.agent_core.conversation import interpret,inventory
+from Agent.agent_core.models import ModelConfig,Cancellation
+from Agent.agent_core.llm_client import OllamaClient
+from Agent.agent_core.store import atomic_json
 root=Path(sys.argv[1]).resolve(); root.mkdir(parents=True,exist_ok=True)
 material=root/'materials'; material.mkdir(exist_ok=True)
 (material/'第01章.txt').write_text('夜雨。邮差收到一封旧信，决定寻找失踪的父亲。',encoding='utf-8')

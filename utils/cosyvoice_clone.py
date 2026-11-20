@@ -870,10 +870,12 @@ def transcribe_prompt_wav(path: str, cancel_flag=None) -> str:
     import importlib.util
     import numpy as np
 
-    if importlib.util.find_spec("faster_whisper") is None:
+    from utils.whisper_runtime import whisper_available
+
+    if not whisper_available():
         raise RuntimeError(
             "未安装 faster-whisper，无法识别原声文案。\n"
-            "请退出程序后执行：pip install faster-whisper numpy"
+            "请退出程序后运行「1安装-组件.bat」修复语音转写运行环境。"
         )
     audio, sr = load_wav_float32(path)
     if audio is None or int(sr or 0) <= 0:

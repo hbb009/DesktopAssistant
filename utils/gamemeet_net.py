@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import json
+import queue
+import secrets
 import socket
 import threading
 import time
@@ -231,41 +233,73 @@ def _send_line(sock: socket.socket, obj: dict) -> None:
         raise OSError(f"send failed: {e}") from e
 
 
+class _PeerSender:
+    """Serialize outgoing frames without making the calling thread wait for TCP."""
+
+    def __init__(self, sock):
+        self._sock = sock
+        self._pending = queue.Queue(maxsize=32)
+        self._closed = threading.Event()
+        threading.Thread(target=self._run, name="MeetPeerSend", daemon=True).start()
+
+    def send(self, message):
+        if self._closed.is_set():
+            raise OSError("连接已关闭")
+        try:
+            self._pending.put_nowait(message)
+        except queue.Full as exc:
+            self.close()
+            raise OSError("对方接收过慢") from exc
+
+    def close(self):
+        self._closed.set()
+        _safe_close_sock(self._sock)
+        try:
+            self._pending.put_nowait(None)
+        except queue.Full:
+            pass
+
+    def _run(self):
+        try:
+            while not self._closed.is_set():
+                message = self._pending.get()
+                if message is None:
+                    break
+                _send_line(self._sock, message)
+        except OSError:
+            pass
+        finally:
+            self.close()
+
+
 def _recv_lines(sock: socket.socket, buf: bytearray):
-    """从 socket 读入，产出完整 JSON 行 dict。关闭/错误时干净停止生成器。"""
+    """Yield complete JSON objects, including those already buffered."""
     if sock is None:
         return
     while True:
+        nl = buf.find(b"\n")
+        if nl >= 0:
+            line = bytes(buf[:nl]).decode("utf-8", errors="replace").strip()
+            del buf[: nl + 1]
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(message, dict):
+                yield message
+            continue
         try:
             chunk = sock.recv(65536)
-        except socket.timeout:
-            # 交给调用方做 ping keepalive；勿当断开处理
+        except (socket.timeout, TimeoutError):
             raise
-        except TimeoutError:
-            raise
-        except (OSError, ConnectionError, ValueError, AttributeError):
-            return
-        except Exception:
+        except OSError:
             return
         if not chunk:
             return
         buf.extend(chunk)
         if len(buf) > _RECV_BUF_MAX:
-            # soft stop: clear runaway buffer, end session cleanly
-            del buf[:]
+            buf.clear()
             return
-        while True:
-            nl = buf.find(b"\n")
-            if nl < 0:
-                break
-            line = bytes(buf[:nl]).decode("utf-8", errors="replace").strip()
-            del buf[: nl + 1]
-            if not line:
-                continue
-            try:
-                yield json.loads(line)
-            except json.JSONDecodeError:
-                continue
 
 
 # ---------------------------------------------------------------------------
@@ -514,6 +548,7 @@ class MeetHost:
         self._lock = threading.RLock()
         self._running = False
         self.host_id = "host-" + uuid.uuid4().hex[:8]
+        self.join_code = secrets.token_urlsafe(9)
         self.port = 0
         self.lan_ip = get_lan_ipv4()
         self._clients = {}  # user_id -> {sock, name, can_edit, ...}
@@ -523,34 +558,35 @@ class MeetHost:
         self._announcer: Optional[RoomAnnouncer] = None
 
     # ---- public ----
-    def start(self, preferred_port: int = 0) -> tuple:
-        """绑定 0.0.0.0，返回 (lan_ip, port)。preferred_port=0 或占用则系统分配。"""
+    def start(self, preferred_port: int = 0, *, bind_address: str = "0.0.0.0") -> tuple:
+        """Listen on the requested interface and return the room endpoint."""
         if self._running:
             return self.lan_ip, self.port
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         port = int(preferred_port or 0)
         try:
-            sock.bind(("0.0.0.0", port))
+            sock.bind((bind_address, port))
         except OSError:
-            sock.bind(("0.0.0.0", 0))
+            sock.bind((bind_address, 0))
         sock.listen(16)
         sock.settimeout(1.0)
         self._sock = sock
         self.port = sock.getsockname()[1]
-        self.lan_ip = get_lan_ipv4()
+        self.lan_ip = get_lan_ipv4() if bind_address == "0.0.0.0" else bind_address
         self._running = True
         self._accept_th = threading.Thread(
             target=self._accept_loop, name="MeetHostAccept", daemon=True
         )
         self._accept_th.start()
-        self._announcer = RoomAnnouncer(
-            host_id=self.host_id,
-            nick=self.display_name,
-            tcp_port=self.port,
-            lan_ip=self.lan_ip,
-        )
-        self._announcer.start()
+        if bind_address != "127.0.0.1":
+            self._announcer = RoomAnnouncer(
+                host_id=self.host_id,
+                nick=self.display_name,
+                tcp_port=self.port,
+                lan_ip=self.lan_ip,
+            )
+            self._announcer.start()
         self._emit_status(f"主持中 {self.lan_ip}:{self.port}")
         self._emit_roster()
         self._emit_history()
@@ -567,12 +603,8 @@ class MeetHost:
         with self._lock:
             clients = list(self._clients.items())
             self._clients.clear()
-        for uid, info in clients:
-            try:
-                _send_line(info["sock"], {"type": "bye", "reason": "host_left"})
-            except Exception:
-                pass
-            _safe_close_sock(info.get("sock"))
+        for _, info in clients:
+            info["sender"].close()
         listen = self._sock
         self._sock = None
         _safe_close_sock(listen)
@@ -643,7 +675,6 @@ class MeetHost:
         self._broadcast(payload, exclude=None)
         if entry is not None:
             self._broadcast({"type": "history_add", "entry": entry}, exclude=None)
-            self._broadcast({"type": "history", "items": hist_snapshot}, exclude=None)
         if self.on_doc:
             try:
                 self.on_doc(rev, self._text, from_id)
@@ -690,7 +721,6 @@ class MeetHost:
         self._broadcast(doc_payload, exclude=None)
         if entry:
             self._broadcast({"type": "history_add", "entry": entry}, exclude=None)
-            self._broadcast({"type": "history", "items": hist_snapshot}, exclude=None)
         if self.on_doc:
             try:
                 self.on_doc(rev, text, from_id)
@@ -853,7 +883,7 @@ class MeetHost:
             if exclude and uid == exclude:
                 continue
             try:
-                _send_line(info["sock"], obj)
+                info["sender"].send(obj)
             except Exception:
                 dead.append(uid)
         for uid in dead:
@@ -879,46 +909,31 @@ class MeetHost:
             thr.start()
 
     def _client_loop(self, conn: socket.socket, addr):
-        conn.settimeout(60.0)
+        conn.settimeout(5.0)
         buf = bytearray()
         user_id = None
+        sender = None
         try:
-            deadline = time.time() + 15
-            hello = None
-            while time.time() < deadline and hello is None:
-                try:
-                    for msg in _recv_lines(conn, buf):
-                        if msg.get("type") == "hello":
-                            hello = msg
-                            break
-                        if msg.get("type") == "bye":
-                            return
-                except socket.timeout:
-                    continue
-            if not hello:
+            hello = next(_recv_lines(conn, buf), {})
+            supplied = hello.get("join_code")
+            if (hello.get("type") != "hello" or not isinstance(supplied, str)
+                    or not secrets.compare_digest(supplied.encode("utf-8"), self.join_code.encode("ascii"))):
+                _send_line(conn, {"type": "auth_error"})
                 return
+            conn.settimeout(60.0)
             raw_name = str(hello.get("name") or "").strip() or f"用户{addr[1]}"
             user_id = "u-" + uuid.uuid4().hex[:8]
             with self._lock:
-                # 冲突检测必须含主机 display_name + 已有客户端（加入花名册之前）
-                taken = [self.display_name] + [
-                    info.get("name") for info in self._clients.values()
-                ]
+                if not self._running:
+                    return
+                taken = [self.display_name] + [info.get("name") for info in self._clients.values()]
                 name, nick_renamed = pick_unique_nickname(raw_name, taken)
-                self._clients[user_id] = {
-                    "sock": conn,
-                    "name": name,
-                    "can_edit": False,
-                    "addr": addr,
-                    "buf": buf,
-                }
-                # 历史空但文档非空 → 合成一条，保证加入者有历史卡
                 self._ensure_doc_history_locked()
                 rev = self._rev
                 text = self._text
                 history = [dict(x) for x in self._history]
-            try:
-                _send_line(conn, {
+                sender = _PeerSender(conn)
+                sender.send({
                     "type": "welcome",
                     "user_id": user_id,
                     "host_id": self.host_id,
@@ -928,18 +943,15 @@ class MeetHost:
                     "nick_renamed": bool(nick_renamed),
                     "history": history,
                 })
-                # 冗余：重名时再发 nick_assign，避免客户端只听 assign 或 welcome 丢字段
                 if nick_renamed:
-                    _send_line(conn, {
+                    sender.send({
                         "type": "nick_assign",
                         "name": name,
                         "nick_renamed": True,
                     })
-                _send_line(conn, {"type": "roster", "users": self._roster_list()})
-                _send_line(conn, {"type": "history", "items": history})
-            except Exception:
-                self._drop_client(user_id)
-                return
+                self._clients[user_id] = {
+                    "sender": sender, "name": name, "can_edit": False, "addr": addr,
+                }
             self._emit_roster()
             self._broadcast({"type": "roster", "users": self._roster_list()}, exclude=None)
             self._emit_status(f"{name} 已加入")
@@ -954,7 +966,7 @@ class MeetHost:
                         break
                 except socket.timeout:
                     try:
-                        _send_line(conn, {"type": "ping"})
+                        sender.send({"type": "ping"})
                     except Exception:
                         break
                     continue
@@ -962,11 +974,15 @@ class MeetHost:
                     break
                 except Exception:
                     break
-        except Exception as e:
-            self._emit_error(f"客户端会话异常: {e}")
+        except (OSError, TimeoutError):
+            pass
+        except Exception as exc:
+            self._emit_error(f"客户端会话异常: {exc}")
         finally:
             if user_id:
                 self._drop_client(user_id)
+            if sender is not None:
+                sender.close()
             else:
                 _safe_close_sock(conn)
 
@@ -980,7 +996,7 @@ class MeetHost:
                 info = self._clients.get(user_id)
             if info:
                 try:
-                    _send_line(info["sock"], {"type": "ping"})
+                    info["sender"].send({"type": "ping"})
                 except Exception:
                     self._drop_client(user_id)
             return
@@ -989,7 +1005,7 @@ class MeetHost:
             if name:
                 final = name
                 renamed = False
-                sock = None
+                sender = None
                 with self._lock:
                     if user_id in self._clients:
                         taken = [self.display_name] + [
@@ -999,10 +1015,10 @@ class MeetHost:
                         ]
                         final, renamed = pick_unique_nickname(name, taken)
                         self._clients[user_id]["name"] = final
-                        sock = self._clients[user_id].get("sock")
-                if sock is not None and (renamed or _nick_key(final) != _nick_key(name) or final != name):
+                        sender = self._clients[user_id]["sender"]
+                if sender is not None and (renamed or _nick_key(final) != _nick_key(name) or final != name):
                     try:
-                        _send_line(sock, {
+                        sender.send({
                             "type": "nick_assign",
                             "name": final,
                             "nick_renamed": True,
@@ -1040,7 +1056,7 @@ class MeetHost:
             info = self._clients.pop(user_id, None)
         if not info:
             return
-        _safe_close_sock(info.get("sock"))
+        info["sender"].close()
         name = info.get("name") or user_id
         self._emit_roster()
         self._broadcast({"type": "roster", "users": self._roster_list()}, exclude=None)
@@ -1073,6 +1089,7 @@ class MeetClient:
         self.on_nick_assign = on_nick_assign
 
         self._sock: Optional[socket.socket] = None
+        self._sender: Optional[_PeerSender] = None
         self._thr: Optional[threading.Thread] = None
         self._lock = threading.RLock()
         self._running = False
@@ -1084,42 +1101,43 @@ class MeetClient:
         self._roster = []
         self._history = []
 
-    def connect(self, host: str, port: int) -> None:
+    def connect(self, host: str, port: int, join_code: str) -> None:
         if self._running:
             self.disconnect()
         host = (host or "").strip()
         port = int(port)
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.settimeout(10.0)
+        buf = bytearray()
         try:
+            sock.settimeout(5.0)
             sock.connect((host, port))
-        except Exception as e:
-            sock.close()
-            raise ConnectionError(f"无法连接 {host}:{port} — {e}") from e
+            self.display_name = (self.display_name or "").strip() or "用户"
+            _send_line(sock, {"type": "hello", "name": self.display_name, "join_code": join_code})
+            response = next(_recv_lines(sock, buf), {})
+            if response.get("type") == "auth_error":
+                raise ConnectionError("会议加入码不正确。")
+            if response.get("type") != "welcome":
+                raise ConnectionError("主机没有接受加入请求。")
+        except Exception as exc:
+            _safe_close_sock(sock)
+            raise ConnectionError(f"无法加入 {host}:{port} — {exc}") from exc
         sock.settimeout(60.0)
         self._sock = sock
+        self._sender = sender = _PeerSender(sock)
         self._running = True
-        # hello 名与 UI 展示一致：连接前再规范化一次
-        self.display_name = (self.display_name or "").strip() or "用户"
-        hello_name = self.display_name
-        _send_line(sock, {"type": "hello", "name": hello_name, "role": "client"})
-        self._thr = threading.Thread(target=self._loop, name="MeetClient", daemon=True)
+        self._handle(response)
+        self._thr = threading.Thread(target=self._loop, args=(sock, sender, buf), name="MeetClient", daemon=True)
         self._thr.start()
-        # 状态提示可能与 welcome/nick_assign 竞态；UI 侧会避免覆盖「昵称重复」tip
         self._emit_status(f"已连接 {host}:{port}")
 
     def disconnect(self):
         was = self._running
         self._running = False
-        sock = self._sock
+        sender = self._sender
+        self._sender = None
         self._sock = None
-        if sock:
-            try:
-                if was:
-                    _send_line(sock, {"type": "bye"})
-            except Exception:
-                pass
-            _safe_close_sock(sock)
+        if sender is not None:
+            sender.close()
         self.user_id = ""
         self._can_edit = False
         self._roster = []
@@ -1141,18 +1159,16 @@ class MeetClient:
 
     def set_display_name(self, name: str):
         self.display_name = (name or "").strip() or "用户"
-        sock = self._sock
-        if sock and self._running:
+        sender = self._sender
+        if sender is not None and self._running:
             try:
-                _send_line(sock, {"type": "hello", "name": self.display_name, "role": "client"})
-            except Exception:
+                sender.send({"type": "hello", "name": self.display_name, "role": "client"})
+            except OSError:
                 pass
 
     def publish_doc(self, text: str):
-        if not self._can_edit:
-            return
-        sock = self._sock
-        if not sock or not self._running:
+        sender = self._sender
+        if not self._can_edit or sender is None or not self._running:
             return
         with self._lock:
             payload = {
@@ -1162,9 +1178,9 @@ class MeetClient:
                 "from": self.user_id,
             }
         try:
-            _send_line(sock, payload)
-        except Exception as e:
-            self._emit_error(f"发送文档失败: {e}")
+            sender.send(payload)
+        except OSError as exc:
+            self._emit_error(f"发送文档失败: {exc}")
 
     def local_can_edit(self) -> bool:
         return bool(self._can_edit)
@@ -1201,11 +1217,9 @@ class MeetClient:
             except Exception:
                 pass
 
-    def _loop(self):
-        sock = self._sock
-        buf = bytearray()
+    def _loop(self, sock, sender, buf):
         try:
-            while self._running and sock:
+            while self._running and self._sock is sock:
                 try:
                     got = False
                     for msg in _recv_lines(sock, buf):
@@ -1215,7 +1229,7 @@ class MeetClient:
                         break
                 except socket.timeout:
                     try:
-                        _send_line(sock, {"type": "ping"})
+                        sender.send({"type": "ping"})
                     except Exception:
                         break
                     continue
@@ -1226,12 +1240,13 @@ class MeetClient:
         except Exception as e:
             self._emit_error(f"连接异常: {e}")
         finally:
+            sender.close()
+            if self._sock is not sock:
+                return
             was = self._running
             self._running = False
-            sock = self._sock
             self._sock = None
-            if sock is not None:
-                _safe_close_sock(sock)
+            self._sender = None
             if was:
                 self._emit_status("连接已断开")
             if self.on_roster:

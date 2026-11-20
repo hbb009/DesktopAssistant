@@ -617,7 +617,7 @@ class PageOllamaChat(QWidget):
         root.addWidget(self.tabs, 1)
         self._build_config_page()
         self._build_work_page()
-        from pages.agent_chat_panel import AgentChatPanel
+        from Agent.agent_chat_panel import AgentChatPanel
         self.agent_panel = AgentChatPanel(self)
         self.tabs.addTab(self.agent_panel, "Agent")
         self.tabs.setCurrentWidget(self.agent_panel)
@@ -664,7 +664,8 @@ class PageOllamaChat(QWidget):
                 bar.setDrawBase(False)
             except Exception:
                 pass
-        if self.tabs.currentWidget() is getattr(self, "page_work", None):
+        if self.tabs.currentWidget() is self.page_work and not self._applying:
+            self._reload_skills()
             self._refresh_work_files()
 
     def _sync_side_tabs(self, *_):
@@ -1024,7 +1025,6 @@ class PageOllamaChat(QWidget):
         btns.addWidget(btn_skill)
         rl.addLayout(btns)
         row.addWidget(right, 3)
-        self._refresh_work_files()
 
     # ── user.txt ───────────────────────────────────────────────
     def set_prefs_dirty_callback(self, cb):
@@ -1135,16 +1135,14 @@ class PageOllamaChat(QWidget):
             if sw_obey is not None:
                 sw_obey.setChecked(bool(obedient))
             folder = str(d.get("article_dir") or "").strip()
-            if folder:
-                self.ed_article.setText(os.path.normpath(folder))
+            self.ed_article.setText(os.path.normpath(folder) if folder else "")
             source = str(d.get("source") or "ollama").strip().lower()
             self.rb_api.setChecked(source == "api")
             self.rb_ollama.setChecked(source != "api")
             api_base = str(d.get("api_base") or "").strip()
             if api_base:
                 self.ed_api_base.setText(api_base)
-            if "api_key" in d:
-                self.ed_api_key.setText(str(d.get("api_key") or ""))
+            self.ed_api_key.setText(str(d.get("api_key") or ""))
             api_model = str(d.get("api_model") or "").strip()
             if api_model:
                 self.cb_api_model.setCurrentText(api_model)
@@ -1153,22 +1151,23 @@ class PageOllamaChat(QWidget):
             self.cb_api_preset.blockSignals(False)
             # 旧设置里的 num_ctx / chunk_ratio / think_cap_ratio 等不再使用，读到也忽略。
             names = d.get("skills") or []
-            if isinstance(names, list):
-                self._enabled_skill_names = [str(n) for n in names if str(n).strip()]
+            self._enabled_skill_names = [str(n) for n in names if str(n).strip()] if isinstance(names, list) else []
             if self._pending_model and self.cb_model.findText(self._pending_model) >= 0:
                 self.cb_model.setCurrentText(self._pending_model)
         finally:
             self._applying = False
-        self._reload_skills()
-        self._refresh_work_files()
+        if self.tabs.currentWidget() is self.page_work:
+            self._reload_skills()
+            self._refresh_work_files()
 
     # ── 生命周期 ───────────────────────────────────────────────
     def on_enter(self):
         if not self._loaded_once or self.cb_model.count() == 0:
             self._loaded_once = True
             self.refresh_models()
-        self._reload_skills()
-        self._refresh_work_files()
+        if self.tabs.currentWidget() is self.page_work:
+            self._reload_skills()
+            self._refresh_work_files()
         inp = getattr(self, "inp", None)
         if inp is not None and self.tabs.currentWidget() is getattr(self, "page_chat", None):
             inp.setFocus()

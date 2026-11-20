@@ -45,14 +45,23 @@ def reader_script() -> str:
     return os.path.join(app_root(), "MarkdownViewer", "reader.pyw")
 
 
-def open_command() -> str:
+def _reader_command() -> str:
     py = pythonw_exe()
     script = reader_script()
     if not os.path.isfile(py):
         raise FileNotFoundError("找不到 pythonw.exe")
     if not os.path.isfile(script):
         raise FileNotFoundError("找不到阅读器")
-    return f'{python_launch_prefix(py)} "{script}" "%1"'
+    return f'{python_launch_prefix(py)} "{script}"'
+
+
+def open_command() -> str:
+    return f'{_reader_command()} "%1"'
+
+
+def launch_reader() -> None:
+    """直接启动阅读器的文件选择窗口。"""
+    subprocess.Popen(_reader_command())
 
 
 def section_from_prefs(prefs: object) -> dict:

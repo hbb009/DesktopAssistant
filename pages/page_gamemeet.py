@@ -18,6 +18,7 @@ import getpass
 import json
 import os
 import random
+import threading
 import time
 import uuid
 
@@ -26,7 +27,7 @@ from PyQt5.QtGui import QGuiApplication, QColor, QPainter, QPen, QIcon, QPixmap
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QLineEdit, QFrame, QSizePolicy, QPlainTextEdit, QCheckBox,
-    QScrollArea, QSpinBox,
+    QScrollArea, QSpinBox, QInputDialog,
     QStackedWidget,
 )
 
@@ -182,6 +183,7 @@ class SharedDocEdit(QPlainTextEdit):
 class _Bridge(QObject):
     """把网络线程回调弹回 Qt 主线程。"""
     roster = pyqtSignal(list)
+    join_finished = pyqtSignal(object, str)
     doc = pyqtSignal(int, str, str)       # rev, text, from_id
     status = pyqtSignal(str)
     error = pyqtSignal(str)
@@ -243,6 +245,7 @@ class PageGameMeet(QWidget):
         self._bridge = _Bridge(self)
         _qc = Qt.QueuedConnection
         self._bridge.roster.connect(self._on_roster, _qc)
+        self._bridge.join_finished.connect(self._finish_join, _qc)
         self._bridge.doc.connect(self._on_doc, _qc)
         self._bridge.status.connect(self._on_status, _qc)
         self._bridge.error.connect(self._on_error, _qc)
@@ -541,6 +544,10 @@ class PageGameMeet(QWidget):
         self.spin_port.valueChanged.connect(lambda *_: self._dirty())
         bottom.addWidget(self.spin_port, 0)
         box.addLayout(bottom)
+        self.lbl_join_code = QLabel()
+        self.lbl_join_code.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.lbl_join_code.hide()
+        box.addWidget(self.lbl_join_code)
         card.setMinimumHeight(234)  # panel -10% vs 260
         return card
 
@@ -1264,7 +1271,7 @@ class PageGameMeet(QWidget):
             return
         if text is None:
             text = ""
-        if not str(text).strip():
+        if not str(text).strip() or str(text).strip() == self._host.join_code:
             return
         prior = self.edit_doc.toPlainText()
         if text == prior:
@@ -1402,6 +1409,13 @@ class PageGameMeet(QWidget):
         if not host_ip:
             self._notify("请从房间卡片「+」加入", error=False)
             return
+        join_code, accepted = QInputDialog.getText(
+            self, "加入会议", "输入主持人提供的加入码", QLineEdit.Password
+        )
+        join_code = join_code.strip()
+        if not accepted or not join_code:
+            return
+
         # hello 名必须与昵称框一致（空则写入默认 OS 名）
         name = self.edit_nick.text().strip() or _default_nickname()
         self._loading = True
@@ -1435,17 +1449,36 @@ class PageGameMeet(QWidget):
         self._can_edit = False
         self._joined_ip = host_ip
         self._joined_port = port
-        try:
-            client.connect(host_ip, port)
-        except Exception as e:
-            log.exception("加入会议失败")
-            self._teardown()
-            self._notify(f"加入失败：{e}", error=True)
-            return
         self.edit_doc.set_paste_hook_enabled(False)
         self._apply_editability()
         self._update_conn_ui()
         self._rebuild_rooms_ui()
+        self._notify("正在加入会议…")
+
+        def join():
+            error = ""
+            try:
+                client.connect(host_ip, port, join_code)
+            except ConnectionError as exc:
+                error = str(exc)
+            if self._client is not client:
+                client.disconnect()
+                return
+            try:
+                self._bridge.join_finished.emit(client, error)
+            except RuntimeError:
+                client.disconnect()
+
+        threading.Thread(target=join, name="GameMeetJoin", daemon=True).start()
+
+    def _finish_join(self, client, error):
+        if self._client is not client:
+            client.disconnect()
+            return
+        if error:
+            self._on_leave()
+            self._notify(f"加入失败：{error}", error=True)
+            return
         self._dirty()
 
     def _on_leave(self):
@@ -1487,6 +1520,8 @@ class PageGameMeet(QWidget):
         busy = self._role is not None
         self.btn_create.setEnabled(not busy)
         self.spin_port.setEnabled(not busy)
+        self.lbl_join_code.setVisible(self._host is not None)
+        self.lbl_join_code.setText(f"加入码  {self._host.join_code}" if self._host else "")
         self._sync_host_clipboard_watch()
         self._sync_side_clipboard_slot_freeze()
 

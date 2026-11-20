@@ -1,17 +1,22 @@
 """Conversation-first UI over the persistent workflow engine."""
 import html,json,re,uuid
 from pathlib import Path
-from PyQt5.QtCore import Qt,QTimer,QUrl
-from PyQt5.QtGui import QDesktopServices
+from PyQt5.QtCore import Qt,QTimer
 from PyQt5.QtWidgets import (QWidget,QVBoxLayout,QHBoxLayout,QLabel,QPushButton,QPlainTextEdit,
-    QTextBrowser,QDialog,QFileDialog,QComboBox,QToolButton,QMenu)
-from agent_core.conversation import inventory,interpret,interpret_feedback
-from agent_core.models import ModelConfig
-from agent_core.store import atomic_json,TaskStore,fingerprint
-from agent_core.workflows.planner import create_task,WORKFLOWS,DOC_MODES
-from agent_core.file_approval import move_plan,confirm_move
+    QTextBrowser,QDialog,QFileDialog,QComboBox)
+from Agent.agent_core.conversation import inventory,interpret,interpret_feedback
+from Agent.agent_core.models import ModelConfig
+from Agent.agent_core.store import atomic_json,TaskStore,fingerprint
+from Agent.agent_core.workflows.planner import create_task,WORKFLOWS,DOC_MODES
+from Agent.agent_core.file_approval import move_plan,confirm_move
+from styles.style_all import apply_btn_download
 from .agent_task_panel import AgentTaskPanel
 from .agent_chat_bubbles import BubbleTranscript
+from utils.logger import get_logger
+
+log=get_logger('agent.chat')
+
+_PAUSE_COMMANDS = ('暂停', '停止', '停一下', '先停一下', '暂停任务', '停止任务', '先暂停', '暂停一下')
 
 class Composer(QPlainTextEdit):
     def keyPressEvent(self,event):
@@ -33,13 +38,11 @@ class AgentChatPanel(AgentTaskPanel):
             item=layout.takeAt(0)
             if item.widget(): item.widget().hide()
         self.chat_root=self.task_root.parent/'agent_chat'
-        saved_session=None
-        try:
-            settings=json.loads((self.chat_root/'settings.json').read_text(encoding='utf-8'))
-            if Path(settings.get('directory','')).is_dir(): self.directory.setText(settings['directory'])
-            saved_session=settings.get('session')
-        except (OSError,ValueError,KeyError): pass
         header=QHBoxLayout()
+        self.directory_button=QPushButton('选择目录')
+        self.workdir_button=self.directory_button
+        self.directory_button.clicked.connect(self.choose_directory)
+        header.addWidget(self.directory_button)
         self.location=QLabel(); self.location.setTextFormat(Qt.PlainText)
         header.addWidget(self.location,1)
         self.button(header,'历史任务',self.show_history)
@@ -48,14 +51,6 @@ class AgentChatPanel(AgentTaskPanel):
         self.clear_screen_button=self.button(header,'清屏',self.clear_screen)
         self.clear_screen_button.setToolTip('仅清空显示，保留当前任务和上下文')
         self.details_button=self.button(header,'详情',self.show_details)
-        self.directory_button=QToolButton(self)
-        self.workdir_button=self.directory_button
-        self.directory_button.setPopupMode(QToolButton.MenuButtonPopup)
-        menu=QMenu(self.directory_button)
-        menu.addAction('更换目录…',self.choose_directory)
-        self.directory_button.setMenu(menu)
-        self.directory_button.clicked.connect(self.directory_action)
-        header.addWidget(self.directory_button)
         layout.addLayout(header)
         self.chat=BubbleTranscript(self)
         layout.addWidget(self.chat,1)
@@ -66,27 +61,70 @@ class AgentChatPanel(AgentTaskPanel):
         self.attachment_label=QLabel(); row.addWidget(self.attachment_label,1)
         self.stop_button=self.button(row,'暂停',self.pause)
         self.send_button=self.button(row,'发送',self.send_message)
+        apply_btn_download(self.send_button)
+        self.send_button.setCursor(Qt.PointingHandCursor)
         layout.addLayout(row)
         self.composer=Composer(self); self.composer.setMaximumHeight(110); self.composer.setMinimumHeight(75)
         self.composer.setPlaceholderText('直接告诉我想做什么，例如：把工作目录里的小说提炼成文风 Skill。\nEnter 发送 · Shift+Enter 换行')
         layout.addWidget(self.composer)
         self.directory.textChanged.connect(self.update_location)
-        self.update_location(); self.update_attachments()
-        restored=False
-        if saved_session and re.fullmatch(r'[a-f0-9]{32}',saved_session):
+        self.reload_from_disk()
+
+    def reload_from_disk(self):
+        """Refresh the active chat and task selection after a backup restore."""
+        self.messages = []
+        self.display_from = 0
+        self.pending = ''
+        self.announced = set()
+        self.session_id = uuid.uuid4().hex
+        self.store = None
+        self.last_approval = None
+        self.pending_move = None
+        self.files.clear()
+        self.composer.clear()
+        self.preview.clear()
+        self.feedback.clear()
+        self.directory.setText(self.host._article_dir())
+        self.refresh_history()
+
+        saved_session = None
+        try:
+            settings = json.loads((self.chat_root / 'settings.json').read_text(encoding='utf-8'))
+            directory = settings.get('directory')
+            if directory and Path(directory).is_dir():
+                self.directory.setText(directory)
+            saved_session = settings.get('session')
+        except (OSError, ValueError, AttributeError, TypeError):
+            pass
+
+        restored = False
+        if isinstance(saved_session, str) and re.fullmatch(r'[a-f0-9]{32}', saved_session):
             try:
-                data=json.loads((self.chat_root/(saved_session+'.json')).read_text(encoding='utf-8'))
-                self.session_id=saved_session; self.messages=data['messages']; self.pending=data.get('pending','')
-                self.display_from=max(0,min(int(data.get('display_from',0)),len(self.messages)))
-                self.announced=set(data.get('announced',[])); self.store=None
+                data = json.loads((self.chat_root / (saved_session + '.json')).read_text(encoding='utf-8'))
+                messages = data['messages']
+                if not isinstance(messages, list):
+                    raise ValueError('invalid chat transcript')
+                self.session_id = saved_session
+                self.messages = messages
+                self.pending = data.get('pending', '')
+                self.display_from = max(0, min(int(data.get('display_from', 0)), len(messages)))
+                self.announced = set(data.get('announced', []))
                 if data.get('task'):
-                    path=Path(data['task']).resolve()
-                    if path.parent==self.task_root.resolve() and (path/'task.json').exists(): self.store=TaskStore(path)
-                self.render_chat(); restored=True
-            except (OSError,ValueError,KeyError): pass
-        if self.store and not restored: self.select_task()
-        if not self.messages: self.welcome()
-        self.refresh_state(); self.persist_chat()
+                    task = self.task_root / Path(data['task']).name
+                    if (task / 'task.json').is_file() and task.resolve().parent == self.task_root.resolve():
+                        self.store = TaskStore(task)
+                self.render_chat()
+                restored = True
+            except (OSError, ValueError, KeyError, TypeError):
+                log.warning('无法恢复上次 Agent 对话')
+        if not restored and self.history.count():
+            self.select_task()
+        if not self.messages:
+            self.welcome()
+        self.update_location()
+        self.update_attachments()
+        self.refresh_state()
+        self.persist_chat()
 
     def welcome(self):
         self.add_message('assistant','直接说你想做的事，我会使用本地 Ollama 分步完成，并保存进度。\n\n例如：\n• 把这个网址的正文保存到工作目录。\n• 整理目录里的80章小说，制作作者文风 Skill。\n• 加载这个 Skill，按照大纲写第一章。\n\n运行中可以说“暂停”，之后说“继续”。小说每章写好后，我会先请你确认。')
@@ -97,8 +135,9 @@ class AgentChatPanel(AgentTaskPanel):
         shown=root if len(root)<=55 else root[:12]+'…'+root[-40:]
         self.location.setText('工作目录：'+(shown or '未选择'))
         self.location.setToolTip(root)
-        self.directory_button.setText('工具目录' if root else '选择目录')
-        self.directory_button.setToolTip('点击打开工作目录；点击右侧箭头更换目录' if root else '选择任务使用的工作目录')
+        chosen=bool(root)
+        self.directory_button.setText('更换目录' if chosen else '选择目录')
+        self.directory_button.setToolTip('更换任务使用的工作目录' if chosen else '选择任务使用的工作目录')
         if root and Path(root).is_dir(): atomic_json(self.chat_root/'settings.json',{'directory':root,'session':self.session_id})
 
     def update_attachments(self):
@@ -136,17 +175,6 @@ class AgentChatPanel(AgentTaskPanel):
     def clear_screen(self):
         self.display_from=len(self.messages)
         self.render_chat(); self.persist_chat()
-
-    def directory_action(self):
-        if self.directory.text().strip(): self.open_work_directory()
-        else: self.choose_directory()
-
-    def open_work_directory(self):
-        root=self.directory.text().strip()
-        if not root or not Path(root).is_dir():
-            self.add_message('assistant','工作目录不存在，请先选择有效的工作目录。'); return
-        if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(Path(root).resolve()))):
-            self.add_message('assistant','无法打开工作目录：'+root)
 
     def recent_task(self):
         """A failed follow-up must not hide the last successful result in this chat."""
@@ -232,18 +260,19 @@ class AgentChatPanel(AgentTaskPanel):
 
     def send_message(self):
         text=self.composer.toPlainText().strip()
-        if not text: return
-        self.composer.clear(); self.add_message('user',text)
+        if not text or self._closing:
+            return
         command=re.sub(r'[\s，,。.!！?？]+','',text).lower()
+        if self.busy and command not in _PAUSE_COMMANDS:
+            return
+        self.composer.clear(); self.add_message('user',text)
         if command=='清屏': self.clear_screen(); return
         if command in ('你好','您好','能做什么','你能做什么','你可以做什么','功能介绍','怎么用'):
             self.add_message('assistant','我可以保存网站正文、处理工作目录里的文档、提炼作者文风 Skill、编写或修改小说大纲，以及加载 Skill 写小说。直接描述要求即可；任务会逐步保存，小说每章先交给你确认。'); return
-        if command in ('暂停','停止','停一下','先停一下','暂停任务','停止任务','先暂停','暂停一下'):
+        if command in _PAUSE_COMMANDS:
             if self.busy: self.pause(); self.add_message('assistant','正在暂停，已经完成的步骤会保留。')
             else: self.add_message('assistant','当前没有正在运行的任务。')
             return
-        if self.busy:
-            self.add_message('assistant','当前任务正在执行。要修改要求，请先说“暂停”；也可以等待本章完成后提出修改意见。'); return
         if command in ('进度','进度怎么样','做到哪了','当前进度','任务状态'):
             self.add_message('assistant',self.status.text() if self.store else '还没有开始任务。'); return
         if command in ('新对话','新任务','开始新任务'):
@@ -340,6 +369,8 @@ class AgentChatPanel(AgentTaskPanel):
         if intent['options'].get('skill'): description+='已加载：'+str(intent['options']['skill'])+'。'
         if intent['workflow'] in ('fiction','outline'):
             description+=f"从第 {intent['options']['start_chapter']} 章开始，共 {intent['options']['chapters']} 章。"
+        if intent['workflow']=='web':
+            description+=f"按 {intent['options'].get('format','')} 保存，文件名用网页标题。"
         if intent['workflow']=='fiction': description+='每章写好后先交给你确认。'
         if intent['options'].get('target_chars'): description+=f"每章正文目标约{intent['options']['target_chars']}字，会分段写完并合并。"
         self.add_message('assistant',description+'过程会自动保存，你可以随时说“暂停”。')
@@ -366,13 +397,20 @@ class AgentChatPanel(AgentTaskPanel):
             return
         super().resume()
 
+    def launch(self, action, callback=None):
+        super().launch(action, callback)
+        self._sync_run_buttons()
+
+    def _sync_run_buttons(self):
+        self.send_button.setEnabled(not self.busy and not self._closing)
+        self.stop_button.setEnabled(self.busy and not self._closing)
+
     def refresh_state(self):
         super().refresh_state()
         if not hasattr(self,'chat') or getattr(self,'_switching',False): return
         self.new_chat_button.setEnabled(not self.busy)
-        self.stop_button.setEnabled(self.busy)
-        self.directory_button.setEnabled(bool(self.directory.text().strip()) or not self.busy)
-        self.directory_button.menu().actions()[0].setEnabled(not self.busy)
+        self._sync_run_buttons()
+        self.directory_button.setEnabled(not self.busy)
         self.attach_button.setEnabled(not self.busy); self.clear_button.setEnabled(not self.busy)
         if self.routing: self.chat_status.setText('正在理解你的要求…'); return
         self.chat_status.setText(self.status.text() if self.store else '本地 Ollama · 输入自然语言即可开始')
@@ -398,8 +436,12 @@ class AgentChatPanel(AgentTaskPanel):
                 path=str(Path(root)/'Agent成果'/task['task_id']) if root else str(self.store.path('outputs'))
                 self.add_message('assistant','已完成。成果保存在：\n'+path+'\n\n'+'\n'.join(str(Path(p).relative_to('outputs')) for p in state.get('outputs',[])))
             elif status=='paused': self.add_message('assistant','任务已暂停，已完成的步骤已保存。说“继续”即可恢复。')
-            else: self.add_message('assistant','任务停在这里：'+state.get('error','未知错误')+'\n已完成的步骤仍保留；详情中可以打开日志。')
+            else: self.add_message('assistant','任务停在这里：'+str(state.get('error') or '未知错误')+'\n已完成的步骤仍保留；详情中可以打开日志。')
         except (OSError,ValueError,KeyError): pass
+        except Exception:
+            if not getattr(self,'_chat_fault_logged',False):
+                self._chat_fault_logged=True
+                log.exception('刷新对话状态失败')
 
     def shutdown(self):
         self.persist_chat(); super().shutdown()

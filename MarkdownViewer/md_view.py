@@ -327,6 +327,7 @@ def _bind_quote_bars(view):
         return
     view._md_quote_bound = True
     view.bind('<Configure>', lambda _e: _schedule_quote_bars(view), add='+')
+    view.bind('<Destroy>', lambda _e: _cancel_quote_job(view), add='+')
 
 
 def _quote_bar_px(view):
@@ -395,7 +396,18 @@ def _ypx(view, a, b):
     return int(n)
 
 
+def _cancel_quote_job(view):
+    job = getattr(view, '_md_quote_job', None)
+    if job:
+        view._md_quote_job = None
+        try:
+            view.after_cancel(job)
+        except tk.TclError:
+            pass
+
+
 def clear_quote_bars(view):
+    _cancel_quote_job(view)
     for _start, end, _depth in list(getattr(view, '_md_quotes', []) or []):
         if isinstance(end, str):
             try:
@@ -414,12 +426,7 @@ def _schedule_quote_bars(view):
     if not getattr(view, '_md_quotes', None):
         paint_quote_bars(view)
         return
-    job = getattr(view, '_md_quote_job', None)
-    if job:
-        try:
-            view.after_cancel(job)
-        except tk.TclError:
-            pass
+    _cancel_quote_job(view)
     try:
         view._md_quote_job = view.after_idle(lambda v=view: paint_quote_bars(v))
     except tk.TclError:
@@ -427,13 +434,8 @@ def _schedule_quote_bars(view):
 
 
 def paint_quote_bars(view):
-    """按 Obsidian 阅读视图，给每个普通引用画左侧竖线。
-
-    按显示行各放一小段，拼成通栏。整条 Frame 在 Tk Text 里会被裁成
-    第一行那么高，所以三行引用看起来会只在第一行前面有竖线。
-    线宽 2px，颜色是默认强调色。嵌套的引用各自再来一条，靠右一档。
-    标注（> [!type]）不走这里。
-    """
+    """画出每段引用在可见区域内连续的竖线。"""
+    _cancel_quote_job(view)
     quotes = list(getattr(view, '_md_quotes', []) or [])
     pool = getattr(view, '_md_bar_pool', None)
     if pool is None:
@@ -453,13 +455,7 @@ def paint_quote_bars(view):
                 pass
         return
     thick, gap = _quote_bar_px(view)
-    try:
-        pady = int(float(view.cget('pady')))
-    except (TypeError, ValueError, tk.TclError):
-        pady = 0
-    # place 的原点已经在 padx/pady 里面。dlineinfo 的 y 含上内边距，要减掉。
-    limit = max(0, height - pady)
-    raised = -_text_pad_y(view)
+    inset_x = sum(int(view.cget(option)) for option in ('padx', 'borderwidth', 'highlightthickness'))
     used = 0
 
     def take_bar():
@@ -474,44 +470,42 @@ def paint_quote_bars(view):
         used += 1
         return bar
 
+    first_visible = view.index('@0,0')
+    last_visible = view.index('@0,%d display lineend' % (height - 1))
     for start, end, depth in quotes:
         try:
             boundary = view.index(end)
             if view.compare(start, '>=', boundary):
+                continue
+            if view.compare(boundary, '<=', first_visible) or view.compare(start, '>', last_visible):
                 continue
             last = view.index('%s - 1 chars' % boundary)
             try:
                 left = int(float(view.tag_cget('q%d' % int(depth), 'lmargin1') or 0))
             except (TypeError, ValueError, tk.TclError):
                 left = 18 * int(depth)
-            x = left - gap - thick
-            if x < 0:
-                x = 0
-            idx = view.index(start)
-            while view.compare(idx, '<=', last):
+            x = inset_x + max(0, left - gap - thick)
+            idx = first_visible if view.compare(start, '<', first_visible) else view.index(start)
+            top = bottom = None
+            while view.compare(idx, '<=', last) and view.compare(idx, '<=', last_visible):
                 info = view.dlineinfo(idx)
                 if info:
-                    _lx, y, _lw, h, _bl = info
-                    y0 = y - pady
-                    y1 = y0 + h
-                    if y0 < raised:
-                        y0 = raised
-                    if y1 > limit:
-                        y1 = limit
-                    if y1 - y0 >= 1:
-                        bar = take_bar()
-                        try:
-                            bar.configure(bg=QUOTE_BAR)
-                            bar.place(x=x, y=y0, width=thick, height=y1 - y0)
-                            bar.lift()
-                        except tk.TclError:
-                            pass
+                    _lx, y, _lw, line_height, _bl = info
+                    y0 = max(y, 0)
+                    y1 = min(y + line_height, height)
+                    if y1 > y0:
+                        if top is None:
+                            top = y0
+                        bottom = y1
                 nxt = view.index('%s + 1 display lines' % idx)
                 if view.compare(nxt, '<=', idx):
                     break
                 idx = nxt
-                if view.compare(idx, '>', last):
-                    break
+            if top is not None:
+                bar = take_bar()
+                bar.configure(bg=QUOTE_BAR)
+                bar.place(x=x, y=top, width=thick, height=bottom - top, bordermode='outside')
+                bar.lift()
         except tk.TclError:
             continue
     for bar in pool[used:]:
@@ -1897,20 +1891,23 @@ def _watch_table_width(view):
     view._md_laid_width = 0
     view._md_layout_job = None
 
-    def on_configure(e):
-        if e.widget is not view or e.width < 80:
-            return
-        if e.width == getattr(view, '_md_laid_width', None):
-            return
-        job = getattr(view, '_md_layout_job', None)
+    def cancel_layout(_event=None):
+        job = view._md_layout_job
+        view._md_layout_job = None
         if job:
             try:
                 view.after_cancel(job)
             except tk.TclError:
                 pass
+
+    def on_configure(e):
+        if e.widget is not view or e.width < 80 or e.width == view._md_laid_width:
+            return
+        cancel_layout()
         view._md_layout_job = view.after(60, lambda: _relayout_tables(view))
 
     view.bind('<Configure>', on_configure, add='+')
+    view.bind('<Destroy>', cancel_layout, add='+')
 
 
 def _sync_metrics(view):

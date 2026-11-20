@@ -21,7 +21,7 @@ def run():
         on_status=lambda s: print("[H]", s),
         on_error=lambda e: print("[H ERR]", e),
     )
-    ip, port = host.start(preferred_port=0)
+    ip, port = host.start(preferred_port=0, bind_address="127.0.0.1")
     print(f"host listening {ip}:{port} lan={get_lan_ipv4()}")
     assert port > 0
 
@@ -54,7 +54,7 @@ def run():
         on_error=lambda e: print("[C ERR]", e),
         on_welcome=lambda uid, rev, text: events["welcome"].append((uid, rev, text)),
     )
-    client.connect("127.0.0.1", port)
+    client.connect("127.0.0.1", port, host.join_code)
     assert client_got.wait(5), "client did not receive initial doc"
     time.sleep(0.2)
     assert client.user_id

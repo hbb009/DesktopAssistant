@@ -57,7 +57,8 @@ def speak_pieces(text, first=_FIRST, rest=_REST):
         chunks.append(cur)
     merged = []
     for ch in chunks:
-        if merged and len(ch) < _MIN and len(merged[-1]) + len(ch) <= rest + _MIN:
+        limit = first if len(merged) == 1 else rest + _MIN
+        if merged and len(ch) < _MIN and len(merged[-1]) + len(ch) <= limit:
             merged[-1] += ch
         else:
             merged.append(ch)
@@ -207,8 +208,11 @@ def brief_error(text):
 
 def _mci(cmd):
     buf = ctypes.create_unicode_buffer(260)
-    err = ctypes.windll.winmm.mciSendStringW(cmd, buf, 260, None)
-    return int(err or 0), buf.value
+    winmm = ctypes.windll.winmm
+    err = int(winmm.mciSendStringW(cmd, buf, len(buf), None) or 0)
+    if err:
+        winmm.mciGetErrorStringW(err, buf, len(buf))
+    return err, buf.value
 
 
 class _WavPlay:
@@ -222,15 +226,15 @@ class _WavPlay:
     def start(self, path):
         with self._lock:
             self._close_locked()
-            err, _msg = _mci('open "%s" type waveaudio alias %s' % (path, _ALIAS))
+            err, message = _mci('open "%s" type waveaudio alias %s' % (path, _ALIAS))
             if err:
-                raise RuntimeError('这段声音播不出来')
+                raise RuntimeError(f'无法打开 WAV（{err}）：{message}')
             self.open = True
             self.held = False
-            err, _msg = _mci('play %s' % _ALIAS)
+            err, message = _mci('play %s' % _ALIAS)
             if err:
                 self._close_locked()
-                raise RuntimeError('这段声音播不出来')
+                raise RuntimeError(f'无法播放 WAV（{err}）：{message}')
 
     def _mode(self):
         _err, mode = _mci('status %s mode' % _ALIAS)
